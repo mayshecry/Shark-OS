@@ -30,7 +30,6 @@ static inline uint8_t vga_entry_color(uint8_t fg, uint8_t bg) {
 	return fg | bg << 4;
 }
 
-/* Prototypes for functions implemented later in the file */
 void terminal_putchar(char c);
 void terminal_writestring(const char* data);
 void draw_pixel(uint32_t x, uint32_t y, uint32_t color);
@@ -47,7 +46,6 @@ void print_prompt();
 void* kmalloc(size_t size);
 extern char stack_top;
 
-/* Logic for managing multiple CPUs and background tasks */
 typedef enum { TASK_RUNNING, TASK_READY, TASK_SLEEPING, TASK_ZOMBIE } task_state_t;
 
 typedef struct task {
@@ -70,7 +68,6 @@ cpu_t cpus[MAX_CPUS];
 task_t* task_list = NULL;
 int next_pid = 1;
 
-/* Spinlocks for SMP safety */
 typedef volatile int spinlock_t;
 void spin_lock(spinlock_t *lock) {
     while (__sync_lock_test_and_set(lock, 1));
@@ -82,7 +79,6 @@ spinlock_t task_list_lock = 0;
 
 void yield() { }
 
-/* Custom string functions since there is no standard C library available */
 int strcmp(const char* s1, const char* s2) {
 	while (*s1 && (*s1 == *s2)) {
 		s1++; s2++;
@@ -113,7 +109,6 @@ size_t strlen(const char* str) {
 	return len;
 }
 
-/* Definitions for the Virtual File System (VFS) */
 #define MAX_NODES 64
 #define MAX_CHILDREN 16
 #define MAX_FILE_CONTENT_SIZE 4096
@@ -128,7 +123,7 @@ struct fs_node {
 	struct fs_node* children[MAX_CHILDREN];
 	int num_children;
 	char content[MAX_FILE_CONTENT_SIZE];
-	int content_len; // Current length of content
+	int content_len;
 };
 
 struct fs_node node_pool[MAX_NODES];
@@ -167,16 +162,15 @@ uint8_t rtl_irq = 0;
 uint8_t* rx_buffer;
 uint8_t current_tx_buffer = 0;
 
-/* Maps hardware keyboard scancodes to readable characters */
 unsigned char keyboard_map[128] = {
-    0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b', '\t',   // 0x00 - 0x0F
-    'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n', 0, 'a', 's',     // 0x10 - 0x1F
-    'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`', 0, '\\', 'z', 'x', 'c', 'v',   // 0x20 - 0x2F
-    'b', 'n', 'm', ',', '.', '/', 0, '*', 0, ' ', 0, 0, 0, 0, 0, 0,                    // 0x30 - 0x3F
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,                                   // 0x40 - 0x4F (F1-F10, NumLock, etc.)
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,                                   // 0x50 - 0x5F
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,                                   // 0x60 - 0x6F
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0                                    // 0x70 - 0x7F
+    0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b', '\t',
+    'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n', 0, 'a', 's',
+    'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`', 0, '\\', 'z', 'x', 'c', 'v',
+    'b', 'n', 'm', ',', '.', '/', 0, '*', 0, ' ', 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
 
 unsigned char keyboard_map_shifted[128] = {
@@ -192,7 +186,6 @@ unsigned char keyboard_map_shifted[128] = {
 
 static bool shift_pressed = false;
 
-/* Simple 8x8 bitmap font (subset: space to ~) */
 static uint8_t font8x8[96][8] = {
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
     {0x18,0x3c,0x3c,0x18,0x18,0x00,0x18,0x00},
@@ -291,7 +284,6 @@ static uint8_t font8x8[96][8] = {
     {0x00,0x00,0x00,0x76,0xdc,0x00,0x00,0x00},
 };
 
-/* Port I/O helpers */
 static inline void outb(uint16_t port, uint8_t val) {
     asm volatile ( "outb %0, %1" : : "a"(val), "Nd"(port) );
 }
@@ -315,7 +307,6 @@ static inline uint32_t inl(uint16_t port) {
     uint32_t ret; asm volatile ("inl %1, %0" : "=a"(ret) : "Nd"(port)); return ret;
 }
 
-/* Essential x86 system table definitions */
 struct gdt_entry {
     uint16_t limit_low; uint16_t base_low; uint8_t base_middle;
     uint8_t access; uint8_t granularity; uint8_t base_high;
@@ -343,7 +334,6 @@ struct idt_ptr idtp;
 extern void gdt_flush(uint32_t);
 extern void idt_load(uint32_t);
 
-/* External ISR/IRQ stubs from boot.s */
 extern void isr0();  extern void isr1();  extern void isr2();  extern void isr3();
 extern void isr4();  extern void isr5();  extern void isr6();  extern void isr7();
 extern void isr8();  extern void isr9();  extern void isr10(); extern void isr11();
@@ -382,7 +372,6 @@ void idt_set_gate(uint8_t num, uint32_t base, uint16_t sel, uint8_t flags) {
     idt[num].flags = flags;
 }
 
-/* A simple ring buffer for processing keyboard input */
 static char key_buffer[256];
 static volatile int key_head = 0;
 static volatile int key_tail = 0;
@@ -417,13 +406,13 @@ void irq_handler(struct registers* r) {
 
     if (rtl_io_base != 0 && r->int_no == (uint32_t)(rtl_irq + 32)) {
         uint16_t status = inw(rtl_io_base + 0x3E);
-        outw(rtl_io_base + 0x3E, status); // Ack Interrupt
+        outw(rtl_io_base + 0x3E, status);
         if (status & 0x01) {
             terminal_writestring("\n[Network] Packet Received!");
         }
     }
 
-    if (r->int_no == 33) { // Keyboard IRQ
+    if (r->int_no == 33) {
         uint8_t scancode = inb(0x60);
         keyboard_handler(scancode);
     }
@@ -444,7 +433,6 @@ void isr_handler(struct registers* r) {
     while(1) { asm volatile("hlt"); }
 }
 
-/* The interface for user applications to request services from the kernel */
 void syscall_handler(struct registers* r) {
     if (r->eax == 1) {
         terminal_writestring("\nProcess exited.\n");
@@ -470,7 +458,6 @@ void syscall_handler(struct registers* r) {
     }
 }
 
-/* Basic logic for tracking and assigning system memory */
 uint64_t* pmm_bitmap;
 uintptr_t free_memory_start;
 
@@ -500,7 +487,6 @@ void get_cpu_model(char* buffer) {
     buffer[48] = '\0';
 }
 
-/* Simple power-off sequences for common PC emulators */
 void shutdown() {
     outw(0xB004, 0x2000);
     outw(0x604, 0x2000);
@@ -508,7 +494,6 @@ void shutdown() {
     asm volatile("cli; hlt");
 }
 
-/* Utility functions for converting numbers into text */
 void hex_to_string(uint32_t value, char* buffer) {
     char hex_chars[] = "0123456789ABCDEF";
     buffer[0] = '0';
@@ -602,22 +587,17 @@ void rtl8139_init() {
         return;
     }
 
-    // 2. Power On
     outb(rtl_io_base + 0x52, 0x00);
 
-    // 3. Reset
     outb(rtl_io_base + 0x37, 0x10);
     while((inb(rtl_io_base + 0x37) & 0x10) != 0);
 
-    // 4. Init Receive Buffer
-    rx_buffer = (uint8_t*)kmalloc(8192 + 16 + 1500); // 8K + 16 (alignment) + 1.5K (max packet)
+    rx_buffer = (uint8_t*)kmalloc(8192 + 16 + 1500);
     outl(rtl_io_base + 0x30, (uint32_t)(uintptr_t)rx_buffer);
 
-    // 5. Set Interrupt Mask (ROK | TOK)
-    outw(rtl_io_base + 0x3C, 0x0005); // Receive OK, Transmit OK
+    outw(rtl_io_base + 0x3C, 0x0005);
 
-    // 6. Configure Receiver & Enable
-    outl(rtl_io_base + 0x44, 0xf | (1 << 7)); // AB+AM+APM+AAP + No wrapper (Accept Broadcast, Multicast, Physical Match, All Multicast)
+    outl(rtl_io_base + 0x44, 0xf | (1 << 7));
     outb(rtl_io_base + 0x37, 0x0C); // Enable RE (Receiver) and TE (Transmitter)
     
     network_initialized = true;
@@ -666,7 +646,6 @@ void send_icmp_ping(const char* target) {
     }
 }
 
-/* Low-level functions for scanning and configuring PCI devices */
 uint32_t pci_config_read(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset) {
     uint32_t address = (uint32_t)((bus << 16) | (slot << 11) | (func << 8) | (offset & 0xfc) | ((uint32_t)0x80000000));
     outl(0xCF8, address);
@@ -679,19 +658,16 @@ void pci_config_write(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, u
     outl(0xCFC, value);
 }
 
-/* --- Graphics (VESA Baseline) --- */
 struct vbe_info {
     char signature[4]; uint16_t version; uint32_t oem;
     uint32_t capabilities; uint32_t video_modes; uint16_t total_memory;
 } __attribute__((packed));
 
 
-/* --- Initialization --- */
 void init_descriptor_tables() {
     idtp.limit = (sizeof(struct idt_entry) * 256) - 1;
     idtp.base = (uint32_t)&idt;
 
-    /* Map all CPU Exceptions */
     idt_set_gate(0, (uint32_t)isr0, 0x08, 0x8E);   idt_set_gate(1, (uint32_t)isr1, 0x08, 0x8E);
     idt_set_gate(2, (uint32_t)isr2, 0x08, 0x8E);   idt_set_gate(3, (uint32_t)isr3, 0x08, 0x8E);
     idt_set_gate(4, (uint32_t)isr4, 0x08, 0x8E);   idt_set_gate(5, (uint32_t)isr5, 0x08, 0x8E);
@@ -709,7 +685,7 @@ void init_descriptor_tables() {
     idt_set_gate(28, (uint32_t)isr28, 0x08, 0x8E); idt_set_gate(29, (uint32_t)isr29, 0x08, 0x8E);
     idt_set_gate(30, (uint32_t)isr30, 0x08, 0x8E); idt_set_gate(31, (uint32_t)isr31, 0x08, 0x8E);
     
-    idt_set_gate(128, (uint32_t)isr128, 0x08, 0x8E); // Syscall vector
+    idt_set_gate(128, (uint32_t)isr128, 0x08, 0x8E);
 
     outb(0x20, 0x11); outb(0xA0, 0x11);
     outb(0x21, 0x20); outb(0xA1, 0x28);
@@ -730,7 +706,6 @@ void init_descriptor_tables() {
     asm volatile("sti");
 }
 
-/* Logic for loading and executing ELF format binaries */
 typedef struct {
     uint8_t  e_ident[16]; uint16_t e_type; uint16_t e_machine;
     uint32_t e_version; uint32_t e_entry; uint32_t e_phoff;
@@ -790,7 +765,6 @@ struct fs_node* search_path(const char* name) {
     struct fs_node* n = find_node(current_dir, name);
     if (n && n->type == FS_FILE) return n;
 
-    // 2. Search /System/Bin (Automatic Fallback)
     struct fs_node* sys = find_node(root, "System");
     if (sys) {
         struct fs_node* bin = find_node(sys, "Bin");
@@ -834,7 +808,6 @@ void fs_initialize() {
 	create_node("Drivers", FS_DIRECTORY, system);
 	create_node("Kernel.sys", FS_FILE, system);
 
-    /* Automatically load the 'sharkscript' binary as the 'shs' command */
     struct fs_node* shs_bin = create_node("shs", FS_FILE, bin_dir);
     if (shs_bin) {
         size_t size = (size_t)(_binary_sharkscript_end - _binary_sharkscript_start);
@@ -854,17 +827,17 @@ size_t command_index = 0;
 
 
 void draw_char(char c, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg) {
-    if (c < 32 || c > 126) return; // Only printable ASCII
+    if (c < 32 || c > 126) return;
     uint32_t font_idx = c - 32;
-    uint32_t stride = screen_pitch / 4; // Pixels per row
+    uint32_t stride = screen_pitch / 4;
     uint32_t* target_row_ptr = &lfbptr[y * stride + x];
 
     for (int row = 0; row < 8; row++) {
         uint8_t font_byte = font8x8[font_idx][row];
         for (int col = 0; col < 8; col++) {
-            if ((font_byte >> (7 - col)) & 1) { // Check bit from left to right
+            if ((font_byte >> (7 - col)) & 1) {
                 target_row_ptr[col] = fg;
-            } else if (bg != 0xFF000000) { // Only draw background if not transparent
+            } else if (bg != 0xFF000000) {
                 target_row_ptr[col] = bg;
             }
         }
@@ -874,31 +847,28 @@ void draw_char(char c, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg) {
 
 void terminal_scroll() {
     uint32_t char_height = 8;
-    uint32_t start_y_pixels = 3 * char_height; // Start below header
-    uint32_t end_y_pixels = (screen_height / 8 - 2) * char_height; // End above footer
+    uint32_t start_y_pixels = 3 * char_height;
+    uint32_t end_y_pixels = (screen_height / 8 - 2) * char_height;
     uint32_t scroll_height_pixels = end_y_pixels - start_y_pixels - char_height;
     uint32_t stride = screen_pitch / 4;
 
-    // Move all rows up by one character height
     memcpy(
         &lfbptr[start_y_pixels * stride],
         &lfbptr[(start_y_pixels + char_height) * stride],
         scroll_height_pixels * stride * sizeof(uint32_t)
     );
 
-    // Clear the last line
     draw_rect(0, end_y_pixels - char_height, screen_width, char_height, vga_to_rgb[VGA_COLOR_BLUE]);
-    terminal_row = (screen_height / 8) - 3; // Adjust terminal_row to the last visible line
+    terminal_row = (screen_height / 8) - 3;
 }
 
 void terminal_clear(void) {
     draw_rect(0, 3 * 8, screen_width, (screen_height / 8 - 5) * 8, vga_to_rgb[VGA_COLOR_BLUE]);
-    // Reset cursor to the top of the workspace
     terminal_row = 3;
     terminal_column = 2;
 }
 
-void draw_pixel(uint32_t x, uint32_t y, uint32_t color) { // Kept for compatibility, but not used by draw_char/rect
+void draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
     if (x < screen_width && y < screen_height) {
         uint32_t stride = screen_pitch / 4;
         lfbptr[y * stride + x] = color;
@@ -927,10 +897,8 @@ void terminal_set_color(uint8_t color) {
 }
 
 void terminal_initialize(void) {
-	/* Draw Desktop Background (Workspace) */
     draw_rect(0, 0, screen_width, screen_height, vga_to_rgb[VGA_COLOR_BLUE]);
     
-	/* Draw Top Bar (Header) */
 	uint32_t header_rgb = vga_to_rgb[VGA_COLOR_LIGHT_GREY];
     draw_rect(0, 0, screen_width, 16, header_rgb);
 	
@@ -939,7 +907,6 @@ void terminal_initialize(void) {
 		draw_char(title[i], (i + 2) * 8, 4, vga_to_rgb[VGA_COLOR_BLACK], header_rgb);
     }
 
-	/* Draw Bottom Bar (Footer) */
 	uint32_t footer_rgb = vga_to_rgb[VGA_COLOR_BLACK];
     draw_rect(0, screen_height - 16, screen_width, 16, footer_rgb);
 	
@@ -948,7 +915,6 @@ void terminal_initialize(void) {
 		draw_char(footer[i], (i + 1) * 8, screen_height - 12, vga_to_rgb[VGA_COLOR_WHITE], footer_rgb);
     }
 
-	/* Set cursor for terminal input inside the workspace */
 	terminal_row = 2;
 	terminal_column = 2;
 	terminal_color = vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLUE);
@@ -959,7 +925,6 @@ void execute_command(char* cmd) {
 	uint8_t old_color = terminal_color;
 	terminal_putchar('\n');
 
-    /* Split command and arguments */
     char cmd_name[32];
     int i = 0;
     while(cmd[i] != ' ' && cmd[i] != '\0' && i < 31) {
@@ -1125,7 +1090,6 @@ void print_prompt() {
 	terminal_writestring("SharkOS --@> ");
 }
 
-/* Internal helper to handle visual rendering and cursor movement only */
 void terminal_write_char_internal(char c) {
 	if (c == '\n') {
 		terminal_column = 2;
@@ -1174,7 +1138,7 @@ void terminal_putchar_cli(char c) {
 		return;
 	}
 
-	if (command_index < sizeof(command_buffer) - 1) { // Leave space for null terminator
+	if (command_index < sizeof(command_buffer) - 1) {
 		command_buffer[command_index++] = c;
 	}
 	terminal_write_char_internal(c);
@@ -1223,7 +1187,6 @@ void terminal_writestring(const char* data) {
 	}
 }
 
-/* Handover information from the multiboot-compliant bootloader */
 struct multiboot_info {
     uint32_t flags;
     uint32_t mem_lower;
@@ -1268,7 +1231,6 @@ struct multiboot_mmap_entry {
 void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     if (magic != 0x2BADB002) return;
 
-    /* Ensure interrupts are disabled during critical boot phase */
     asm volatile("cli");
 
     if ((mb_info->flags & (1 << 12)) && mb_info->framebuffer_bpp == 32) {
@@ -1280,14 +1242,13 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         terminal_initialize();
         init_descriptor_tables();
 
-        /* Detect memory size using Multiboot Memory Map (supports up to 128GB+) */
         if (mb_info->flags & (1 << 6)) {
             uintptr_t mmap_addr = (uintptr_t)mb_info->mmap_addr;
             uint32_t mmap_length = mb_info->mmap_length;
             total_system_memory = 0;
             for (uint32_t i = 0; i < mmap_length; ) {
                 struct multiboot_mmap_entry* entry = (struct multiboot_mmap_entry*)(uintptr_t)(mmap_addr + i);
-                if (entry->type == 1) { // Type 1 is Available RAM
+                if (entry->type == 1) {
                     uint64_t length = ((uint64_t)entry->len_high << 32) | entry->len_low;
                     total_system_memory += length;
                 }
@@ -1299,13 +1260,11 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
 
         pmm_init(total_system_memory); 
 
-        /* Initialize SMP Core Tracking */
         for(int i = 0; i < MAX_CPUS; i++) {
             cpus[i].id = i;
             cpus[i].started = (i == 0);
         }
 
-        /* Initialize Kernel Task (PID 1) */
         cpus[0].current_task = create_task("kernel_init");
         cpus[0].current_task->state = TASK_RUNNING;
 
@@ -1327,7 +1286,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
                         terminal_putchar_cli(c);
                     }
                 } else if (current_kernel_mode == KERNEL_MODE_EDITOR) {
-                    if (c == 27) { // ESC key
+                    if (c == 27) {
                         editor_buffer[editor_buffer_idx] = '\0';
                         strcpy(editor_target_file->content, editor_buffer);
                         editor_target_file->content_len = editor_buffer_idx;
