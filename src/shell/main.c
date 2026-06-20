@@ -99,27 +99,79 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         fs_initialize();
         rtl8139_init();
 
+        tiling_enabled = true;
+        mouse_enabled = false;
+
         show_welcome_tour();
-        print_prompt();
+
+        settings_open();
+        while (current_kernel_mode == KERNEL_MODE_SETTINGS) {
+            char c = keyboard_getchar();
+            if (c == 27) {
+                settings_close();
+            } else if (c == '\n') {
+                if (settings_selected == 0) {
+                    tiling_enabled = !tiling_enabled;
+                } else if (settings_selected == 1) {
+                    mouse_enabled = !mouse_enabled;
+                    if (mouse_enabled) {
+                        mouse_init();
+                    }
+                } else if (settings_selected == 2) {
+                    apply_theme((selected_theme + 1) % MAX_THEMES);
+                }
+                settings_draw();
+            } else if (c == 0x10) {
+                if (settings_selected > 0) settings_selected--;
+                settings_draw();
+            } else if (c == 0x11) {
+                if (settings_selected < 2) settings_selected++;
+                settings_draw();
+            }
+        }
 
         while (1) {
             char c = keyboard_getchar();
             if (c != 0) {
-                if (c == '\t') {
-                    active_pane = (active_pane + 1) % pane_count;
-                    draw_pane_tabs();
-                } else if (c == '+') {
-                    split_active_pane();
-                } else if (c == '-') {
-                    close_active_pane();
-                } else if (c == '?') {
-                    if (current_kernel_mode == KERNEL_MODE_FAQ) {
-                        faq_close();
-                    } else {
-                        faq_open();
+                if (current_kernel_mode == KERNEL_MODE_SETTINGS) {
+                    if (c == 27) {
+                        settings_close();
+                    } else if (c == '\n') {
+                        if (settings_selected == 0) {
+                            tiling_enabled = !tiling_enabled;
+                        } else if (settings_selected == 1) {
+                            mouse_enabled = !mouse_enabled;
+                            if (mouse_enabled) {
+                                mouse_init();
+                            }
+                        } else if (settings_selected == 2) {
+                            apply_theme((selected_theme + 1) % MAX_THEMES);
+                        }
+                        settings_draw();
+                    } else if (c == 0x10) {
+                        if (settings_selected > 0) settings_selected--;
+                        settings_draw();
+                    } else if (c == 0x11) {
+                        if (settings_selected < 2) settings_selected++;
+                        settings_draw();
                     }
                 } else if (current_kernel_mode == KERNEL_MODE_CLI) {
-                    if (c == '\n') {
+                    if (c == '\t') {
+                        active_pane = (active_pane + 1) % pane_count;
+                        draw_pane_tabs();
+                    } else if (c == '+') {
+                        if (tiling_enabled) split_active_pane();
+                    } else if (c == '-') {
+                        if (tiling_enabled) close_active_pane();
+                    } else if (c == '?') {
+                        if (current_kernel_mode == KERNEL_MODE_FAQ) {
+                            faq_close();
+                        } else {
+                            faq_open();
+                        }
+                    } else if (c == 's' && ctrl_pressed) {
+                        settings_open();
+                    } else if (c == '\n') {
                         command_buffer[command_index] = '\0';
                         execute_command(command_buffer);
                         command_index = 0;
@@ -143,6 +195,9 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
                         terminal_putchar_editor(c);
                     }
                 }
+            }
+            if (mouse_enabled) {
+                mouse_update_cursor();
             }
             __asm__ volatile("hlt");
         }

@@ -139,7 +139,44 @@ struct fs_node* editor_target_file = NULL;
 char editor_buffer[MAX_FILE_CONTENT_SIZE];
 size_t editor_buffer_idx = 0;
 
+bool tiling_enabled = true;
+bool mouse_enabled = false;
+int settings_selected = 0;
+int selected_theme = THEME_SHARKOS;
+
+theme_t themes[MAX_THEMES] = {
+    {
+        0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF101010,
+        0xFF00DDDD, 0xFFFFCC00, 0xFFFFFFFF, 0xFF888888, 0xFFFF44FF,
+        0xFF00DDDD, 0xFF44FF44
+    },
+    {
+        0xFF0A0A2A, 0xFF0F0F3A, 0xFF050520, 0xFF1A1A4A, 0xFF0A0A2A,
+        0xFF4488FF, 0xFF88BBFF, 0xFFEEEEFF, 0xFF6688AA, 0xFF44AAFF,
+        0xFF4488FF, 0xFF44FF88
+    },
+    {
+        0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF101010,
+        0xFF00FF00, 0xFF00FF00, 0xFF00FF00, 0xFF008800, 0xFF00FF00,
+        0xFF00FF00, 0xFF00FF00
+    }
+};
+
+uint32_t UI_BG = 0xFF000000;
+uint32_t UI_SURFACE = 0xFF000000;
+uint32_t UI_HEADER = 0xFF000000;
+uint32_t UI_TAB_ACTIVE = 0xFF000000;
+uint32_t UI_TAB_INACTIVE = 0xFF101010;
+uint32_t UI_BORDER = 0xFF00DDDD;
+uint32_t UI_TITLE = 0xFFFFCC00;
+uint32_t UI_TEXT = 0xFFFFFFFF;
+uint32_t UI_DIM = 0xFF888888;
+uint32_t UI_ACCENT = 0xFFFF44FF;
+uint32_t UI_LABEL = 0xFF00DDDD;
+uint32_t UI_ANSWER = 0xFF44FF44;
+
 bool shift_pressed = false;
+bool ctrl_pressed = false;
 unsigned char keyboard_map[128] = {
     0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b', '\t',
     'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n', 0, 'a', 's',

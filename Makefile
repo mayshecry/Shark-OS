@@ -42,6 +42,9 @@ drivers/keyboard.o: src/drivers/keyboard.c include/kernel.h | drivers
 drivers/pci.o: src/drivers/pci.c include/kernel.h | drivers
 	$(CC) -c src/drivers/pci.c -o drivers/pci.o $(CFLAGS)
 
+drivers/mouse.o: src/drivers/mouse.c include/kernel.h | drivers
+	$(CC) -c src/drivers/mouse.c -o drivers/mouse.o $(CFLAGS)
+
 # fs
 fs/fs.o: src/fs/fs.c include/kernel.h | fs
 	$(CC) -c src/fs/fs.c -o fs/fs.o $(CFLAGS)
@@ -55,6 +58,9 @@ ui/ui.o: src/ui/ui.c include/kernel.h | ui
 
 ui/fastfetch.o: src/ui/fastfetch.c include/kernel.h | ui
 	$(CC) -c src/ui/fastfetch.c -o ui/fastfetch.o $(CFLAGS)
+
+ui/mouse.o: src/ui/mouse.c include/kernel.h | ui
+	$(CC) -c src/ui/mouse.c -o ui/mouse.o $(CFLAGS)
 
 # shell
 shell/commands.o: src/shell/commands.c include/kernel.h | shell
@@ -77,11 +83,13 @@ lib/elf.o: src/lib/elf.c include/kernel.h | lib
 	$(CC) -c src/lib/elf.c -o lib/elf.o $(CFLAGS)
 
 sharkos.bin: boot.o arch/io.o arch/interrupts.o arch/cpu.o drivers/keyboard.o drivers/pci.o \
-             fs/fs.o ui/terminal.o ui/ui.o ui/fastfetch.o shell/commands.o shell/main.o \
+             drivers/mouse.o fs/fs.o ui/terminal.o ui/ui.o ui/fastfetch.o ui/mouse.o \
+             shell/commands.o shell/main.o \
              lib/lib.o lib/globals.o lib/pmm.o lib/elf.o sharkscript_bin.o linker.ld
 	$(CC) -T linker.ld -o sharkos.bin $(LDFLAGS) boot.o arch/io.o arch/interrupts.o arch/cpu.o \
-		drivers/keyboard.o drivers/pci.o fs/fs.o ui/terminal.o ui/ui.o ui/fastfetch.o \
-		shell/commands.o shell/main.o lib/lib.o lib/globals.o lib/pmm.o lib/elf.o sharkscript_bin.o
+		drivers/keyboard.o drivers/pci.o drivers/mouse.o fs/fs.o ui/terminal.o ui/ui.o \
+		ui/fastfetch.o ui/mouse.o shell/commands.o shell/main.o lib/lib.o lib/globals.o \
+		lib/pmm.o lib/elf.o sharkscript_bin.o
 
 sharkos.iso: sharkos.bin grub.cfg
 	mkdir -p isodir/boot/grub

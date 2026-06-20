@@ -16,6 +16,9 @@ void irq_handler(struct registers* r) {
         uint8_t scancode = inb(0x60);
         keyboard_handler(scancode);
     }
+    if (r->int_no == 44 && mouse_enabled) {
+        mouse_handler();
+    }
 }
 
 void syscall_handler(struct registers* r) {

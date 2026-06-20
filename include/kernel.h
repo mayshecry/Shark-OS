@@ -65,18 +65,38 @@ extern size_t term_cols;
 extern size_t term_max_row;
 extern size_t content_first_row;
 
-#define UI_BG           0xFF000000
-#define UI_SURFACE      0xFF000000
-#define UI_HEADER       0xFF000000
-#define UI_TAB_ACTIVE   0xFF000000
-#define UI_TAB_INACTIVE 0xFF101010
-#define UI_BORDER       0xFF00DDDD
-#define UI_TITLE        0xFFFFCC00
-#define UI_TEXT         0xFFFFFFFF
-#define UI_DIM          0xFF888888
-#define UI_ACCENT       0xFFFF44FF
-#define UI_LABEL        0xFF00DDDD
-#define UI_ANSWER       0xFF44FF44
+#define THEME_SHARKOS 0
+#define THEME_BLUE    1
+#define THEME_TEMPLEOS 2
+#define MAX_THEMES    3
+
+typedef struct {
+    uint32_t bg;
+    uint32_t surface;
+    uint32_t header;
+    uint32_t tab_active;
+    uint32_t tab_inactive;
+    uint32_t border;
+    uint32_t title;
+    uint32_t text;
+    uint32_t dim;
+    uint32_t accent;
+    uint32_t label;
+    uint32_t answer;
+} theme_t;
+extern theme_t themes[MAX_THEMES];
+extern uint32_t UI_BG;
+extern uint32_t UI_SURFACE;
+extern uint32_t UI_HEADER;
+extern uint32_t UI_TAB_ACTIVE;
+extern uint32_t UI_TAB_INACTIVE;
+extern uint32_t UI_BORDER;
+extern uint32_t UI_TITLE;
+extern uint32_t UI_TEXT;
+extern uint32_t UI_DIM;
+extern uint32_t UI_ACCENT;
+extern uint32_t UI_LABEL;
+extern uint32_t UI_ANSWER;
 
 typedef enum { TASK_RUNNING, TASK_READY, TASK_SLEEPING, TASK_ZOMBIE } task_state_t;
 typedef struct task {
@@ -112,7 +132,7 @@ extern uintptr_t free_memory_start;
 
 extern uint8_t font8x8[96][8];
 
-typedef enum { KERNEL_MODE_CLI, KERNEL_MODE_EDITOR, KERNEL_MODE_FAQ } kernel_mode_t;
+typedef enum { KERNEL_MODE_CLI, KERNEL_MODE_EDITOR, KERNEL_MODE_FAQ, KERNEL_MODE_SETTINGS } kernel_mode_t;
 extern kernel_mode_t current_kernel_mode;
 
 #define MAX_FILE_CONTENT_SIZE 4096
@@ -122,8 +142,13 @@ extern char editor_buffer[MAX_FILE_CONTENT_SIZE];
 extern size_t editor_buffer_idx;
 
 extern bool shift_pressed;
+extern bool ctrl_pressed;
 extern unsigned char keyboard_map[128];
 extern unsigned char keyboard_map_shifted[128];
+
+extern bool tiling_enabled;
+extern bool mouse_enabled;
+extern int selected_theme;
 
 #define MAX_PANES 8
 #define PANE_GAP 2
@@ -152,6 +177,17 @@ extern uint32_t faq_backup_y;
 extern uint32_t faq_backup_w;
 extern uint32_t faq_backup_h;
 extern int faq_saved_pane;
+
+typedef struct {
+    int x;
+    int y;
+    uint8_t buttons;
+    int dx;
+    int dy;
+} mouse_state_t;
+extern mouse_state_t mouse_state;
+extern int mouse_cursor_x;
+extern int mouse_cursor_y;
 
 extern char stack_top;
 
@@ -244,12 +280,23 @@ void redraw_all_panes(void);
 void print_prompt(void);
 void faq_open(void);
 void faq_close(void);
+void settings_open(void);
+void settings_close(void);
+void settings_draw(void);
+void apply_theme(int theme_idx);
+extern int settings_selected;
 
 void show_fastfetch(void);
 void show_welcome_tour(void);
 
 void keyboard_handler(uint8_t scancode);
 char keyboard_getchar(void);
+
+void mouse_init(void);
+void mouse_handler(void);
+void mouse_wait(void);
+uint8_t mouse_read(void);
+void mouse_update_cursor(void);
 
 void irq_handler(struct registers* r);
 void isr_handler(struct registers* r);
