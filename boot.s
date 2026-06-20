@@ -1,3 +1,12 @@
+/*
+ * SharkOS Boot Assembly
+ * ---------------------
+ * This 32-bit Multiboot kernel boots on BOTH 32-bit (i686) and 64-bit (x86_64) CPUs.
+ * GRUB loads the kernel in 32-bit protected mode regardless of the host CPU's native mode.
+ * On x86_64 processors, GRUB transitions from long mode to 32-bit protected mode before
+ * jumping to _start, so no 64-bit specific code is needed here.
+ */
+
 /* Declare constants for the multiboot header. */
 .set ALIGN,    1<<0             /* align loaded modules on page boundaries */
 .set MEMINFO,  1<<1             /* provide memory map */
