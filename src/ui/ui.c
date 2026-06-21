@@ -233,9 +233,23 @@ void settings_close(void) {
     }
     current_kernel_mode = KERNEL_MODE_CLI;
     active_pane = settings_saved_pane;
+    ui_draw_chrome();
+    for (int i = 0; i < pane_count; i++) {
+        size_t pane_width = panes[i].col_end - panes[i].col_start;
+        uint32_t px = col_px(panes[i].col_start) + PANE_GAP * font_cell_w / 2;
+        uint32_t pw = col_px(pane_width) - PANE_GAP * font_cell_w;
+        uint32_t py = row_px(content_first_row);
+        uint32_t ph = ui_footer_y - py;
+        draw_rect(px, py, pw, ph, UI_SURFACE);
+        if (i > 0) {
+            uint32_t divider_x = col_px(panes[i].col_start) - PANE_GAP * font_cell_w / 2;
+            uint32_t divider_w = font_scale > 1 ? font_scale : 2;
+            draw_rect(divider_x - divider_w / 2, ui_chrome_top, divider_w, ui_footer_y - ui_chrome_top, UI_BORDER);
+        }
+    }
+    draw_pane_tabs();
     terminal_row = content_first_row;
     terminal_column = panes[active_pane].col_start;
-    redraw_all_panes();
     print_prompt();
 }
 
@@ -252,7 +266,7 @@ void draw_pane_tabs(void) {
         if (i == active_pane) {
             draw_rect(px, ui_tab_y + font_cell_h - bd, pw, bd, UI_SURFACE);
         }
-        char label[16];
+        char label[32];
         label[0] = ' ';
         label[1] = 'S';
         label[2] = 'h';
@@ -269,6 +283,20 @@ void draw_pane_tabs(void) {
             label[8] = '0' + (i % 10);
             label[9] = ' ';
             label[10] = '\0';
+        }
+        if (i == active_pane) {
+            int len = strlen(label);
+            if (len < 30) {
+                label[len] = '[';
+                label[len+1] = 'A';
+                label[len+2] = 'C';
+                label[len+3] = 'T';
+                label[len+4] = 'I';
+                label[len+5] = 'V';
+                label[len+6] = 'E';
+                label[len+7] = ']';
+                label[len+8] = '\0';
+            }
         }
         uint32_t label_fg = (i == active_pane) ? UI_TITLE : UI_DIM;
         draw_string_px(label, px + font_cell_w / 2, ui_tab_y, label_fg, tab_bg);
@@ -300,11 +328,11 @@ void split_active_pane(void) {
         panes[i].col = cs;
         panes[i].color = vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK);
         panes[i].cmd_index = 0;
+        panes[i].prompt_end_col = cs;
     }
     pane_count = new_count;
+    int saved_active = active_pane;
     active_pane = 0;
-    terminal_row = content_first_row;
-    terminal_column = panes[active_pane].col_start;
     for (int i = 0; i < pane_count; i++) {
         size_t pane_width = panes[i].col_end - panes[i].col_start;
         uint32_t px = col_px(panes[i].col_start) + PANE_GAP * font_cell_w / 2;
@@ -314,20 +342,65 @@ void split_active_pane(void) {
         draw_rect(px, py, pw, ph, UI_SURFACE);
     }
     redraw_all_panes();
-    print_prompt();
+    for (int i = 0; i < pane_count; i++) {
+        active_pane = i;
+        terminal_row = panes[i].row;
+        terminal_column = panes[i].col_start;
+        print_prompt();
+    }
+    active_pane = saved_active;
+    terminal_row = panes[active_pane].row;
+    terminal_column = panes[active_pane].prompt_end_col + panes[active_pane].cmd_index;
 }
 
 void close_active_pane(void) {
     if (pane_count <= 1) return;
     int to_remove = active_pane;
+    int old_active = active_pane;
+    
     for (int i = to_remove; i < pane_count - 1; i++) {
         panes[i] = panes[i + 1];
     }
     pane_count--;
-    if (active_pane >= pane_count) active_pane = pane_count - 1;
+    
+    if (active_pane >= pane_count) {
+        active_pane = pane_count - 1;
+    } else if (active_pane > to_remove) {
+        active_pane--;
+    }
+    
+    size_t total_gaps = (size_t)(pane_count - 1) * PANE_GAP;
+    size_t usable_cols = term_cols - total_gaps;
+    size_t pane_w = usable_cols / pane_count;
+    for (int i = 0; i < pane_count; i++) {
+        size_t cs = i * (pane_w + PANE_GAP);
+        size_t ce = cs + pane_w;
+        if (ce > term_cols) ce = term_cols;
+        panes[i].col_start = cs;
+        panes[i].col_end = ce;
+        panes[i].row = content_first_row;
+        panes[i].col = cs;
+        panes[i].cmd_index = 0;
+        panes[i].prompt_end_col = cs;
+    }
+    
+    ui_draw_chrome();
+    for (int i = 0; i < pane_count; i++) {
+        size_t pane_width = panes[i].col_end - panes[i].col_start;
+        uint32_t px = col_px(panes[i].col_start) + PANE_GAP * font_cell_w / 2;
+        uint32_t pw = col_px(pane_width) - PANE_GAP * font_cell_w;
+        uint32_t py = row_px(content_first_row);
+        uint32_t ph = ui_footer_y - py;
+        draw_rect(px, py, pw, ph, UI_SURFACE);
+        if (i > 0) {
+            uint32_t divider_x = col_px(panes[i].col_start) - PANE_GAP * font_cell_w / 2;
+            uint32_t divider_w = font_scale > 1 ? font_scale : 2;
+            draw_rect(divider_x - divider_w / 2, ui_chrome_top, divider_w, ui_footer_y - ui_chrome_top, UI_BORDER);
+        }
+    }
+    draw_pane_tabs();
     terminal_row = content_first_row;
     terminal_column = panes[active_pane].col_start;
-    redraw_all_panes();
     print_prompt();
 }
 

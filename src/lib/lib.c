@@ -69,3 +69,17 @@ void int_to_string(uint64_t value, char* buffer) {
     }
     buffer[j] = '\0';
 }
+
+static inline uint64_t rdtsc(void) {
+    uint32_t lo, hi;
+    asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+void delay_ms(uint32_t ms) {
+    uint64_t start = rdtsc();
+    uint64_t target = start + (uint64_t)ms * 2000000ULL;
+    while (rdtsc() < target) {
+        asm volatile("nop");
+    }
+}

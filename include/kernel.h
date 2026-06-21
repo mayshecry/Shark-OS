@@ -160,6 +160,7 @@ typedef struct {
     size_t cmd_index;
     size_t col_start;
     size_t col_end;
+    size_t prompt_end_col;
 } pane_t;
 extern pane_t panes[MAX_PANES];
 extern int pane_count;
@@ -218,6 +219,7 @@ void* memset(void* s, int c, size_t n);
 size_t strlen(const char* str);
 void hex_to_string(uint32_t value, char* buffer);
 void int_to_string(uint64_t value, char* buffer);
+void delay_ms(uint32_t ms);
 
 void init_descriptor_tables(void);
 void pmm_init(uint64_t mem_size);
@@ -273,6 +275,7 @@ void terminal_writestring(const char* data);
 void terminal_scroll(void);
 void terminal_clear(void);
 void terminal_initialize(void);
+void ui_init_metrics(void);
 void draw_pane_tabs(void);
 void split_active_pane(void);
 void close_active_pane(void);

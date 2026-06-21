@@ -1,6 +1,6 @@
-#include "kernel.h"
+    #include "kernel.h"
 
-static void ui_init_metrics(void) {
+void ui_init_metrics(void) {
     uint32_t w = (uint32_t)screen_width;
     uint32_t h = (uint32_t)screen_height;
 
@@ -179,7 +179,9 @@ void terminal_putchar_editor(char c) {
             editor_buffer[editor_buffer_idx++] = '\n';
         }
         terminal_column = panes[active_pane].col_start;
-        if (++terminal_row >= term_max_row) terminal_row = content_first_row;
+        if (++terminal_row >= term_max_row) {
+            terminal_scroll();
+        }
         return;
     }
     if (c == '\b') {
