@@ -12,7 +12,7 @@ ASFLAGS = --32
 # -no-pie prevents the linker from trying to create a PIE executable
 LDFLAGS = -m32 -ffreestanding -O2 -nostdlib -lgcc -no-pie -Wl,-m,elf_i386
 
-DIRS = arch drivers fs ui shell lib
+DIRS = arch drivers fs ui shell lib sharkscript
 
 all: sharkos.iso
 
@@ -21,9 +21,6 @@ $(DIRS):
 
 boot.o: boot.s
 	$(AS) $(ASFLAGS) boot.s -o boot.o
-
-sharkscript_bin.o: sharkscript
-	$(OBJCOPY) -I binary -O elf32-i386 -B i386 sharkscript sharkscript_bin.o
 
 # arch
 arch/io.o: src/arch/io.c include/kernel.h | arch
@@ -63,7 +60,7 @@ ui/mouse.o: src/ui/mouse.c include/kernel.h | ui
 	$(CC) -c src/ui/mouse.c -o ui/mouse.o $(CFLAGS)
 
 # shell
-shell/commands.o: src/shell/commands.c include/kernel.h | shell
+shell/commands.o: src/shell/commands.c include/kernel.h include/sharkscript.h | shell
 	$(CC) -c src/shell/commands.c -o shell/commands.o $(CFLAGS)
 
 shell/main.o: src/shell/main.c include/kernel.h | shell
@@ -82,14 +79,18 @@ lib/pmm.o: src/lib/pmm.c include/kernel.h | lib
 lib/elf.o: src/lib/elf.c include/kernel.h | lib
 	$(CC) -c src/lib/elf.c -o lib/elf.o $(CFLAGS)
 
+# sharkscript (built-in interpreter)
+sharkscript/shs.o: src/sharkscript/shs.c include/kernel.h include/sharkscript.h | sharkscript
+	$(CC) -c src/sharkscript/shs.c -o sharkscript/shs.o $(CFLAGS)
+
 sharkos.bin: boot.o arch/io.o arch/interrupts.o arch/cpu.o drivers/keyboard.o drivers/pci.o \
              drivers/mouse.o fs/fs.o ui/terminal.o ui/ui.o ui/fastfetch.o ui/mouse.o \
              shell/commands.o shell/main.o \
-             lib/lib.o lib/globals.o lib/pmm.o lib/elf.o sharkscript_bin.o linker.ld
+             lib/lib.o lib/globals.o lib/pmm.o lib/elf.o sharkscript/shs.o linker.ld
 	$(CC) -T linker.ld -o sharkos.bin $(LDFLAGS) boot.o arch/io.o arch/interrupts.o arch/cpu.o \
 		drivers/keyboard.o drivers/pci.o drivers/mouse.o fs/fs.o ui/terminal.o ui/ui.o \
 		ui/fastfetch.o ui/mouse.o shell/commands.o shell/main.o lib/lib.o lib/globals.o \
-		lib/pmm.o lib/elf.o sharkscript_bin.o
+		lib/pmm.o lib/elf.o sharkscript/shs.o
 
 sharkos.iso: sharkos.bin grub.cfg
 	mkdir -p isodir/boot/grub
@@ -98,7 +99,7 @@ sharkos.iso: sharkos.bin grub.cfg
 	grub-mkrescue -o sharkos.iso isodir
 
 clean:
-	rm -rf isodir arch drivers fs ui shell lib
-	rm -f *.o sharkos.bin sharkos.iso
+	rm -rf isodir arch drivers fs ui shell lib sharkscript
+	rm -f *.o sharkos.bin sharkos.iso sharkscript
 
 .PHONY: all clean $(DIRS)

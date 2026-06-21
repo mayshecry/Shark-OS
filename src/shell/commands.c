@@ -1,4 +1,5 @@
 #include "kernel.h"
+#include "sharkscript.h"
 
 void print_prompt() {
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_BROWN, VGA_COLOR_BLACK));
@@ -124,6 +125,14 @@ void execute_command(char* cmd) {
             t = t->next;
         }
         spin_unlock(&task_list_lock);
+    } else if (strcmp(cmd_name, "shs") == 0) {
+        /* Run a .shx script using the built-in interpreter */
+        if (strcmp(args, "") == 0) {
+            terminal_writestring("Usage: shs <script.shx>\n");
+        } else {
+            shs_init_engine();
+            shs_run_file(args);
+        }
     } else {
         struct fs_node* bin = search_path(cmd_name);
         if (bin) {

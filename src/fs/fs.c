@@ -55,15 +55,7 @@ void fs_initialize() {
     create_node("Drivers", FS_DIRECTORY, system);
     create_node("Kernel.sys", FS_FILE, system);
 
-    struct fs_node* shs_bin = create_node("shs", FS_FILE, bin_dir);
-    if (shs_bin) {
-        extern unsigned char _binary_sharkscript_start[];
-        extern unsigned char _binary_sharkscript_end[];
-        size_t size = (size_t)(_binary_sharkscript_end - _binary_sharkscript_start);
-        if (size > MAX_FILE_CONTENT_SIZE) size = MAX_FILE_CONTENT_SIZE;
-        for (size_t i = 0; i < size; i++) {
-            shs_bin->content[i] = _binary_sharkscript_start[i];
-        }
-        shs_bin->content_len = (int)size;
-    }
+    /* SHS interpreter is now built directly into the kernel source.
+     * Use: shs <script.shx> from the shell to run .shx scripts. */
+    create_node("shs", FS_FILE, bin_dir);
 }
