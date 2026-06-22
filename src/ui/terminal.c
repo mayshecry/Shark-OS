@@ -3,13 +3,10 @@
 void ui_init_metrics(void) {
     uint32_t w = (uint32_t)screen_width;
     uint32_t h = (uint32_t)screen_height;
-
-    /* Auto-scale font based on resolution */
     if (w >= 1920) font_scale = 2;
     else if (w >= 1280) font_scale = 2;
     else if (w >= 800) font_scale = 1;
     else font_scale = 1;
-    /* Clamp for very small or large displays */
     if (font_scale < 1) font_scale = 1;
     if (font_scale > 3) font_scale = 3;
 
@@ -152,12 +149,34 @@ void terminal_write_char_internal(char c) {
     }
 }
 
+void draw_cursor(void) {
+    uint32_t x = col_px(terminal_column);
+    uint32_t y = row_px(terminal_row);
+    uint32_t stride = screen_pitch / 4;
+    uint32_t scale = font_scale;
+    for (uint32_t sy = 0; sy < font_cell_h; sy++) {
+        uint32_t py = y + sy;
+        if (py >= screen_height) continue;
+        uint32_t* row_ptr = &lfbptr[py * stride + x];
+        for (uint32_t sx = 0; sx < scale * 2; sx++) {
+            if (x + sx < screen_width) {
+                row_ptr[sx] = UI_ACCENT;
+            }
+        }
+    }
+}
+
 void terminal_putchar_cli(char c) {
     if (c == '\n') {
+        /* Erase cursor at current position before newline */
+        draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
+        return;
     }
     if (c == '\b') {
         if (command_index > 0) {
             command_index--;
+            /* Erase cursor at current position first */
+            draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
             if (terminal_column > panes[active_pane].col_start) {
                 terminal_column--;
             } else if (terminal_row > content_first_row) {
@@ -165,7 +184,11 @@ void terminal_putchar_cli(char c) {
                 terminal_column = panes[active_pane].col_end - 1;
             }
             draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
+        } else {
+            /* No characters to delete, but still erase cursor at current position */
+            draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
         }
+        draw_cursor();
         return;
     }
     if (c == '\t') {
@@ -176,6 +199,7 @@ void terminal_putchar_cli(char c) {
         command_buffer[command_index++] = c;
     }
     terminal_write_char_internal(c);
+    draw_cursor();
 }
 
 void terminal_putchar_editor(char c) {
@@ -190,6 +214,8 @@ void terminal_putchar_editor(char c) {
         return;
     }
     if (c == '\b') {
+        /* Erase cursor at current position first */
+        draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
         if (editor_buffer_idx > 0) {
             editor_buffer_idx--;
         }
@@ -200,6 +226,7 @@ void terminal_putchar_editor(char c) {
             terminal_column = panes[active_pane].col_end - 1;
         }
         draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
+        draw_cursor();
         return;
     }
     if (c == '\t') {
@@ -210,6 +237,7 @@ void terminal_putchar_editor(char c) {
         editor_buffer[editor_buffer_idx++] = c;
     }
     terminal_write_char_internal(c);
+    draw_cursor();
 }
 
 void terminal_putchar(char c) {

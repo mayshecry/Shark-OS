@@ -9,6 +9,7 @@ void print_prompt() {
     terminal_writestring("> ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     panes[active_pane].prompt_end_col = terminal_column;
+    draw_cursor();
 }
 
 static void print_tree(struct fs_node* node, int depth) {
@@ -55,9 +56,48 @@ void execute_command(char* cmd) {
             else terminal_writestring("Directory not found.");
         }
     } else if (strcmp(cmd_name, "cat") == 0) {
-        struct fs_node* target = find_node(current_dir, args);
-        if (target && target->type == FS_FILE) terminal_writestring(target->content);
-        else terminal_writestring("File not found.");
+        if (strcasecmp(args, "cpuinfo") == 0 || (strchr(args, '/') && strstr(args, "cpuinfo"))) {
+            char cpu_model[49];
+            get_cpu_model(cpu_model);
+            terminal_writestring("processor\t: 0\n");
+            terminal_writestring("vendor_id\t: GenuineIntel\n");
+            terminal_writestring("cpu family\t: 6\n");
+            terminal_writestring("model\t\t: 42\n");
+            terminal_writestring("model name\t: ");
+            terminal_writestring(cpu_model);
+            terminal_writestring("\n");
+            terminal_writestring("stepping\t: 7\n");
+            terminal_writestring("cpu MHz\t\t: 2394.466\n");
+            terminal_writestring("cache size\t: 6144 KB\n");
+            terminal_writestring("fpu\t\t: yes\n");
+            terminal_writestring("fpu_exception\t: yes\n");
+            terminal_writestring("cpuid level\t: 5\n");
+            terminal_writestring("wp\t\t: yes\n");
+            terminal_writestring("flags\t\t: fpu vme de pse tsc msr pae mce cx8 apic\n");
+        } else if (strcasecmp(args, "meminfo") == 0 || (strchr(args, '/') && strstr(args, "meminfo"))) {
+            char buf[64];
+            uint32_t total_kb = (uint32_t)total_system_memory;
+            uint32_t free_kb = (uint32_t)(total_system_memory * 3 / 4);
+            uint32_t avail_kb = (uint32_t)(total_system_memory * 7 / 8);
+            uint32_t buffers_kb = (uint32_t)(total_system_memory / 16);
+            uint32_t cached_kb = (uint32_t)(total_system_memory / 8);
+            terminal_writestring("MemTotal:\t");
+            int_to_string(total_kb, buf); terminal_writestring(buf); terminal_writestring(" kB\n");
+            terminal_writestring("MemFree:\t");
+            int_to_string(free_kb, buf); terminal_writestring(buf); terminal_writestring(" kB\n");
+            terminal_writestring("MemAvailable:\t");
+            int_to_string(avail_kb, buf); terminal_writestring(buf); terminal_writestring(" kB\n");
+            terminal_writestring("Buffers:\t");
+            int_to_string(buffers_kb, buf); terminal_writestring(buf); terminal_writestring(" kB\n");
+            terminal_writestring("Cached:\t");
+            int_to_string(cached_kb, buf); terminal_writestring(buf); terminal_writestring(" kB\n");
+            terminal_writestring("SwapTotal:\t0 kB\n");
+            terminal_writestring("SwapFree:\t0 kB\n");
+        } else {
+            struct fs_node* target = find_node(current_dir, args);
+            if (target && target->type == FS_FILE) terminal_writestring(target->content);
+            else terminal_writestring("File not found.");
+        }
     } else if (strcmp(cmd_name, "touch") == 0) {
         if (find_node(current_dir, args)) terminal_writestring("File already exists.");
         else create_node(args, FS_FILE, current_dir);
@@ -71,6 +111,15 @@ void execute_command(char* cmd) {
             terminal_writestring(editor_target_file->name);
             terminal_writestring("\nPress ESC to save and exit.\n\n");
             editor_buffer_idx = 0;
+            if (editor_target_file->content_len > 0) {
+                for (int ei = 0; ei < editor_target_file->content_len; ei++) {
+                    char c = editor_target_file->content[ei];
+                    if (editor_buffer_idx < sizeof(editor_buffer) - 1) {
+                        editor_buffer[editor_buffer_idx++] = c;
+                    }
+                    terminal_write_char_internal(c);
+                }
+            }
         } else terminal_writestring("File not found.");
     } else if (strcmp(cmd_name, "whoami") == 0) {
         terminal_writestring("sharkuser");
@@ -84,6 +133,204 @@ void execute_command(char* cmd) {
     } else if (strcmp(cmd_name, "clear") == 0 || strcmp(cmd_name, "cls") == 0) {
         terminal_clear();
         return;
+    } else if (strcmp(cmd_name, "credits") == 0) {
+        uint8_t m = VGA_COLOR_LIGHT_MAGENTA;
+        uint8_t c = VGA_COLOR_LIGHT_CYAN;
+        uint8_t g = VGA_COLOR_LIGHT_GREEN;
+        uint8_t y = VGA_COLOR_LIGHT_BROWN;
+        uint8_t d = VGA_COLOR_DARK_GREY;
+
+        terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
+        terminal_writestring("\n  ╔══════════════════════════════════════╗\n");
+        terminal_writestring("  ║          SharkOS Credits             ║\n");
+        terminal_writestring("  ╚══════════════════════════════════════╝\n\n");
+
+        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
+        terminal_writestring("  Developer\n");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("  ─────────\n");
+        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
+        terminal_writestring("   Mayshecry");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("  —  Lead Developer & Creator of SharkOS\n\n");
+
+        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
+        terminal_writestring("  Bughunters\n");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("  ───────────\n");
+        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
+        terminal_writestring("   staxx.cc");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("  —  Finding the editor bugs\n\n");
+
+        terminal_set_color(vga_entry_color(y, VGA_COLOR_BLACK));
+        terminal_writestring("  ═══════════════════════════════════════\n");
+        terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
+        terminal_writestring("  github.com/mayshecry/sharkos\n\n");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+    } else if (strcmp(cmd_name, "kernelinfo") == 0) {
+        uint8_t m = VGA_COLOR_LIGHT_MAGENTA;
+        uint8_t c = VGA_COLOR_LIGHT_CYAN;
+        uint8_t g = VGA_COLOR_LIGHT_GREEN;
+        uint8_t y = VGA_COLOR_LIGHT_BROWN;
+        uint8_t d = VGA_COLOR_DARK_GREY;
+
+        terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
+        terminal_writestring("\n  ╔══════════════════════════════════════╗\n");
+        terminal_writestring("  ║         SharkOS Kernel Info          ║\n");
+        terminal_writestring("  ╚══════════════════════════════════════╝\n\n");
+
+        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
+        terminal_writestring("  Architecture\n");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("  ────────────\n");
+        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
+        terminal_writestring("   Monolithic x86 (32-bit i686)\n");
+        terminal_writestring("   Protected mode with paging\n");
+        terminal_writestring("   Custom bootloader (GRUB multiboot)\n\n");
+
+        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
+        terminal_writestring("  How It Works\n");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("  ────────────\n");
+        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
+        terminal_writestring("   Boot: GRUB loads kernel into memory\n");
+        terminal_writestring("   Init: kmain() sets up framebuffer, memory\n");
+        terminal_writestring("   CPU:  Descriptor tables, interrupts (IDT)\n");
+        terminal_writestring("   Mem:  Physical memory manager (PMM)\n");
+        terminal_writestring("   FS:   In-memory virtual filesystem\n");
+        terminal_writestring("   UI:   Direct framebuffer graphics\n");
+        terminal_writestring("   Shell: Command interpreter with editor\n\n");
+
+        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
+        terminal_writestring("  Components\n");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("  ──────────\n");
+        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
+        terminal_writestring("   SHKRNL    — Kernel core & boot\n");
+        terminal_writestring("   sharkfs   — Virtual filesystem\n");
+        terminal_writestring("   shproc    — Process management\n");
+        terminal_writestring("   shnet     — Network stack (RTL8139)\n");
+        terminal_writestring("   shinput   — Keyboard & mouse input\n");
+        terminal_writestring("   shsound   — Audio subsystem\n\n");
+
+        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
+        terminal_writestring("  Features\n");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("  ────────\n");
+        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
+        terminal_writestring("   [x] Graphical terminal with themes\n");
+        terminal_writestring("   [x] Mouse support & tiling panes\n");
+        terminal_writestring("   [x] Built-in text editor\n");
+        terminal_writestring("   [x] ELF executable loader\n");
+        terminal_writestring("   [x] SharkScript interpreter (.shx)\n");
+        terminal_writestring("   [x] PCI device enumeration\n");
+        terminal_writestring("   [x] Network ping (ICMP)\n\n");
+
+        terminal_set_color(vga_entry_color(y, VGA_COLOR_BLACK));
+        terminal_writestring("  ═══════════════════════════════════════\n");
+        terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
+        terminal_writestring("  Version: SHKRNL 0.5 | SharkOS v0.5\n\n");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+    } else if (strcmp(cmd_name, "credits") == 0) {
+        uint8_t m = VGA_COLOR_LIGHT_MAGENTA;
+        uint8_t c = VGA_COLOR_LIGHT_CYAN;
+        uint8_t g = VGA_COLOR_LIGHT_GREEN;
+        uint8_t y = VGA_COLOR_LIGHT_BROWN;
+        uint8_t d = VGA_COLOR_DARK_GREY;
+
+        terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
+        terminal_writestring("\n  ╔══════════════════════════════════════╗\n");
+        terminal_writestring("  ║          SharkOS Credits             ║\n");
+        terminal_writestring("  ╚══════════════════════════════════════╝\n\n");
+
+        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
+        terminal_writestring("  Developer\n");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("  ─────────\n");
+        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
+        terminal_writestring("   Mayshecry");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("  —  Lead Developer & Creator of SharkOS\n\n");
+
+        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
+        terminal_writestring("  Bughunters\n");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("  ───────────\n");
+        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
+        terminal_writestring("   staxx.cc");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("  —  Finding the editor bugs\n\n");
+
+        terminal_set_color(vga_entry_color(y, VGA_COLOR_BLACK));
+        terminal_writestring("  ═══════════════════════════════════════\n");
+        terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
+        terminal_writestring("  github.com/mayshecry/sharkos\n\n");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+    } else if (strcmp(cmd_name, "kernelinfo") == 0) {
+        uint8_t m = VGA_COLOR_LIGHT_MAGENTA;
+        uint8_t c = VGA_COLOR_LIGHT_CYAN;
+        uint8_t g = VGA_COLOR_LIGHT_GREEN;
+        uint8_t y = VGA_COLOR_LIGHT_BROWN;
+        uint8_t d = VGA_COLOR_DARK_GREY;
+
+        terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
+        terminal_writestring("\n  ╔══════════════════════════════════════╗\n");
+        terminal_writestring("  ║         SharkOS Kernel Info          ║\n");
+        terminal_writestring("  ╚══════════════════════════════════════╝\n\n");
+
+        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
+        terminal_writestring("  Architecture\n");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("  ────────────\n");
+        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
+        terminal_writestring("   Monolithic x86 (32-bit i686)\n");
+        terminal_writestring("   Protected mode with paging\n");
+        terminal_writestring("   Custom bootloader (GRUB multiboot)\n\n");
+
+        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
+        terminal_writestring("  How It Works\n");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("  ────────────\n");
+        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
+        terminal_writestring("   Boot: GRUB loads kernel into memory\n");
+        terminal_writestring("   Init: kmain() sets up framebuffer, memory\n");
+        terminal_writestring("   CPU:  Descriptor tables, interrupts (IDT)\n");
+        terminal_writestring("   Mem:  Physical memory manager (PMM)\n");
+        terminal_writestring("   FS:   In-memory virtual filesystem\n");
+        terminal_writestring("   UI:   Direct framebuffer graphics\n");
+        terminal_writestring("   Shell: Command interpreter with editor\n\n");
+
+        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
+        terminal_writestring("  Components\n");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("  ──────────\n");
+        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
+        terminal_writestring("   SHKRNL    — Kernel core & boot\n");
+        terminal_writestring("   sharkfs   — Virtual filesystem\n");
+        terminal_writestring("   shproc    — Process management\n");
+        terminal_writestring("   shnet     — Network stack (RTL8139)\n");
+        terminal_writestring("   shinput   — Keyboard & mouse input\n");
+        terminal_writestring("   shsound   — Audio subsystem\n\n");
+
+        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
+        terminal_writestring("  Features\n");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("  ────────\n");
+        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
+        terminal_writestring("   [x] Graphical terminal with themes\n");
+        terminal_writestring("   [x] Mouse support & tiling panes\n");
+        terminal_writestring("   [x] Built-in text editor\n");
+        terminal_writestring("   [x] ELF executable loader\n");
+        terminal_writestring("   [x] SharkScript interpreter (.shx)\n");
+        terminal_writestring("   [x] PCI device enumeration\n");
+        terminal_writestring("   [x] Network ping (ICMP)\n\n");
+
+        terminal_set_color(vga_entry_color(y, VGA_COLOR_BLACK));
+        terminal_writestring("  ═══════════════════════════════════════\n");
+        terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
+        terminal_writestring("  Version: SHKRNL 0.5 | SharkOS v0.5\n\n");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
     } else if (strcmp(cmd_name, "help") == 0) {
         uint8_t m = VGA_COLOR_LIGHT_MAGENTA;
         uint8_t c = VGA_COLOR_LIGHT_CYAN;
@@ -140,6 +387,7 @@ void execute_command(char* cmd) {
         terminal_writestring("\n");
         terminal_writestring("    whoami    "); terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK)); terminal_writestring("Display current user\n"); terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
         terminal_writestring("    sysinfo   "); terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK)); terminal_writestring("Show system information\n"); terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
+        terminal_writestring("    kernelinfo"); terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK)); terminal_writestring("Show kernel architecture & info\n"); terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
         terminal_writestring("    colors    "); terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK)); terminal_writestring("Display color palette\n"); terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
         terminal_writestring("    lspci     "); terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK)); terminal_writestring("List PCI devices\n"); terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
         terminal_writestring("    ps        "); terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK)); terminal_writestring("List processes\n"); terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
@@ -163,6 +411,7 @@ void execute_command(char* cmd) {
         terminal_writestring("\n");
         terminal_writestring("    clear/cls "); terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK)); terminal_writestring("Clear the terminal\n"); terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
         terminal_writestring("    colors    "); terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK)); terminal_writestring("Show 16-color palette\n"); terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
+        terminal_writestring("    credits   "); terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK)); terminal_writestring("Show credits\n"); terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
         terminal_writestring("    help      "); terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK)); terminal_writestring("Show this menu\n"); terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
 
         terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
@@ -343,7 +592,7 @@ void execute_command(char* cmd) {
     } else if (strcmp(cmd_name, "uname") == 0) {
         terminal_writestring("SharkOS");
         if (strcmp(args, "-a") == 0) {
-            terminal_writestring(" v0.1 i686 shark@SharkOS");
+            terminal_writestring(" v0.5 i686 shark@SharkOS");
         }
     } else if (strcmp(cmd_name, "hostname") == 0) {
         terminal_writestring("SharkOS");

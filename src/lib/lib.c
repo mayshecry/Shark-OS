@@ -17,8 +17,42 @@ int strcmp(const char* s1, const char* s2) {
     return *(unsigned char*)s1 - *(unsigned char*)s2;
 }
 
+int strcasecmp(const char* s1, const char* s2) {
+    while (*s1 && *s2) {
+        char c1 = *s1;
+        char c2 = *s2;
+        if (c1 >= 'A' && c1 <= 'Z') c1 += 32;
+        if (c2 >= 'A' && c2 <= 'Z') c2 += 32;
+        if (c1 != c2) return (unsigned char)c1 - (unsigned char)c2;
+        s1++; s2++;
+    }
+    if (*s1) return (unsigned char)*s1;
+    if (*s2) return -(unsigned char)*s2;
+    return 0;
+}
+
 void strcpy(char* dest, const char* src) {
     while ((*dest++ = *src++));
+}
+
+char* strchr(const char* s, int c) {
+    while (*s) {
+        if (*s == (char)c) return (char*)s;
+        s++;
+    }
+    if (c == '\0') return (char*)s;
+    return NULL;
+}
+
+char* strstr(const char* haystack, const char* needle) {
+    if (!*needle) return (char*)haystack;
+    for (; *haystack; haystack++) {
+        const char* h = haystack;
+        const char* n = needle;
+        while (*h && *n && *h == *n) { h++; n++; }
+        if (!*n) return (char*)haystack;
+    }
+    return NULL;
 }
 
 void* memcpy(void* dest, const void* src, size_t n) {

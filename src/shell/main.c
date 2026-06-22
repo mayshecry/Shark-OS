@@ -45,11 +45,11 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     terminal_column = 0;
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
     char buf[64];
-    terminal_writestring("SharkOS v0.1 [");
+    terminal_writestring("SharkOS v0.5 [");
     hex_to_string((uint32_t)total_system_memory >> 20, buf);
     terminal_writestring(buf);
     terminal_writestring(" MB RAM]\nBooting SHKRNL...\n");
-    boot_print("[    0.000000] SHKRNL version 0.1 (root@sharkos) (gcc)\n");
+    boot_print("[    0.000000] SHKRNL version 0.5 (root@sharkos) (gcc)\n");
     char cpu_model[49];
     get_cpu_model(cpu_model);
     boot_print(cpu_model);
@@ -190,16 +190,14 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         }
         terminal_putchar_cli(c);
         if (c == '\n') {
-            if (command_index > 0) {
-                command_buffer[command_index - 1] = '\0';
-            } else {
-                command_buffer[0] = '\0';
-            }
-            execute_command(command_buffer);
-            command_index = 0;
-            command_buffer[0] = '\0';
+            command_buffer[command_index] = '\0';
+        execute_command(command_buffer);
+        command_index = 0;
+        command_buffer[0] = '\0';
+        if (current_kernel_mode == KERNEL_MODE_CLI) {
             terminal_writestring("\n");
             print_prompt();
+        }
         }
     }
 }
