@@ -8,7 +8,7 @@ A hobby 32-bit x86 operating system built from scratch in C, featuring a custom 
 ![SharkOS on real hardware](media/tilingonrealhardware.png)
 
 **Boot on real hardware**  
-<video src="media/hwdboot.mp4" controls width="100%"></video>
+![SharkOS on real hardware](media/hwdboot.mp4)
 
 ### VirtualBox (8 MB RAM)
 ![SharkOS running in VirtualBox with only 8 MB RAM](media/vbox.png)
