@@ -218,7 +218,7 @@ void* memcpy(void* dest, const void* src, size_t n);
 void* memset(void* s, int c, size_t n);
 size_t strlen(const char* str);
 void hex_to_string(uint32_t value, char* buffer);
-void int_to_string(uint64_t value, char* buffer);
+void int_to_string(uint32_t value, char* buffer);
 void delay_ms(uint32_t ms);
 
 void init_descriptor_tables(void);

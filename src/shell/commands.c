@@ -95,7 +95,6 @@ void execute_command(char* cmd) {
         uint8_t b = VGA_COLOR_LIGHT_BLUE;
         int col;
 
-        // Draw header box
         terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
         terminal_writestring("\n  ");
         terminal_set_color(vga_entry_color(y, VGA_COLOR_BLACK));
@@ -106,7 +105,6 @@ void execute_command(char* cmd) {
         for (col = 0; col < 20; col++) terminal_writestring("-");
         terminal_set_color(vga_entry_color(y, VGA_COLOR_BLACK));
 
-        // Filesystem section
         terminal_writestring("\n\n");
         terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
         terminal_writestring("  ");
@@ -131,7 +129,6 @@ void execute_command(char* cmd) {
         terminal_writestring("    pwd       "); terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK)); terminal_writestring("Print working directory\n"); terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
         terminal_writestring("    tree      "); terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK)); terminal_writestring("Show directory tree\n"); terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
 
-        // System section
         terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
         terminal_writestring("  ");
         terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
@@ -155,7 +152,6 @@ void execute_command(char* cmd) {
         terminal_writestring("    ping <h>  "); terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK)); terminal_writestring("Ping a host\n"); terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
         terminal_writestring("    shs <f>   "); terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK)); terminal_writestring("Run .shx script\n");
 
-        // Apps section
         terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
         terminal_writestring("  ");
         terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
@@ -169,7 +165,6 @@ void execute_command(char* cmd) {
         terminal_writestring("    colors    "); terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK)); terminal_writestring("Show 16-color palette\n"); terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
         terminal_writestring("    help      "); terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK)); terminal_writestring("Show this menu\n"); terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
 
-        // Power section
         terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
         terminal_writestring("  ");
         terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
@@ -182,7 +177,6 @@ void execute_command(char* cmd) {
         terminal_writestring("    poweroff  "); terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK)); terminal_writestring("Shut down the system\n"); terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
         terminal_writestring("    reboot    "); terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK)); terminal_writestring("Reboot the system\n"); terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
 
-        // Keyboard shortcuts section
         terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
         terminal_writestring("  ");
         terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
@@ -203,7 +197,7 @@ void execute_command(char* cmd) {
         terminal_writestring("\n  ");
         for (col = 0; col < 36; col++) terminal_writestring("-");
         terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
-        terminal_writestring("\n  For more info visit github.com/mayshecry/ligmashark\n\n");
+        terminal_writestring("\n  For more info visit github.com/mayshecry/sharkos\n\n");
         terminal_set_color(old_color);
     } else if (strcmp(cmd_name, "lspci") == 0) {
         pci_list_devices();

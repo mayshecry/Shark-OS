@@ -4,11 +4,14 @@ void ui_init_metrics(void) {
     uint32_t w = (uint32_t)screen_width;
     uint32_t h = (uint32_t)screen_height;
 
-    uint32_t scale_w = w / 960;
-    uint32_t scale_h = h / 600;
-    font_scale = scale_w > scale_h ? scale_w : scale_h;
+    /* Auto-scale font based on resolution */
+    if (w >= 1920) font_scale = 2;
+    else if (w >= 1280) font_scale = 2;
+    else if (w >= 800) font_scale = 1;
+    else font_scale = 1;
+    /* Clamp for very small or large displays */
     if (font_scale < 1) font_scale = 1;
-    if (font_scale > 4) font_scale = 4;
+    if (font_scale > 3) font_scale = 3;
 
     font_cell_w = 8 * font_scale;
     font_cell_h = 8 * font_scale;
@@ -18,8 +21,10 @@ void ui_init_metrics(void) {
     ui_footer_y = h - ui_footer_h;
 
     term_cols = w / font_cell_w;
-    if (term_cols < 40) term_cols = 40;
+    if (term_cols < 20) term_cols = 20;
+    if (term_cols > 160) term_cols = 160;
     term_max_row = (ui_footer_y / font_cell_h) - 1;
+    if (term_max_row < 3) term_max_row = 3;
     content_first_row = ui_chrome_top / font_cell_h;
 }
 

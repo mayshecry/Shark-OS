@@ -1,47 +1,38 @@
-/*
- * SharkOS Boot Assembly
- * ---------------------
- * This 32-bit Multiboot kernel boots on BOTH 32-bit (i686) and 64-bit (x86_64) CPUs.
- * GRUB loads the kernel in 32-bit protected mode regardless of the host CPU's native mode.
- * On x86_64 processors, GRUB transitions from long mode to 32-bit protected mode before
- * jumping to _start, so no 64-bit specific code is needed here.
- */
+/* SharkOS Boot Assembly */
+/* Multiboot header with auto-detected resolution (let GRUB decide) */
 
-/* Declare constants for the multiboot header. */
-.set ALIGN,    1<<0             /* align loaded modules on page boundaries */
-.set MEMINFO,  1<<1             /* provide memory map */
-.set GRAPHICS, 1<<2             /* request graphics mode */
+.set ALIGN,    1<<0
+.set MEMINFO,  1<<1
+.set GRAPHICS, 1<<2
 .set FLAGS,    ALIGN | MEMINFO | GRAPHICS
-.set MAGIC,    0x1BADB002       /* 'magic number' lets bootloader find the header */
-.set CHECKSUM, -(MAGIC + FLAGS) /* checksum of above, to prove we are multiboot */
+.set MAGIC,    0x1BADB002
+.set CHECKSUM, -(MAGIC + FLAGS)
 
 .section .multiboot
 .align 4
 .long MAGIC
 .long FLAGS
 .long CHECKSUM
-/* Multiboot header address fields (required as padding to reach offset 32 for graphics fields) */
 .long 0, 0, 0, 0, 0
-/* Graphics mode fields */
-.long 0    /* 0 = Linear Graphics Mode */
-.long 1920 /* Width */
-.long 1080 /* Height */
-.long 32   /* Depth (Bits per pixel) */
+.long 0    /* Linear Graphics Mode */
+.long 0    /* Width  (0 = auto, let GRUB/BIOS choose) */
+.long 0    /* Height (0 = auto) */
+.long 32   /* Depth */
 
 .section .bss
 .align 4096
 .align 16
 stack_bottom:
-.skip 16384 # 16 KiB
+.skip 16384
 .global stack_top
 stack_top:
 
 .section .data
 .align 4
 gdt64:
-    .quad 0x0000000000000000         # Null
-    .quad 0x00cf9a000000ffff         # Code
-    .quad 0x00cf92000000ffff         # Data
+    .quad 0x0000000000000000
+    .quad 0x00cf9a000000ffff
+    .quad 0x00cf92000000ffff
 gdt64_ptr32:
     .word . - gdt64 - 1
     .long gdt64
@@ -52,11 +43,9 @@ gdt64_ptr32:
 
 _start:
     .code32
-    /* Save Multiboot magic and info before we clobber them */
     mov %eax, %esi
     mov %ebx, %edx
 
-    /* Zero out BSS */
     .extern _bss_start
     .extern _bss_end
     mov $_bss_start, %edi
@@ -65,10 +54,9 @@ _start:
     xor %eax, %eax
     rep stosb
 
-    /* Now that BSS is clear, setup stack and push arguments */
     mov $stack_top, %esp
-    push %edx            /* Arg 2: Multiboot Info Pointer */
-    push %esi            /* Arg 1: Multiboot Magic */
+    push %edx
+    push %esi
 
     lgdt gdt64_ptr32
     ljmp $0x08, $flush_segments
@@ -159,7 +147,7 @@ ISR_NOERRCODE 29
 ISR_ERRCODE   30
 ISR_NOERRCODE 31
 
-ISR_NOERRCODE 128 /* System Call Interrupt 0x80 */
+ISR_NOERRCODE 128
 
 IRQ 0, 32
 IRQ 1, 33

@@ -7,10 +7,10 @@ OBJCOPY = $(PREFIX)objcopy
 # -mno-80387 -mno-mmx -mno-sse -mno-sse2: Prevents the compiler from using registers that are disabled at boot.
 # This is the most common cause of "Triple Faults" in VirtualBox.
 CFLAGS = -m32 -std=gnu99 -ffreestanding -O2 -Wall -Wextra -fno-pie -fno-stack-protector \
-         -fno-asynchronous-unwind-tables -mno-80387 -mno-mmx -mno-sse -mno-sse2 -Iinclude
+         -fno-asynchronous-unwind-tables -mno-80387 -mno-mmx -mno-sse -mno-sse2 \
+         -fomit-frame-pointer -fmerge-all-constants -Iinclude
 ASFLAGS = --32
-# -no-pie prevents the linker from trying to create a PIE executable
-LDFLAGS = -m32 -ffreestanding -O2 -nostdlib -lgcc -no-pie -Wl,-m,elf_i386
+LDFLAGS = -m32 -ffreestanding -O2 -nostdlib -lgcc -no-pie -Wl,-m,elf_i386 -Wl,-gc-sections
 
 DIRS = arch drivers fs ui shell lib sharkscript
 

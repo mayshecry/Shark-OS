@@ -14,49 +14,41 @@ void show_fastfetch(void) {
     char buf[32];
     int i;
 
-    // Header
     terminal_set_color(vga_entry_color(INFO_HEADER_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  shark@SharkOS\n");
 
-    // Separator
     terminal_set_color(vga_entry_color(INFO_DIM_COLOR, VGA_COLOR_BLACK));
     for (i = 0; i < 28; i++) terminal_writestring("-");
     terminal_writestring("\n");
 
-    // OS
     terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  OS       ");
     terminal_set_color(vga_entry_color(INFO_VALUE_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("SharkOS v0.1\n");
 
-    // Host
     terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  Host     ");
     terminal_set_color(vga_entry_color(INFO_VALUE_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("The Sharkslayer\n");
 
-    // Kernel
     terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  Kernel   ");
     terminal_set_color(vga_entry_color(INFO_VALUE_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("SharkOS v0.1 i686\n");
 
-    // CPU
     terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  CPU      ");
     terminal_set_color(vga_entry_color(INFO_VALUE_COLOR, VGA_COLOR_BLACK));
     terminal_writestring(cpu_model);
     terminal_writestring("\n");
 
-    // Memory
     terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  Memory   ");
     terminal_set_color(vga_entry_color(INFO_VALUE_COLOR, VGA_COLOR_BLACK));
-    int_to_string(total_system_memory / 1024 / 1024, buf);
+    int_to_string(total_system_memory / 1024, buf);
     terminal_writestring(buf);
     terminal_writestring(" MB\n");
 
-    // Display
     terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  Display  ");
     terminal_set_color(vga_entry_color(INFO_VALUE_COLOR, VGA_COLOR_BLACK));
@@ -64,7 +56,6 @@ void show_fastfetch(void) {
     int_to_string(screen_height, buf); terminal_writestring(buf);
     terminal_writestring("\n");
 
-    // Network
     terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  Network  ");
     terminal_set_color(vga_entry_color(rtl_io_base != 0 ? INFO_OK_COLOR : INFO_VALUE_COLOR, VGA_COLOR_BLACK));
@@ -76,12 +67,10 @@ void show_fastfetch(void) {
     terminal_set_color(vga_entry_color(INFO_VALUE_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("i686\n");
 
-    // Separator
     terminal_set_color(vga_entry_color(INFO_DIM_COLOR, VGA_COLOR_BLACK));
     for (i = 0; i < 28; i++) terminal_writestring("-");
     terminal_writestring("\n");
 
-    // Footer hint
     terminal_set_color(vga_entry_color(INFO_OK_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  help=Commands  ?=FAQ  +=Split  -=Close  TAB=Focus  s=Settings\n");
 

@@ -51,8 +51,8 @@ void hex_to_string(uint32_t value, char* buffer) {
     }
 }
 
-void int_to_string(uint64_t value, char* buffer) {
-    char temp[21];
+void int_to_string(uint32_t value, char* buffer) {
+    char temp[11];
     int i = 0;
     if (value == 0) {
         buffer[0] = '0';
