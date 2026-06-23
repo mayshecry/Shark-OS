@@ -244,9 +244,66 @@ void terminal_putchar(char c) {
     terminal_write_char_internal(c);
 }
 
+void scrollback_save_line(const char* text, uint8_t color) {
+    if (scrollback.count >= SCROLLBACK_LINES) {
+        scrollback.top = (scrollback.top + 1) % SCROLLBACK_LINES;
+        scrollback.count--;
+    }
+    int idx = (scrollback.top + scrollback.count) % SCROLLBACK_LINES;
+    int len = 0;
+    while (text[len] != '\0' && len < SCROLLBACK_COLS - 1) {
+        scrollback.lines[idx][len] = text[len];
+        scrollback.colors[idx][len] = color;
+        len++;
+    }
+    scrollback.lines[idx][len] = '\0';
+    scrollback.colors[idx][len] = color;
+    scrollback.count++;
+}
+
 void terminal_writestring(const char* data) {
+    static char line_buf[SCROLLBACK_COLS];
+    static int line_len = 0;
+    static uint8_t line_color = VGA_COLOR_WHITE;
+    
     for (size_t i = 0; data[i] != '\0'; i++) {
+        if (data[i] == '\n') {
+            line_buf[line_len] = '\0';
+            if (line_len > 0) {
+                scrollback_save_line(line_buf, line_color);
+            }
+            line_len = 0;
+            line_color = terminal_color;
+        } else {
+            if (line_len < SCROLLBACK_COLS - 1) {
+                line_buf[line_len++] = data[i];
+            }
+        }
         terminal_write_char_internal(data[i]);
+    }
+}
+
+void terminal_draw_scrollback(void) {
+    if (scrollback_offset == 0) return;
+    
+    uint32_t px_start = col_px(panes[active_pane].col_start);
+    uint32_t px_width = col_px(panes[active_pane].col_end - panes[active_pane].col_start);
+    uint32_t content_h = ui_footer_y - row_px(content_first_row);
+    draw_rect(px_start, row_px(content_first_row), px_width, content_h, UI_SURFACE);
+    
+    int visible_rows = term_max_row - content_first_row;
+    int start_line = scrollback.count - scrollback_offset - visible_rows + 1;
+    if (start_line < 0) start_line = 0;
+    
+    int row = content_first_row;
+    for (int i = start_line; i < scrollback.count && row < term_max_row; i++) {
+        int idx = (scrollback.top + i) % SCROLLBACK_LINES;
+        for (int c = 0; c < SCROLLBACK_COLS && scrollback.lines[idx][c] != '\0'; c++) {
+            if (c >= (int)(panes[active_pane].col_end - panes[active_pane].col_start)) break;
+            uint8_t col = scrollback.colors[idx][c];
+            terminal_putentryat(scrollback.lines[idx][c], col, panes[active_pane].col_start + c, row);
+        }
+        row++;
     }
 }
 

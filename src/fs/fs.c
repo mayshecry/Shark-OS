@@ -65,7 +65,14 @@ void fs_initialize() {
     struct fs_node* system = create_node("System", FS_DIRECTORY, root);
     struct fs_node* bin_dir = create_node("Bin", FS_DIRECTORY, system);
     create_node("Drivers", FS_DIRECTORY, system);
-    
+    create_node("Config", FS_DIRECTORY, system);
+    create_node("Logs", FS_DIRECTORY, system);
+    create_node("Modules", FS_DIRECTORY, system);
+    create_node("Proc", FS_DIRECTORY, system);
+    create_node("Security", FS_DIRECTORY, system);
+    create_node("Network", FS_DIRECTORY, system);
+    create_node("Boot", FS_DIRECTORY, system);
+
     struct fs_node* kernel_sys = create_node("Kernel.sys", FS_FILE, system);
     set_content(kernel_sys,
         "SHKRNL version 0.5 (root@sharkos) (gcc) #1 SMP PREEMPT_DYNAMIC\n"
@@ -111,7 +118,7 @@ void fs_initialize() {
 
     struct fs_node* version = create_node("version", FS_FILE, system);
     set_content(version,
-        "SharkOS v0.5\n"
+        "SharkOS V1\n"
         "Codename: Shark\n"
         "Kernel: SHKRNL 0.5\n"
         "Arch: i686\n"
@@ -154,6 +161,167 @@ void fs_initialize() {
         "SwapTotal:           0 kB\n"
         "SwapFree:            0 kB\n");
 
+    struct fs_node* hostname_f = create_node("hostname", FS_FILE, system);
+    set_content(hostname_f, "SharkOS\n");
+
+    struct fs_node* osrelease = create_node("os-release", FS_FILE, system);
+    set_content(osrelease,
+        "NAME=\"SharkOS\"\n"
+        "VERSION=\"0.5\"\n"
+        "ID=sharkos\n"
+        "PRETTY_NAME=\"SharkOS 0.5\"\n"
+        "HOME_URL=\"https://github.com/mayshecry/sharkos\"\n");
+
+    struct fs_node* uptime_f = create_node("uptime", FS_FILE, system);
+    set_content(uptime_f, "0\n");
+
+    struct fs_node* loadavg = create_node("loadavg", FS_FILE, system);
+    set_content(loadavg, "0.00 0.01 0.00 1/1 1\n");
+
+    struct fs_node* stat_f = create_node("stat", FS_FILE, system);
+    set_content(stat_f,
+        "cpu  1 0 2 100 0 0 0 0 0 0\n"
+        "intr 123 45 67 89\n"
+        "ctxt 4567\n"
+        "btime 1234567890\n"
+        "processes 12\n"
+        "procs_running 1\n"
+        "procs_blocked 0\n");
+
+    struct fs_node* partitions = create_node("partitions", FS_FILE, system);
+    set_content(partitions,
+        "major minor  #blocks  name\n"
+        "   1     0      65536 ram0\n"
+        "   8     0    1048576 sda\n"
+        "   8     1     524288 sda1\n"
+        "   8     2     524288 sda2\n");
+
+    struct fs_node* devices = create_node("devices", FS_FILE, system);
+    set_content(devices,
+        "Device list:\n"
+        "/dev/ram0  - System memory\n"
+        "/dev/sda   - Virtual disk\n"
+        "/dev/tty0  - Terminal\n"
+        "/dev/input/mouse0 - PS/2 Mouse\n"
+        "/dev/input/kbd0  - PS/2 Keyboard\n"
+        "/dev/net/rtl8139 - Ethernet adapter\n");
+
+    struct fs_node* interrupts = create_node("interrupts", FS_FILE, system);
+    set_content(interrupts,
+        "           CPU0\n"
+        "  0:        100    XT-PIC-XT  timer\n"
+        "  1:         50    XT-PIC-XT  keyboard\n"
+        "  2:          0    XT-PIC-XT  cascade\n"
+        "  8:          1    XT-PIC-XT  rtc\n"
+        " 12:         10    XT-PIC-XT  mouse\n"
+        " 14:         25    XT-PIC-XT  ata\n"
+        " 15:          0    XT-PIC-XT  ata\n");
+
+    struct fs_node* cmdline = create_node("cmdline", FS_FILE, system);
+    set_content(cmdline, "root=/dev/ram0 rw quiet splash\n");
+
+    struct fs_node* driver_info = create_node("driver_info", FS_FILE, system);
+    set_content(driver_info,
+        "Driver            Status   Version\n"
+        "shkbd             loaded   1.0\n"
+        "shmouse           loaded   1.0\n"
+        "shrtl8139         loaded   1.0\n"
+        "shpci             loaded   1.0\n"
+        "shata             absent   -\n");
+
+    struct fs_node* config_sys = create_node("sysconfig", FS_FILE, system);
+    set_content(config_sys,
+        "# System configuration\n"
+        "hostname=SharkOS\n"
+        "timezone=UTC\n"
+        "keymap=us\n"
+        "font=default\n"
+        "mouse_speed=2\n"
+        "theme=sharkos\n"
+        "resolution=1024x768\n"
+        "bpp=32\n");
+
+    struct fs_node* security_pol = create_node("security.pol", FS_FILE, system);
+    set_content(security_pol,
+        "# Security Policy\n"
+        "allow_exec=all\n"
+        "allow_net=trusted\n"
+        "audit_level=full\n"
+        "force_protect=enabled\n");
+
+    struct fs_node* net_config = create_node("netconfig", FS_FILE, system);
+    set_content(net_config,
+        "# Network Configuration\n"
+        "interface=eth0\n"
+        "dhcp=yes\n"
+        "address=10.0.2.15\n"
+        "netmask=255.255.255.0\n"
+        "gateway=10.0.2.1\n"
+        "dns=8.8.8.8\n"
+        "mac=DE:AD:BE:EF:00:01\n");
+
+    struct fs_node* fstab = create_node("fstab", FS_FILE, system);
+    set_content(fstab,
+        "# Filesystem table\n"
+        "ram0       /          sharkfs   defaults  0 0\n"
+        "proc       /System/Proc  proc      defaults  0 0\n"
+        "sys        /System    sysfs     defaults  0 0\n");
+
+    struct fs_node* syslog = create_node("syslog", FS_FILE, system);
+    set_content(syslog,
+        "[  OK  ] Started Kernel initialization.\n"
+        "[  OK  ] Mounted root filesystem.\n"
+        "[  OK  ] Started PCI enumeration.\n"
+        "[  OK  ] Loaded module: sharkfs\n"
+        "[  OK  ] Loaded module: shproc\n"
+        "[  OK  ] Started network interface eth0.\n"
+        "[  OK  ] Input devices initialized.\n"
+        "[  OK  ] System ready.\n");
+
+    struct fs_node* dmesg = create_node("dmesg", FS_FILE, system);
+    set_content(dmesg,
+        "[0.000000] SharkOS booting...\n"
+        "[0.000100] CPU: GenuineIntel i686\n"
+        "[0.000200] Memory: 128MB\n"
+        "[0.000300] APIC: enabled\n"
+        "[0.000400] PIC: remapped\n"
+        "[0.000500] PIT: 1000Hz\n"
+        "[0.000600] Keyboard: PS/2 detected\n"
+        "[0.000700] Mouse: PS/2 detected\n"
+        "[0.000800] PCI: 1 device(s) found\n"
+        "[0.000900] RTL8139: Ethernet at I/O 0xC000\n"
+        "[0.001000] Framebuffer: initialized\n"
+        "[0.001100] Shell: ready\n");
+
+    struct fs_node* boot_cfg = create_node("grub.cfg", FS_FILE, system);
+    set_content(boot_cfg,
+        "set default=0\n"
+        "set timeout=5\n"
+        "menuentry \"SharkOS\" {\n"
+        "  multiboot /boot/sharkos.bin\n"
+        "}\n");
+
+    struct fs_node* initrd = create_node("initrd.img", FS_FILE, system);
+    set_content(initrd,
+        "\x7F" "ELF...\n"
+        "SharkOS initial ramdisk\n"
+        "Version: 0.5\n"
+        "Contains: kernel modules\n");
+
+    struct fs_node* sysmap = create_node("System.map", FS_FILE, system);
+    set_content(sysmap,
+        "c0100000 T _start\n"
+        "c0100020 T kmain\n"
+        "c0100100 T init_descriptor_tables\n"
+        "c0100200 T pmm_init\n"
+        "c0100300 T terminal_initialize\n"
+        "c0100400 T keyboard_handler\n"
+        "c0100500 T mouse_handler\n"
+        "c0100600 T fs_initialize\n"
+        "c0100700 T execute_command\n"
+        "c0100800 T show_fastfetch\n"
+        "c0100900 T irq_handler\n"
+        "c0100a00 T syscall_handler\n");
 
     create_node("shs", FS_FILE, bin_dir);
 }

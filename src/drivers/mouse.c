@@ -4,7 +4,7 @@ mouse_state_t mouse_state;
 int mouse_cursor_x = 100;
 int mouse_cursor_y = 100;
 static int mouse_cycle = 0;
-static uint8_t mouse_packet[3];
+static uint8_t mouse_packet[4];
 
 void mouse_wait(void) {
     uint32_t timeout = 100000;
@@ -26,8 +26,6 @@ void mouse_handler(void) {
     mouse_cycle++;
 
     if (mouse_cycle == 3) {
-        mouse_cycle = 0;
-
         uint8_t flags = mouse_packet[0];
         int dx = (int)mouse_packet[1];
         int dy = (int)mouse_packet[2];
@@ -38,6 +36,7 @@ void mouse_handler(void) {
         mouse_state.buttons = flags & 0x07;
         mouse_state.dx = dx;
         mouse_state.dy = -dy;
+        mouse_state.wheel = 0;
 
         mouse_cursor_x += dx;
         mouse_cursor_y += dy;
@@ -49,6 +48,8 @@ void mouse_handler(void) {
 
         mouse_state.x = mouse_cursor_x;
         mouse_state.y = mouse_cursor_y;
+
+        mouse_cycle = 0;
     }
 }
 

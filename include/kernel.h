@@ -130,6 +130,7 @@ extern uint8_t* rx_buffer;
 extern uint8_t current_tx_buffer;
 extern uintptr_t free_memory_start;
 extern uintptr_t free_memory_end;
+extern char current_user[32];
 
 extern uint8_t font8x8[96][8];
 
@@ -167,6 +168,22 @@ extern pane_t panes[MAX_PANES];
 extern int pane_count;
 extern int active_pane;
 
+#define SCROLLBACK_LINES 500
+#define SCROLLBACK_COLS 160
+#define MAX_HISTORY 32
+typedef struct {
+    char lines[SCROLLBACK_LINES][SCROLLBACK_COLS];
+    uint8_t colors[SCROLLBACK_LINES][SCROLLBACK_COLS];
+    int count;
+    int top; /* index of oldest line */
+} scrollback_t;
+extern scrollback_t scrollback;
+extern int scrollback_offset; /* 0 = bottom, >0 = scrolled up */
+extern char command_history[MAX_HISTORY][80];
+extern int history_count;
+extern int history_index;
+extern volatile uint32_t uptime_ticks;
+
 #define terminal_row     (panes[active_pane].row)
 #define terminal_column  (panes[active_pane].col)
 #define terminal_color   (panes[active_pane].color)
@@ -186,6 +203,7 @@ typedef struct {
     uint8_t buttons;
     int dx;
     int dy;
+    int wheel; /* scroll wheel delta: positive = up, negative = down */
 } mouse_state_t;
 extern mouse_state_t mouse_state;
 extern int mouse_cursor_x;
@@ -280,6 +298,7 @@ void terminal_writestring(const char* data);
 void terminal_scroll(void);
 void terminal_clear(void);
 void terminal_initialize(void);
+void terminal_draw_scrollback(void);
 void ui_init_metrics(void);
 void draw_pane_tabs(void);
 void split_active_pane(void);

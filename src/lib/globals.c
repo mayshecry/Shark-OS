@@ -133,6 +133,7 @@ uint8_t* rx_buffer;
 uint8_t current_tx_buffer = 0;
 
 uintptr_t free_memory_start;
+char current_user[32] = "sharkuser";
 
 kernel_mode_t current_kernel_mode = KERNEL_MODE_CLI;
 struct fs_node* editor_target_file = NULL;
@@ -213,3 +214,11 @@ struct fs_node node_pool[MAX_NODES];
 int pool_index = 0;
 struct fs_node* root;
 struct fs_node* current_dir;
+
+scrollback_t scrollback;
+int scrollback_offset = 0;
+char command_history[MAX_HISTORY][80];
+int history_count = 0;
+int history_index = -1;
+
+volatile uint32_t uptime_ticks = 0;

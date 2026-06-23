@@ -19,6 +19,9 @@ void irq_handler(struct registers* r) {
     if (r->int_no == 44 && mouse_enabled) {
         mouse_handler();
     }
+    if (r->int_no == 32) {
+        uptime_ticks++;
+    }
 }
 
 void syscall_handler(struct registers* r) {

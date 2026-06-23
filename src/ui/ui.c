@@ -12,7 +12,7 @@ static void ui_draw_chrome(void) {
     draw_rect(0, font_cell_h - bd, (uint32_t)screen_width, bd, UI_BORDER);
 
     draw_string_px("  The Sharkslayer  ", font_cell_w, 0, UI_TITLE, UI_HEADER);
-    draw_string_px(":: SharkOS v0.5  ", font_cell_w + 19 * font_cell_w, 0, UI_BORDER, UI_HEADER);
+    draw_string_px(":: SharkOS V1  ", font_cell_w + 19 * font_cell_w, 0, UI_BORDER, UI_HEADER);
 
     size_t deco_col = term_cols > 4 ? term_cols - 3 : 0;
     draw_char('<', col_px(deco_col), 0, UI_ACCENT, UI_HEADER);

@@ -22,7 +22,7 @@ struct multiboot_info {
     uint8_t framebuffer_bpp, framebuffer_type;
 } __attribute__((packed));
 struct multiboot_mmap_entry { uint32_t size, addr_low, addr_high, len_low, len_high, type; } __attribute__((packed));
-static void boot_print(const char* s) { terminal_writestring(s); delay_ms(50); }
+static void boot_print(const char* s) { terminal_writestring(s); }
 void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     if (magic != 0x2BADB002) return;
     asm volatile("cli");
@@ -46,11 +46,11 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     terminal_column = 0;
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
     char buf[64];
-    terminal_writestring("SharkOS v0.5 [");
+    terminal_writestring("SharkOS V1 [");
     hex_to_string((uint32_t)total_system_memory >> 20, buf);
     terminal_writestring(buf);
-    terminal_writestring(" MB RAM]\nBooting SHKRNL...\n");
-    boot_print("[    0.000000] SHKRNL version 0.5 (root@sharkos) (gcc)\n");
+    terminal_writestring(" MB RAM]\nBooting nemo...\n");
+    boot_print("[    0.000000] nemo (SharkOS V1 Kernel build 0.06) (gcc)\n");
     char cpu_model[49];
     get_cpu_model(cpu_model);
     boot_print(cpu_model);
@@ -67,7 +67,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     char bppbuf[8]; int_to_string(mb_info->framebuffer_bpp, bppbuf);
     terminal_writestring("@");
     terminal_writestring(bppbuf); terminal_writestring("bpp\n");
-    boot_print("[    0.000004] CPU features: FPU, PAE, PSE detected\n");
+    boot_print("[    0.000004] CPU features: FPU, PAE, PSE, multicore detected\n");
     boot_print("[    0.000005] Local APIC timer: 100 Hz\n");
     boot_print("[    0.000006] HZ: 1000\n");
     boot_print("[    0.000007] PID max: 32768\n");
@@ -102,12 +102,93 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     boot_print("[    0.000030] Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0\n");
     boot_print("[    0.000031] NMI watchdog: Enabled\n");
     boot_print("[    0.000032] SHKRNL boot complete.\n");
-    delay_ms(2000);
+    delay_ms(500);
     terminal_initialize();
     init_descriptor_tables();
-    fs_initialize();
     outb(0x21, inb(0x21) & ~0x02);
+    /* Initialize PIT timer at 100 Hz (IRQ 0) */
+    outb(0x43, 0x36);
+    outb(0x40, 0x9C);
+    outb(0x40, 0x2E);
     asm volatile("sti");
+    terminal_clear();
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_MAGENTA, VGA_COLOR_BLACK));
+    terminal_writestring("   ╔═══════════════════════════════════╗\n");
+    terminal_writestring("   ║          SETUP MODE              ║\n");
+    terminal_writestring("   ╚═══════════════════════════════════╝\n\n");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    terminal_writestring("  Enter your username: ");
+    terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
+    int name_idx = 0;
+    char name_buf[32];
+    while (name_idx < 31) {
+        char nc = keyboard_getchar();
+        if (nc == 0) continue;
+        if (nc == '\n') break;
+        if (nc == '\b') {
+            if (name_idx > 0) {
+                name_idx--;
+                if (terminal_column > panes[active_pane].prompt_end_col) {
+                    terminal_column--;
+                    terminal_putentryat(' ', terminal_color, terminal_column, terminal_row);
+                }
+            }
+            continue;
+        }
+        if (nc >= 32 && nc < 127) {
+            name_buf[name_idx++] = nc;
+            terminal_putchar(nc);
+        }
+    }
+    name_buf[name_idx] = '\0';
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_MAGENTA, VGA_COLOR_BLACK));
+    terminal_writestring("\n\n  ═══════════════════════════════════\n");
+    terminal_writestring("  Customize your experience\n\n");
+    int setup_tiling = 1;
+    int setup_mouse = 0;
+    int setup_theme = 0;
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    terminal_writestring("  Enable tiling panes? (Y/n): ");
+    terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
+    while (1) {
+        char nc = keyboard_getchar();
+        if (nc == 0) continue;
+        if (nc == '\n') break;
+        if (nc == 'y' || nc == 'Y') { setup_tiling = 1; terminal_putchar('Y'); break; }
+        if (nc == 'n' || nc == 'N') { setup_tiling = 0; terminal_putchar('N'); break; }
+    }
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    terminal_writestring("\n  Enable mouse support? (y/N): ");
+    terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
+    while (1) {
+        char nc = keyboard_getchar();
+        if (nc == 0) continue;
+        if (nc == '\n') break;
+        if (nc == 'y' || nc == 'Y') { setup_mouse = 1; terminal_putchar('Y'); break; }
+        if (nc == 'n' || nc == 'N') { setup_mouse = 0; terminal_putchar('N'); break; }
+    }
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    terminal_writestring("\n  Enable retro TempleOS theme? (y/N): ");
+    terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
+    while (1) {
+        char nc = keyboard_getchar();
+        if (nc == 0) continue;
+        if (nc == '\n') break;
+        if (nc == 'y' || nc == 'Y') { setup_theme = 2; terminal_putchar('Y'); break; }
+        if (nc == 'n' || nc == 'N') { setup_theme = 0; terminal_putchar('N'); break; }
+    }
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    terminal_writestring("\n\n  Applying settings...\n");
+    if (name_idx > 0) strcpy(current_user, name_buf);
+    tiling_enabled = setup_tiling;
+    mouse_enabled = setup_mouse;
+    selected_theme = setup_theme;
+    apply_theme(selected_theme);
+    delay_ms(500);
+    fs_initialize();
+    struct fs_node* user_dir = find_node(root, "User");
+    if (user_dir) strcpy(user_dir->name, current_user);
+    terminal_clear();
     print_prompt();
 
     while (1) {
@@ -189,9 +270,58 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
                 continue;
             }
         }
+        /* Handle mouse wheel scrolling */
+        if (mouse_state.wheel != 0 && current_kernel_mode == KERNEL_MODE_CLI) {
+            scrollback_offset += mouse_state.wheel;
+            if (scrollback_offset < 0) scrollback_offset = 0;
+            if (scrollback_offset > scrollback.count) scrollback_offset = scrollback.count;
+            terminal_draw_scrollback();
+            draw_cursor();
+            mouse_state.wheel = 0;
+            continue;
+        }
+
+        /* Handle up/down arrows for history */
+        if (c == 0x10 && history_count > 0 && command_index == 0 && current_kernel_mode == KERNEL_MODE_CLI) {
+            if (history_index < history_count - 1) history_index++;
+            else history_index = 0;
+            /* Clear current line */
+            draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
+            terminal_column = panes[active_pane].prompt_end_col;
+            /* Print history entry */
+            terminal_writestring(command_history[history_count - 1 - history_index]);
+            command_index = strlen(command_history[history_count - 1 - history_index]);
+            strcpy(command_buffer, command_history[history_count - 1 - history_index]);
+            draw_cursor();
+            continue;
+        }
+        if (c == 0x11 && history_count > 0 && command_index == 0 && current_kernel_mode == KERNEL_MODE_CLI) {
+            if (history_index > 0) history_index--;
+            else history_index = history_count - 1;
+            draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
+            terminal_column = panes[active_pane].prompt_end_col;
+            terminal_writestring(command_history[history_count - 1 - history_index]);
+            command_index = strlen(command_history[history_count - 1 - history_index]);
+            strcpy(command_buffer, command_history[history_count - 1 - history_index]);
+            draw_cursor();
+            continue;
+        }
+
         terminal_putchar_cli(c);
         if (c == '\n') {
             command_buffer[command_index] = '\0';
+            /* Save to history */
+            if (history_count < MAX_HISTORY) {
+                strcpy(command_history[history_count], command_buffer);
+                history_count++;
+            } else {
+                for (int h = 0; h < MAX_HISTORY - 1; h++) {
+                    strcpy(command_history[h], command_history[h + 1]);
+                }
+                strcpy(command_history[MAX_HISTORY - 1], command_buffer);
+            }
+            history_index = -1;
+            scrollback_offset = 0;
         execute_command(command_buffer);
         command_index = 0;
         command_buffer[0] = '\0';

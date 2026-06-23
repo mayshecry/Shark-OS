@@ -23,12 +23,9 @@ void get_cpu_model(char* buffer) {
 }
 
 void shutdown() {
-    /* Try multiple ACPI/port-based shutdown methods for broad hardware support */
-    outw(0xB004, 0x2000);  /* Bochs/QEMU old method */
-    outw(0x604, 0x2000);   /* QEMU newer method */
-    outw(0x4004, 0x3400);  /* VirtualBox method */
-    outb(0x64, 0xFE);      /* PS/2 controller reset (works on most real hardware) */
-
-    /* If we get here, halt */
+    outw(0xB004, 0x2000);  
+    outw(0x604, 0x2000);   
+    outw(0x4004, 0x3400);  
+    outb(0x64, 0xFE);     
     asm volatile("cli; hlt");
 }

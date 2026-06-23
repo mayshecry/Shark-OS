@@ -24,7 +24,7 @@ void show_fastfetch(void) {
     terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  OS       ");
     terminal_set_color(vga_entry_color(INFO_VALUE_COLOR, VGA_COLOR_BLACK));
-    terminal_writestring("SharkOS v0.5\n");
+    terminal_writestring("SharkOS V1\n");
 
     terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  Host     ");
@@ -34,7 +34,7 @@ void show_fastfetch(void) {
     terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  Kernel   ");
     terminal_set_color(vga_entry_color(INFO_VALUE_COLOR, VGA_COLOR_BLACK));
-    terminal_writestring("SharkOS v0.5 i686\n");
+    terminal_writestring("nemo (SharkOS V1 Kernel build 0.06) i686\n");
 
     terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  CPU      ");
