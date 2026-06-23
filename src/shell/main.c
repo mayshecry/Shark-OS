@@ -2,6 +2,7 @@
 task_t* create_task(const char* name) {
     spin_lock(&task_list_lock);
     task_t* t = (task_t*)kmalloc(sizeof(task_t));
+    if (!t) { spin_unlock(&task_list_lock); return NULL; }
     t->id = next_pid++; t->state = TASK_READY; t->cpu_id = 0;
     strcpy(t->name, name);
     t->next = task_list; task_list = t;
@@ -139,12 +140,12 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         if (current_kernel_mode == KERNEL_MODE_EDITOR) {
             if (c == 27) {
                 if (editor_target_file) {
-                    int i;
-                    for (i = 0; i < editor_buffer_idx && i < MAX_FILE_CONTENT_SIZE - 1; i++) {
-                        editor_target_file->content[i] = editor_buffer[i];
+                    size_t si;
+                    for (si = 0; si < editor_buffer_idx && si < MAX_FILE_CONTENT_SIZE - 1; si++) {
+                        editor_target_file->content[si] = editor_buffer[si];
                     }
-                    editor_target_file->content[i] = '\0';
-                    editor_target_file->content_len = i;
+                    editor_target_file->content[si] = '\0';
+                    editor_target_file->content_len = si;
                 }
                 current_kernel_mode = KERNEL_MODE_CLI;
                 terminal_clear();

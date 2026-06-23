@@ -18,6 +18,7 @@ void rtl8139_send_packet(void* data, uint32_t len) {
 void send_icmp_ping(const char* target) {
     if (rtl_io_base) {
         uint8_t* packet = (uint8_t*)kmalloc(64);
+        if (!packet) { terminal_writestring("Out of memory.\n"); return; }
         for(int i=0; i<6; i++) packet[i] = 0xFF;
         packet[6] = 0x00; packet[7] = 0x11; packet[8] = 0x22; packet[9] = 0x33; packet[10] = 0x44; packet[11] = 0x55;
         packet[12] = 0x08; packet[13] = 0x00;

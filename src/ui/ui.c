@@ -66,6 +66,7 @@ static void faq_draw(void) {
     size_t needed = (size_t)faq_backup_w * faq_backup_h;
     if (!faq_fb_backup || faq_backup_capacity < needed) {
         faq_fb_backup = (uint32_t*)kmalloc(needed * sizeof(uint32_t));
+        if (!faq_fb_backup) return;
         faq_backup_capacity = needed;
     }
     if (faq_fb_backup) {
@@ -166,6 +167,7 @@ void settings_draw(void) {
     size_t needed = (size_t)settings_backup_w * settings_backup_h;
     if (!settings_fb_backup) {
         settings_fb_backup = (uint32_t*)kmalloc(needed * sizeof(uint32_t));
+        if (!settings_fb_backup) return;
     }
     if (settings_fb_backup) {
         uint32_t stride = (uint32_t)(screen_pitch / 4);
@@ -356,7 +358,6 @@ void split_active_pane(void) {
 void close_active_pane(void) {
     if (pane_count <= 1) return;
     int to_remove = active_pane;
-    int old_active = active_pane;
     
     for (int i = to_remove; i < pane_count - 1; i++) {
         panes[i] = panes[i + 1];

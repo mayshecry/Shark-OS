@@ -129,6 +129,7 @@ extern uint8_t rtl_irq;
 extern uint8_t* rx_buffer;
 extern uint8_t current_tx_buffer;
 extern uintptr_t free_memory_start;
+extern uintptr_t free_memory_end;
 
 extern uint8_t font8x8[96][8];
 

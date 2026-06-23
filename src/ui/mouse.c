@@ -1,7 +1,5 @@
 #include "kernel.h"
 
-static int cursor_visible = 1;
-static uint32_t cursor_backup[16 * 16];
 
 void mouse_draw_cursor(void) {
     if (!mouse_enabled) return;

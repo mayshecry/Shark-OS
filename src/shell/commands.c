@@ -141,32 +141,65 @@ void execute_command(char* cmd) {
         uint8_t d = VGA_COLOR_DARK_GREY;
 
         terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
-        terminal_writestring("\n  ╔══════════════════════════════════════╗\n");
-        terminal_writestring("  ║          SharkOS Credits             ║\n");
-        terminal_writestring("  ╚══════════════════════════════════════╝\n\n");
-
-        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
-        terminal_writestring("  Developer\n");
-        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
-        terminal_writestring("  ─────────\n");
-        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
-        terminal_writestring("   Mayshecry");
-        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
-        terminal_writestring("  —  Lead Developer & Creator of SharkOS\n\n");
-
-        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
-        terminal_writestring("  Bughunters\n");
-        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
-        terminal_writestring("  ───────────\n");
-        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
-        terminal_writestring("   staxx.cc");
-        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
-        terminal_writestring("  —  Finding the editor bugs\n\n");
-
+        terminal_writestring("\n        ╔══════════════════════════════╗\n");
+        terminal_writestring("        ║      ");
         terminal_set_color(vga_entry_color(y, VGA_COLOR_BLACK));
-        terminal_writestring("  ═══════════════════════════════════════\n");
+        terminal_writestring("SharkOS Credits");
         terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
-        terminal_writestring("  github.com/mayshecry/sharkos\n\n");
+        terminal_writestring("      ║\n");
+        terminal_writestring("        ╚══════════════════════════════╝\n\n");
+
+        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
+        terminal_writestring("    ╔─────── ");
+        terminal_set_color(vga_entry_color(y, VGA_COLOR_BLACK));
+        terminal_writestring("Developer");
+        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
+        terminal_writestring(" ───────╗\n");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("    │                                          │\n");
+        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
+        terminal_writestring("           🦈  Mayshecry");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("                              │\n");
+        terminal_writestring("    │          Lead Developer & Creator");
+        terminal_writestring("          │\n");
+        terminal_writestring("    ╚══════════════════════════════════════════╝\n\n");
+
+        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
+        terminal_writestring("    ╔─────── ");
+        terminal_set_color(vga_entry_color(y, VGA_COLOR_BLACK));
+        terminal_writestring("Bug Hunters");
+        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
+        terminal_writestring(" ───────╗\n");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("    │                                          │\n");
+        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
+        terminal_writestring("           🐛  staxx.cc");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("                              │\n");
+        terminal_writestring("    │          Finding the editor bugs");
+        terminal_writestring("          │\n");
+        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
+        terminal_writestring("           🐛  eclipsehq");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("                              │\n");
+        terminal_writestring("    │          Minor bug reports");
+        terminal_writestring("                │\n");
+        terminal_writestring("    ╚══════════════════════════════════════════╝\n\n");
+
+        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
+        terminal_writestring("    ╔─────── ");
+        terminal_set_color(vga_entry_color(y, VGA_COLOR_BLACK));
+        terminal_writestring("Thanks for using!");
+        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
+        terminal_writestring(" ───────╗\n");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("    │                                          │\n");
+        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
+        terminal_writestring("           github.com/mayshecry/sharkos");
+        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
+        terminal_writestring("           │\n");
+        terminal_writestring("    ╚══════════════════════════════════════════╝\n");
         terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
     } else if (strcmp(cmd_name, "kernelinfo") == 0) {
         uint8_t m = VGA_COLOR_LIGHT_MAGENTA;
@@ -176,105 +209,7 @@ void execute_command(char* cmd) {
         uint8_t d = VGA_COLOR_DARK_GREY;
 
         terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
-        terminal_writestring("\n  ╔══════════════════════════════════════╗\n");
-        terminal_writestring("  ║         SharkOS Kernel Info          ║\n");
-        terminal_writestring("  ╚══════════════════════════════════════╝\n\n");
-
-        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
-        terminal_writestring("  Architecture\n");
-        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
-        terminal_writestring("  ────────────\n");
-        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
-        terminal_writestring("   Monolithic x86 (32-bit i686)\n");
-        terminal_writestring("   Protected mode with paging\n");
-        terminal_writestring("   Custom bootloader (GRUB multiboot)\n\n");
-
-        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
-        terminal_writestring("  How It Works\n");
-        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
-        terminal_writestring("  ────────────\n");
-        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
-        terminal_writestring("   Boot: GRUB loads kernel into memory\n");
-        terminal_writestring("   Init: kmain() sets up framebuffer, memory\n");
-        terminal_writestring("   CPU:  Descriptor tables, interrupts (IDT)\n");
-        terminal_writestring("   Mem:  Physical memory manager (PMM)\n");
-        terminal_writestring("   FS:   In-memory virtual filesystem\n");
-        terminal_writestring("   UI:   Direct framebuffer graphics\n");
-        terminal_writestring("   Shell: Command interpreter with editor\n\n");
-
-        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
-        terminal_writestring("  Components\n");
-        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
-        terminal_writestring("  ──────────\n");
-        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
-        terminal_writestring("   SHKRNL    — Kernel core & boot\n");
-        terminal_writestring("   sharkfs   — Virtual filesystem\n");
-        terminal_writestring("   shproc    — Process management\n");
-        terminal_writestring("   shnet     — Network stack (RTL8139)\n");
-        terminal_writestring("   shinput   — Keyboard & mouse input\n");
-        terminal_writestring("   shsound   — Audio subsystem\n\n");
-
-        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
-        terminal_writestring("  Features\n");
-        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
-        terminal_writestring("  ────────\n");
-        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
-        terminal_writestring("   [x] Graphical terminal with themes\n");
-        terminal_writestring("   [x] Mouse support & tiling panes\n");
-        terminal_writestring("   [x] Built-in text editor\n");
-        terminal_writestring("   [x] ELF executable loader\n");
-        terminal_writestring("   [x] SharkScript interpreter (.shx)\n");
-        terminal_writestring("   [x] PCI device enumeration\n");
-        terminal_writestring("   [x] Network ping (ICMP)\n\n");
-
-        terminal_set_color(vga_entry_color(y, VGA_COLOR_BLACK));
-        terminal_writestring("  ═══════════════════════════════════════\n");
-        terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
-        terminal_writestring("  Version: SHKRNL 0.5 | SharkOS v0.5\n\n");
-        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
-    } else if (strcmp(cmd_name, "credits") == 0) {
-        uint8_t m = VGA_COLOR_LIGHT_MAGENTA;
-        uint8_t c = VGA_COLOR_LIGHT_CYAN;
-        uint8_t g = VGA_COLOR_LIGHT_GREEN;
-        uint8_t y = VGA_COLOR_LIGHT_BROWN;
-        uint8_t d = VGA_COLOR_DARK_GREY;
-
-        terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
-        terminal_writestring("\n  ╔══════════════════════════════════════╗\n");
-        terminal_writestring("  ║          SharkOS Credits             ║\n");
-        terminal_writestring("  ╚══════════════════════════════════════╝\n\n");
-
-        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
-        terminal_writestring("  Developer\n");
-        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
-        terminal_writestring("  ─────────\n");
-        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
-        terminal_writestring("   Mayshecry");
-        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
-        terminal_writestring("  —  Lead Developer & Creator of SharkOS\n\n");
-
-        terminal_set_color(vga_entry_color(c, VGA_COLOR_BLACK));
-        terminal_writestring("  Bughunters\n");
-        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
-        terminal_writestring("  ───────────\n");
-        terminal_set_color(vga_entry_color(g, VGA_COLOR_BLACK));
-        terminal_writestring("   staxx.cc");
-        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
-        terminal_writestring("  —  Finding the editor bugs\n\n");
-
-        terminal_set_color(vga_entry_color(y, VGA_COLOR_BLACK));
-        terminal_writestring("  ═══════════════════════════════════════\n");
-        terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
-        terminal_writestring("  github.com/mayshecry/sharkos\n\n");
-        terminal_set_color(vga_entry_color(d, VGA_COLOR_BLACK));
-    } else if (strcmp(cmd_name, "kernelinfo") == 0) {
-        uint8_t m = VGA_COLOR_LIGHT_MAGENTA;
-        uint8_t c = VGA_COLOR_LIGHT_CYAN;
-        uint8_t g = VGA_COLOR_LIGHT_GREEN;
-        uint8_t y = VGA_COLOR_LIGHT_BROWN;
-        uint8_t d = VGA_COLOR_DARK_GREY;
-
-        terminal_set_color(vga_entry_color(m, VGA_COLOR_BLACK));
+        (void)m; (void)c; (void)g; (void)y; (void)d;
         terminal_writestring("\n  ╔══════════════════════════════════════╗\n");
         terminal_writestring("  ║         SharkOS Kernel Info          ║\n");
         terminal_writestring("  ╚══════════════════════════════════════╝\n\n");
@@ -596,6 +531,54 @@ void execute_command(char* cmd) {
         }
     } else if (strcmp(cmd_name, "hostname") == 0) {
         terminal_writestring("SharkOS");
+    } else if (strcmp(cmd_name, "df") == 0) {
+        char buf[16];
+        int_to_string(pool_index, buf);
+        terminal_writestring("Filesystem nodes: ");
+        terminal_writestring(buf);
+        terminal_writestring("/64 used\n");
+    } else if (strcmp(cmd_name, "free") == 0) {
+        char buf[64];
+        uint32_t total = (uint32_t)(free_memory_end - (uintptr_t)&stack_top);
+        uint32_t used = (uint32_t)(free_memory_start - (uintptr_t)&stack_top);
+        uint32_t free_kb = (total - used) / 1024;
+        uint32_t used_kb = used / 1024;
+        terminal_writestring("             total        used        free\n");
+        terminal_writestring("Heap:        ");
+        int_to_string(total / 1024, buf); terminal_writestring(buf); terminal_writestring(" KB");
+        terminal_writestring("       ");
+        int_to_string(used_kb, buf); terminal_writestring(buf); terminal_writestring(" KB");
+        terminal_writestring("       ");
+        int_to_string(free_kb, buf); terminal_writestring(buf); terminal_writestring(" KB\n");
+    } else if (strcmp(cmd_name, "hexdump") == 0 || strcmp(cmd_name, "hex") == 0) {
+        struct fs_node* target = find_node(current_dir, args);
+        if (target && target->type == FS_FILE) {
+            int len = target->content_len;
+            char hex[16];
+            for (int i = 0; i < len; i += 16) {
+                hex_to_string(i, hex);
+                terminal_writestring(hex);
+                terminal_writestring("  ");
+                for (int j = 0; j < 16 && i + j < len; j++) {
+                    unsigned char c = (unsigned char)target->content[i + j];
+                    hex_to_string(c, hex);
+                    terminal_writestring(&hex[2]);
+                    if (j == 7) terminal_writestring("  ");
+                    else terminal_writestring(" ");
+                }
+                int pad = (len - i < 16) ? (16 - (len - i)) * 3 + ((len - i) <= 7 ? 1 : 0) : 0;
+                for (int p = 0; p < pad; p++) terminal_writestring(" ");
+                terminal_writestring(" ");
+                for (int j = 0; j < 16 && i + j < len; j++) {
+                    unsigned char c = (unsigned char)target->content[i + j];
+                    if (c >= 32 && c < 127) terminal_putchar(c);
+                    else terminal_putchar('.');
+                }
+                terminal_writestring("\n");
+            }
+        } else {
+            terminal_writestring("File not found.");
+        }
     } else if (strcmp(cmd_name, "echo") == 0) {
         terminal_writestring(args);
     } else if (strcmp(cmd_name, "calc") == 0) {

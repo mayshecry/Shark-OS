@@ -225,6 +225,7 @@ static int eval_math_int(const char* expr) {
         int j = 0;
         for (int i = 0; i < stc; i++) {
             if (s_strcmp(stemp[i], "*") == 0 || s_strcmp(stemp[i], "/") == 0 || s_strcmp(stemp[i], "%") == 0) {
+                if (j == 0) break;
                 int l = s_atoi(stemp[j-1]);
                 int r = s_atoi(stemp[i+1]);
                 int res = 0;
@@ -251,6 +252,7 @@ static int eval_math_int(const char* expr) {
     int j = 0;
     for (int i = 0; i < tc; i++) {
         if (s_strcmp(tokens[i], "*") == 0 || s_strcmp(tokens[i], "/") == 0 || s_strcmp(tokens[i], "%") == 0) {
+            if (j == 0) break;
             int l = s_atoi(tokens[j-1]);
             int r = s_atoi(tokens[i+1]);
             int res = 0;
@@ -795,9 +797,9 @@ static void expand_vars(const char* input, char* out, int iteration, int core) {
                 varname[vn] = 0;
                 const char* val = "";
                 if (s_strcmp(varname, "ITER") == 0) {
-                    char tmp[16]; s_itoa(iteration, tmp); val = tmp;
+                    static char tmp[16]; s_itoa(iteration, tmp); val = tmp;
                 } else if (s_strcmp(varname, "CORE") == 0) {
-                    char tmp[16]; s_itoa(core, tmp); val = tmp;
+                    static char tmp[16]; s_itoa(core, tmp); val = tmp;
                 } else if (s_strcmp(varname, "BYPASS_TIME") == 0) {
                     val = get_reg(get_reg_id("BYPASS_TIME"));
                     if (val[0] == 0) val = "0";
