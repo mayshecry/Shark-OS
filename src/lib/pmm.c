@@ -19,3 +19,7 @@ void* kmalloc(size_t size) {
     free_memory_start = aligned + size;
     return res;
 }
+
+uintptr_t virt_to_phys(void* addr) {
+    return (uintptr_t)addr;
+}

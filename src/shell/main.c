@@ -106,7 +106,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     terminal_initialize();
     init_descriptor_tables();
     outb(0x21, inb(0x21) & ~0x02);
-    /* Initialize PIT timer at 100 Hz (IRQ 0) */
+    
     outb(0x43, 0x36);
     outb(0x40, 0x9C);
     outb(0x40, 0x2E);
@@ -186,6 +186,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     apply_theme(selected_theme);
     delay_ms(500);
     fs_initialize();
+    detect_network_cards();
     struct fs_node* user_dir = find_node(root, "User");
     if (user_dir) strcpy(user_dir->name, current_user);
     terminal_clear();
@@ -270,7 +271,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
                 continue;
             }
         }
-        /* Handle mouse wheel scrolling */
+        
         if (mouse_state.wheel != 0 && current_kernel_mode == KERNEL_MODE_CLI) {
             scrollback_offset += mouse_state.wheel;
             if (scrollback_offset < 0) scrollback_offset = 0;
@@ -281,14 +282,14 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             continue;
         }
 
-        /* Handle up/down arrows for history */
+        
         if (c == 0x10 && history_count > 0 && command_index == 0 && current_kernel_mode == KERNEL_MODE_CLI) {
             if (history_index < history_count - 1) history_index++;
             else history_index = 0;
-            /* Clear current line */
+            
             draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
             terminal_column = panes[active_pane].prompt_end_col;
-            /* Print history entry */
+            
             terminal_writestring(command_history[history_count - 1 - history_index]);
             command_index = strlen(command_history[history_count - 1 - history_index]);
             strcpy(command_buffer, command_history[history_count - 1 - history_index]);
@@ -310,7 +311,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         terminal_putchar_cli(c);
         if (c == '\n') {
             command_buffer[command_index] = '\0';
-            /* Save to history */
+            
             if (history_count < MAX_HISTORY) {
                 strcpy(command_history[history_count], command_buffer);
                 history_count++;

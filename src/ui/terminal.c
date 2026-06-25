@@ -168,14 +168,14 @@ void draw_cursor(void) {
 
 void terminal_putchar_cli(char c) {
     if (c == '\n') {
-        /* Erase cursor at current position before newline */
+        
         draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
         return;
     }
     if (c == '\b') {
         if (command_index > 0) {
             command_index--;
-            /* Erase cursor at current position first */
+            
             draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
             if (terminal_column > panes[active_pane].col_start) {
                 terminal_column--;
@@ -185,7 +185,7 @@ void terminal_putchar_cli(char c) {
             }
             draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
         } else {
-            /* No characters to delete, but still erase cursor at current position */
+            
             draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
         }
         draw_cursor();
@@ -214,7 +214,7 @@ void terminal_putchar_editor(char c) {
         return;
     }
     if (c == '\b') {
-        /* Erase cursor at current position first */
+        
         draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
         if (editor_buffer_idx > 0) {
             editor_buffer_idx--;

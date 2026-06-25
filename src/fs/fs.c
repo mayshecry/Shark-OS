@@ -162,7 +162,7 @@ void fs_initialize() {
         "SwapFree:            0 kB\n");
 
     struct fs_node* hostname_f = create_node("hostname", FS_FILE, system);
-    set_content(hostname_f, "SharkOS\n");
+    set_content(hostname_f, "shark\n");
 
     struct fs_node* osrelease = create_node("os-release", FS_FILE, system);
     set_content(osrelease,
@@ -170,7 +170,8 @@ void fs_initialize() {
         "VERSION=\"0.5\"\n"
         "ID=sharkos\n"
         "PRETTY_NAME=\"SharkOS 0.5\"\n"
-        "HOME_URL=\"https://github.com/mayshecry/sharkos\"\n");
+        "HOME_URL=\"https://example.com\"\n"
+        );
 
     struct fs_node* uptime_f = create_node("uptime", FS_FILE, system);
     set_content(uptime_f, "0\n");
@@ -232,7 +233,7 @@ void fs_initialize() {
     struct fs_node* config_sys = create_node("sysconfig", FS_FILE, system);
     set_content(config_sys,
         "# System configuration\n"
-        "hostname=SharkOS\n"
+        "hostname=shark\n"
         "timezone=UTC\n"
         "keymap=us\n"
         "font=default\n"

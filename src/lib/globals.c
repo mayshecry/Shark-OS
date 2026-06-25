@@ -132,6 +132,12 @@ uint8_t rtl_irq = 0;
 uint8_t* rx_buffer;
 uint8_t current_tx_buffer = 0;
 
+uint8_t ip_address[4] = {0, 0, 0, 0};
+uint8_t subnet_mask[4] = {255, 255, 255, 0};
+uint8_t gateway[4] = {192, 168, 1, 1};
+uint8_t dns_server[4] = {8, 8, 8, 8};
+bool dhcp_enabled = false;
+
 uintptr_t free_memory_start;
 char current_user[32] = "sharkuser";
 
