@@ -6,11 +6,12 @@ OBJCOPY = $(PREFIX)objcopy
 
 # -mno-80387 -mno-mmx -mno-sse -mno-sse2: Prevents the compiler from using registers that are disabled at boot.
 # This is the most common cause of "Triple Faults" in VirtualBox.
-CFLAGS = -m32 -std=gnu99 -ffreestanding -O2 -Wall -Wextra -fno-pie -fno-stack-protector \
+CFLAGS = -m32 -std=gnu99 -ffreestanding -Os -Wall -Wextra -fno-pie -fno-stack-protector \
          -fno-asynchronous-unwind-tables -mno-80387 -mno-mmx -mno-sse -mno-sse2 \
-         -fomit-frame-pointer -fmerge-all-constants -Iinclude
+         -fomit-frame-pointer -fmerge-all-constants -fno-unwind-tables -fno-exceptions \
+         -Iinclude
 ASFLAGS = --32
-LDFLAGS = -m32 -ffreestanding -O2 -nostdlib -lgcc -no-pie -Wl,-m,elf_i386 -Wl,-gc-sections
+LDFLAGS = -m32 -ffreestanding -Os -nostdlib -lgcc -no-pie -Wl,-m,elf_i386 -Wl,-gc-sections -Wl,--strip-all
 
 DIRS = arch drivers fs ui shell lib sharkscript
 
@@ -66,6 +67,9 @@ shell/commands.o: src/shell/commands.c include/kernel.h include/sharkscript.h | 
 shell/main.o: src/shell/main.c include/kernel.h | shell
 	$(CC) -c src/shell/main.c -o shell/main.o $(CFLAGS)
 
+shell/lite.o: src/shell/lite.c include/kernel.h | shell
+	$(CC) -c src/shell/lite.c -o shell/lite.o $(CFLAGS)
+
 # lib
 lib/lib.o: src/lib/lib.c include/kernel.h | lib
 	$(CC) -c src/lib/lib.c -o lib/lib.o $(CFLAGS)
@@ -85,11 +89,11 @@ sharkscript/shs.o: src/sharkscript/shs.c include/kernel.h include/sharkscript.h 
 
 sharkos.bin: boot.o arch/io.o arch/interrupts.o arch/cpu.o drivers/keyboard.o drivers/pci.o \
              drivers/mouse.o fs/fs.o ui/terminal.o ui/ui.o ui/fastfetch.o ui/mouse.o \
-             shell/commands.o shell/main.o \
+             shell/commands.o shell/main.o shell/lite.o \
              lib/lib.o lib/globals.o lib/pmm.o lib/elf.o sharkscript/shs.o linker.ld
 	$(CC) -T linker.ld -o sharkos.bin $(LDFLAGS) boot.o arch/io.o arch/interrupts.o arch/cpu.o \
 		drivers/keyboard.o drivers/pci.o drivers/mouse.o fs/fs.o ui/terminal.o ui/ui.o \
-		ui/fastfetch.o ui/mouse.o shell/commands.o shell/main.o lib/lib.o lib/globals.o \
+		ui/fastfetch.o ui/mouse.o shell/commands.o shell/main.o shell/lite.o lib/lib.o lib/globals.o \
 		lib/pmm.o lib/elf.o sharkscript/shs.o
 
 sharkos.iso: sharkos.bin grub.cfg

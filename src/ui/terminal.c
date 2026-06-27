@@ -1,4 +1,4 @@
-    #include "kernel.h"
+#include "kernel.h"
 
 void ui_init_metrics(void) {
     uint32_t w = (uint32_t)screen_width;
@@ -88,7 +88,11 @@ void terminal_putentryat(char c, uint8_t color, size_t x, size_t y) {
 }
 
 void terminal_set_color(uint8_t color) {
-    terminal_color = color;
+    if (lite_mode) {
+        terminal_color = vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK);
+    } else {
+        terminal_color = color;
+    }
 }
 
 void terminal_scroll() {

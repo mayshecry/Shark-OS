@@ -4,10 +4,19 @@ uint64_t* pmm_bitmap;
 uintptr_t free_memory_end;
 
 void pmm_init(uint64_t mem_size) {
-    (void)mem_size;
     extern char _kernel_end[];
     free_memory_start = (uint32_t)_kernel_end + 0x1000;
-    free_memory_end = (uintptr_t)(total_system_memory * 1024);
+    
+    /* mem_size is in KB from multiboot, convert to bytes */
+    uintptr_t mem_end = (uintptr_t)(mem_size * 1024ULL);
+    
+    /* Use all available memory reported by GRUB */
+    free_memory_end = mem_end;
+    
+    /* Only enforce minimum if we have dangerously little memory */
+    if (free_memory_end < free_memory_start + 32768) {
+        free_memory_end = free_memory_start + 32768;
+    }
 }
 
 void* kmalloc(size_t size) {

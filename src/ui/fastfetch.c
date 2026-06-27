@@ -14,6 +14,42 @@ void show_fastfetch(void) {
     char buf[32];
     int i;
 
+    if (lite_mode) {
+        terminal_writestring("\n");
+        terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
+        terminal_writestring("OS: ");
+        terminal_set_color(vga_entry_color(INFO_VALUE_COLOR, VGA_COLOR_BLACK));
+        terminal_writestring("SharkOS Lite\n");
+        
+        terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
+        terminal_writestring("KERNEL: ");
+        terminal_set_color(vga_entry_color(INFO_VALUE_COLOR, VGA_COLOR_BLACK));
+        terminal_writestring("Nemo Kernel V0.0.6 powered by SharkOS\n");
+        
+        terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
+        terminal_writestring("CPU: ");
+        terminal_set_color(vga_entry_color(INFO_VALUE_COLOR, VGA_COLOR_BLACK));
+        terminal_writestring(cpu_model);
+        terminal_writestring("\n");
+        
+        terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
+        terminal_writestring("MEMORY: ");
+        terminal_set_color(vga_entry_color(INFO_VALUE_COLOR, VGA_COLOR_BLACK));
+        int_to_string(total_system_memory / 1024, buf);
+        terminal_writestring(buf);
+        terminal_writestring(" MB\n");
+        
+        terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
+        terminal_writestring("RES: ");
+        terminal_set_color(vga_entry_color(INFO_VALUE_COLOR, VGA_COLOR_BLACK));
+        int_to_string(screen_width, buf); terminal_writestring(buf); terminal_writestring("x");
+        int_to_string(screen_height, buf); terminal_writestring(buf);
+        terminal_writestring("\n");
+        
+        terminal_set_color(old_color);
+        return;
+    }
+
     terminal_set_color(vga_entry_color(INFO_HEADER_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  shark@SharkOS\n");
 
@@ -34,7 +70,7 @@ void show_fastfetch(void) {
     terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  Kernel   ");
     terminal_set_color(vga_entry_color(INFO_VALUE_COLOR, VGA_COLOR_BLACK));
-    terminal_writestring("nemo (SharkOS V1 Kernel build 0.06) i686\n");
+    terminal_writestring("Nemo Kernel V0.0.6 powered by SharkOS\n");
 
     terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  CPU      ");

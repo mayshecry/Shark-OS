@@ -26,14 +26,31 @@ static void boot_print(const char* s) { terminal_writestring(s); }
 void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     if (magic != 0x2BADB002) return;
     asm volatile("cli");
+    
+    if (mb_info->flags & (1 << 2)) {
+        char* cmdline = (char*)(uintptr_t)mb_info->cmdline;
+        if (cmdline) {
+            char* lite_pos = cmdline;
+            while (*lite_pos) {
+                if (*lite_pos == 'l' && *(lite_pos+1) == 'i' && *(lite_pos+2) == 't' && *(lite_pos+3) == 'e') {
+                    lite_mode = true;
+                    break;
+                }
+                lite_pos++;
+            }
+        }
+    }
+    
     lfbptr = (uint32_t*)(uintptr_t)mb_info->framebuffer_addr_lo;
     screen_width = mb_info->framebuffer_width;
     screen_height = mb_info->framebuffer_height;
     screen_pitch = mb_info->framebuffer_pitch;
     if (screen_width < 320) screen_width = 320;
     if (screen_height < 200) screen_height = 200;
-    total_system_memory = (uint64_t)mb_info->mem_upper + (uint64_t)mb_info->mem_lower;
+    total_system_memory = ((uint64_t)mb_info->mem_upper + (uint64_t)mb_info->mem_lower);
+    pmm_init(total_system_memory);
     ui_init_metrics();
+    
     pane_count = 1;
     active_pane = 0;
     panes[0].col_start = 0;
@@ -44,64 +61,32 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     panes[0].cmd_index = 0;
     terminal_row = content_first_row;
     terminal_column = 0;
+    
+    if (lite_mode) {
+        extern void lite_kmain(void);
+        lite_kmain();
+    }
+    
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
     char buf[64];
     terminal_writestring("SharkOS V1 [");
     hex_to_string((uint32_t)total_system_memory >> 20, buf);
     terminal_writestring(buf);
     terminal_writestring(" MB RAM]\nBooting nemo...\n");
-    boot_print("[    0.000000] nemo (SharkOS V1 Kernel build 0.06) (gcc)\n");
+    boot_print("[    0.000000] nemo (SharkOS V1 Lite) (gcc)\n");
     char cpu_model[49];
     get_cpu_model(cpu_model);
     boot_print(cpu_model);
     boot_print("\n");
-    boot_print("[    0.000001] BIOS-e820 memory map detected\n");
-    boot_print("[    0.000002] ");
+    boot_print("[    0.000001] ");
     hex_to_string((uint32_t)total_system_memory >> 20, buf);
     terminal_writestring(buf);
-    boot_print(" MB usable RAM\n");
-    boot_print("[    0.000003] Framebuffer: ");
+    boot_print(" MB RAM\n");
+    boot_print("[    0.000002] Framebuffer: ");
     int_to_string(screen_width, buf); terminal_writestring(buf);
     terminal_writestring("x");
     int_to_string(screen_height, buf); terminal_writestring(buf);
-    char bppbuf[8]; int_to_string(mb_info->framebuffer_bpp, bppbuf);
-    terminal_writestring("@");
-    terminal_writestring(bppbuf); terminal_writestring("bpp\n");
-    boot_print("[    0.000004] CPU features: FPU, PAE, PSE, multicore detected\n");
-    boot_print("[    0.000005] Local APIC timer: 100 Hz\n");
-    boot_print("[    0.000006] HZ: 1000\n");
-    boot_print("[    0.000007] PID max: 32768\n");
-    boot_print("[    0.000008] Initializing cgroup subsys cpuset\n");
-    boot_print("[    0.000009] Booting paravirtualized kernel on KVM\n");
-    boot_print("[    0.000010] KVM setup done\n");
-    boot_print("[    0.000011] kvm-clock: cpu 0, primary 0\n");
-    boot_print("[    0.000012] TSC: PIT calibration matches HPET\n");
-    boot_print("[    0.000013] Booting processor 1/1 APIC 0x0\n");
-    boot_print("[    0.000014] x86/mm: Memory block size: 128MB\n");
-    boot_print("[    0.000015] ACPI: Core revision 20240322\n");
-    boot_print("[    0.000016] PM:  4.0.5\n");
-    boot_print("[    0.000017] SLUB: HWalign=64, Order=0-3\n");
-    boot_print("[    0.000018] rcu: Hierarchical RCU implementation\n");
-    boot_print("[    0.000019] Memory: ");
-    hex_to_string((uint32_t)total_system_memory >> 20, buf);
-    terminal_writestring(buf);
-    boot_print("M available\n");
-    boot_print("[    0.000020] Built 1 zonelists, Total pages: ");
-    hex_to_string((uint32_t)total_system_memory >> 12, buf);
-    terminal_writestring(buf);
-    boot_print("\n[    0.000021] Kernel command line: root=/dev/ram0 rw\n");
-    boot_print("[    0.000022] PID hash table entries: 4096\n");
-    boot_print("[    0.000023] Dentry cache hash table entries: 131072\n");
-    boot_print("[    0.000024] Inode-cache hash table entries: 65536\n");
-    boot_print("[    0.000025] Freeing SMP alternatives: 0frees\n");
-    boot_print("[    0.000026] smpboot: CPU0: ");
-    terminal_writestring(cpu_model);
-    boot_print("\n[    0.000027] ACPI: 2 ACPI AML tables successfully acquired\n");
-    boot_print("[    0.000028] ACPI: Setting up all available GPEs\n");
-    boot_print("[    0.000029] Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0\n");
-    boot_print("[    0.000030] Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0\n");
-    boot_print("[    0.000031] NMI watchdog: Enabled\n");
-    boot_print("[    0.000032] SHKRNL boot complete.\n");
+    terminal_writestring("\n[    0.000003] SHKRNL boot complete.\n");
     delay_ms(500);
     terminal_initialize();
     init_descriptor_tables();
@@ -112,77 +97,11 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     outb(0x40, 0x2E);
     asm volatile("sti");
     terminal_clear();
-    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_MAGENTA, VGA_COLOR_BLACK));
-    terminal_writestring("   ╔═══════════════════════════════════╗\n");
-    terminal_writestring("   ║          SETUP MODE              ║\n");
-    terminal_writestring("   ╚═══════════════════════════════════╝\n\n");
-    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    terminal_writestring("  Enter your username: ");
-    terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
-    int name_idx = 0;
-    char name_buf[32];
-    while (name_idx < 31) {
-        char nc = keyboard_getchar();
-        if (nc == 0) continue;
-        if (nc == '\n') break;
-        if (nc == '\b') {
-            if (name_idx > 0) {
-                name_idx--;
-                if (terminal_column > panes[active_pane].prompt_end_col) {
-                    terminal_column--;
-                    terminal_putentryat(' ', terminal_color, terminal_column, terminal_row);
-                }
-            }
-            continue;
-        }
-        if (nc >= 32 && nc < 127) {
-            name_buf[name_idx++] = nc;
-            terminal_putchar(nc);
-        }
-    }
-    name_buf[name_idx] = '\0';
-    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_MAGENTA, VGA_COLOR_BLACK));
-    terminal_writestring("\n\n  ═══════════════════════════════════\n");
-    terminal_writestring("  Customize your experience\n\n");
-    int setup_tiling = 1;
-    int setup_mouse = 0;
-    int setup_theme = 0;
-    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    terminal_writestring("  Enable tiling panes? (Y/n): ");
-    terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
-    while (1) {
-        char nc = keyboard_getchar();
-        if (nc == 0) continue;
-        if (nc == '\n') break;
-        if (nc == 'y' || nc == 'Y') { setup_tiling = 1; terminal_putchar('Y'); break; }
-        if (nc == 'n' || nc == 'N') { setup_tiling = 0; terminal_putchar('N'); break; }
-    }
-    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    terminal_writestring("\n  Enable mouse support? (y/N): ");
-    terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
-    while (1) {
-        char nc = keyboard_getchar();
-        if (nc == 0) continue;
-        if (nc == '\n') break;
-        if (nc == 'y' || nc == 'Y') { setup_mouse = 1; terminal_putchar('Y'); break; }
-        if (nc == 'n' || nc == 'N') { setup_mouse = 0; terminal_putchar('N'); break; }
-    }
-    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    terminal_writestring("\n  Enable retro TempleOS theme? (y/N): ");
-    terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
-    while (1) {
-        char nc = keyboard_getchar();
-        if (nc == 0) continue;
-        if (nc == '\n') break;
-        if (nc == 'y' || nc == 'Y') { setup_theme = 2; terminal_putchar('Y'); break; }
-        if (nc == 'n' || nc == 'N') { setup_theme = 0; terminal_putchar('N'); break; }
-    }
-    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    terminal_writestring("\n\n  Applying settings...\n");
-    if (name_idx > 0) strcpy(current_user, name_buf);
-    tiling_enabled = setup_tiling;
-    mouse_enabled = setup_mouse;
-    selected_theme = setup_theme;
+    /* Minimal setup for low memory - skip interactive setup */
+    strcpy(current_user, "sharkuser");
+    tiling_enabled = 1;
+    mouse_enabled = 0;
+    selected_theme = 0;
     apply_theme(selected_theme);
     delay_ms(500);
     fs_initialize();

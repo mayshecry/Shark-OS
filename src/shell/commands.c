@@ -11,14 +11,22 @@ static int simple_atoi(const char* s) {
 }
 
 void print_prompt() {
-    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_BROWN, VGA_COLOR_BLACK));
-    terminal_writestring("shark:");
-    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    terminal_writestring(current_dir->name);
-    terminal_writestring("> ");
-    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    panes[active_pane].prompt_end_col = terminal_column;
-    draw_cursor();
+    if (lite_mode) {
+        terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
+        terminal_writestring(current_dir->name);
+        terminal_writestring(" -# ");
+        panes[active_pane].prompt_end_col = terminal_column;
+        draw_cursor();
+    } else {
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_BROWN, VGA_COLOR_BLACK));
+        terminal_writestring("shark:");
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+        terminal_writestring(current_dir->name);
+        terminal_writestring("> ");
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        panes[active_pane].prompt_end_col = terminal_column;
+        draw_cursor();
+    }
 }
 
 static void print_tree(struct fs_node* node, int depth) {

@@ -128,6 +128,12 @@ extern uint32_t rtl_io_base;
 extern uint8_t rtl_irq;
 extern uint8_t* rx_buffer;
 extern uint8_t current_tx_buffer;
+
+extern uint8_t ip_address[4];
+extern uint8_t subnet_mask[4];
+extern uint8_t gateway[4];
+extern uint8_t dns_server[4];
+extern bool dhcp_enabled;
 extern uintptr_t free_memory_start;
 extern uintptr_t free_memory_end;
 extern char current_user[32];
@@ -137,7 +143,7 @@ extern uint8_t font8x8[96][8];
 typedef enum { KERNEL_MODE_CLI, KERNEL_MODE_EDITOR, KERNEL_MODE_FAQ, KERNEL_MODE_SETTINGS } kernel_mode_t;
 extern kernel_mode_t current_kernel_mode;
 
-#define MAX_FILE_CONTENT_SIZE 4096
+#define MAX_FILE_CONTENT_SIZE 2048
 struct fs_node;
 extern struct fs_node* editor_target_file;
 extern char editor_buffer[MAX_FILE_CONTENT_SIZE];
@@ -151,9 +157,10 @@ extern unsigned char keyboard_map_shifted[128];
 extern bool tiling_enabled;
 extern bool mouse_enabled;
 extern int selected_theme;
+extern bool lite_mode;
 
-#define MAX_PANES 8
-#define PANE_GAP 2
+#define MAX_PANES 4
+#define PANE_GAP 1
 typedef struct {
     size_t row;
     size_t col;
@@ -168,17 +175,17 @@ extern pane_t panes[MAX_PANES];
 extern int pane_count;
 extern int active_pane;
 
-#define SCROLLBACK_LINES 500
-#define SCROLLBACK_COLS 160
+#define SCROLLBACK_LINES 100
+#define SCROLLBACK_COLS 100
 #define MAX_HISTORY 32
 typedef struct {
     char lines[SCROLLBACK_LINES][SCROLLBACK_COLS];
     uint8_t colors[SCROLLBACK_LINES][SCROLLBACK_COLS];
     int count;
-    int top; /* index of oldest line */
+    int top; 
 } scrollback_t;
 extern scrollback_t scrollback;
-extern int scrollback_offset; /* 0 = bottom, >0 = scrolled up */
+extern int scrollback_offset; 
 extern char command_history[MAX_HISTORY][80];
 extern int history_count;
 extern int history_index;
@@ -203,7 +210,7 @@ typedef struct {
     uint8_t buttons;
     int dx;
     int dy;
-    int wheel; /* scroll wheel delta: positive = up, negative = down */
+    int wheel; 
 } mouse_state_t;
 extern mouse_state_t mouse_state;
 extern int mouse_cursor_x;
@@ -246,21 +253,24 @@ void delay_ms(uint32_t ms);
 void init_descriptor_tables(void);
 void pmm_init(uint64_t mem_size);
 void* kmalloc(size_t size);
+uintptr_t virt_to_phys(void* addr);
 
 void rtl8139_init(void);
 void rtl8139_send_packet(void* data, uint32_t len);
 uint32_t pci_config_read(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
 void pci_config_write(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t value);
 void pci_list_devices(void);
+void detect_network_cards(void);
 void send_icmp_ping(const char* target);
+void send_dhcp_discover(void);
 
 void get_cpu_model(char* buffer);
 void shutdown(void);
 
 void execute_elf(uint8_t* data, const char* arg);
 
-#define MAX_NODES 64
-#define MAX_CHILDREN 16
+#define MAX_NODES 32
+#define MAX_CHILDREN 8
 typedef enum { FS_DIRECTORY, FS_FILE } node_type_t;
 struct fs_node {
     char name[32];

@@ -1,5 +1,5 @@
-/* SharkOS Boot Assembly */
-/* Multiboot header with auto-detected resolution (let GRUB decide) */
+
+
 
 .set ALIGN,    1<<0
 .set MEMINFO,  1<<1
@@ -14,16 +14,16 @@
 .long FLAGS
 .long CHECKSUM
 .long 0, 0, 0, 0, 0
-.long 0    /* Linear Graphics Mode */
-.long 0    /* Width  (0 = auto, let GRUB/BIOS choose) */
-.long 0    /* Height (0 = auto) */
-.long 32   /* Depth */
+.long 0    
+.long 0    
+.long 0    
+.long 32   
 
 .section .bss
 .align 4096
 .align 16
 stack_bottom:
-.skip 16384
+.skip 8192
 .global stack_top
 stack_top:
 
