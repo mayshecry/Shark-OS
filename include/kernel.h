@@ -106,6 +106,8 @@ typedef struct task {
     int cpu_id;
     char name[16];
     struct task* next;
+    uint32_t syscall_count;
+    uint32_t cpu_usage;
 } task_t;
 typedef struct {
     int id;
@@ -246,6 +248,7 @@ char* strstr(const char* haystack, const char* needle);
 void* memcpy(void* dest, const void* src, size_t n);
 void* memset(void* s, int c, size_t n);
 size_t strlen(const char* str);
+size_t fast_strlen(const char* str);
 void hex_to_string(uint32_t value, char* buffer);
 void int_to_string(uint32_t value, char* buffer);
 void delay_ms(uint32_t ms);
@@ -269,7 +272,7 @@ void shutdown(void);
 
 void execute_elf(uint8_t* data, const char* arg);
 
-#define MAX_NODES 32
+#define MAX_NODES 128
 #define MAX_CHILDREN 8
 typedef enum { FS_DIRECTORY, FS_FILE } node_type_t;
 struct fs_node {
@@ -315,6 +318,7 @@ void split_active_pane(void);
 void close_active_pane(void);
 void redraw_all_panes(void);
 void print_prompt(void);
+void ui_draw_footer(void);
 void faq_open(void);
 void faq_close(void);
 void settings_open(void);

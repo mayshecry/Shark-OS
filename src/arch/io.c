@@ -82,7 +82,7 @@ void init_descriptor_tables(void) {
     outb(0x21, 0x20); outb(0xA1, 0x28);
     outb(0x21, 0x04); outb(0xA1, 0x02);
     outb(0x21, 0x01); outb(0xA1, 0x01);
-    outb(0x21, 0x0);  outb(0xA1, 0x0);
+    outb(0x21, 0x04);  outb(0xA1, 0xFF);
 
     idt_set_gate(32, (uint32_t)irq0, 0x08, 0x8E);  idt_set_gate(33, (uint32_t)irq1, 0x08, 0x8E);
     idt_set_gate(34, (uint32_t)irq2, 0x08, 0x8E);  idt_set_gate(35, (uint32_t)irq3, 0x08, 0x8E);
@@ -94,5 +94,4 @@ void init_descriptor_tables(void) {
     idt_set_gate(46, (uint32_t)irq14, 0x08, 0x8E); idt_set_gate(47, (uint32_t)irq15, 0x08, 0x8E);
 
     idt_load((uint32_t)&idtp);
-    asm volatile("sti");
 }

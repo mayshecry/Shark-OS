@@ -27,11 +27,11 @@ void lite_kmain(void) {
     terminal_writestring(" -# ");
     panes[active_pane].prompt_end_col = terminal_column;
     draw_cursor();
-    
+
     while (1) {
         char c = keyboard_getchar();
         if (c == 0) continue;
-        
+
         if (c == '\n') {
             command_buffer[command_index] = '\0';
             execute_command(command_buffer);

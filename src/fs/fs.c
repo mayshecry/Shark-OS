@@ -1,9 +1,41 @@
 #include "kernel.h"
 
+#define FS_CACHE_SIZE 16
+typedef struct {
+    struct fs_node* parent;
+    const char* name;
+    struct fs_node* result;
+} fs_cache_entry_t;
+
+static fs_cache_entry_t fs_cache[FS_CACHE_SIZE];
+static int fs_cache_idx = 0;
+
+void fs_cache_clear(void) {
+    for (int i = 0; i < FS_CACHE_SIZE; i++) {
+        fs_cache[i].parent = NULL;
+        fs_cache[i].name = NULL;
+        fs_cache[i].result = NULL;
+    }
+    fs_cache_idx = 0;
+}
+
 struct fs_node* find_node(struct fs_node* parent, const char* name) {
     if (!parent) return NULL;
+
+    for (int i = 0; i < FS_CACHE_SIZE; i++) {
+        if (fs_cache[i].parent == parent && fs_cache[i].name == name) {
+            return fs_cache[i].result;
+        }
+    }
+
     for (int i = 0; i < parent->num_children; i++) {
-        if (strcasecmp(parent->children[i]->name, name) == 0) return parent->children[i];
+        if (strcasecmp(parent->children[i]->name, name) == 0) {
+            fs_cache[fs_cache_idx].parent = parent;
+            fs_cache[fs_cache_idx].name = name;
+            fs_cache[fs_cache_idx].result = parent->children[i];
+            fs_cache_idx = (fs_cache_idx + 1) % FS_CACHE_SIZE;
+            return parent->children[i];
+        }
     }
     return NULL;
 }
@@ -118,7 +150,7 @@ void fs_initialize() {
 
     struct fs_node* version = create_node("version", FS_FILE, system);
     set_content(version,
-        "SharkOS V1\n"
+        "SharkOS V2\n"
         "Codename: Shark\n"
         "Kernel: SHKRNL 0.5\n"
         "Arch: i686\n"
@@ -325,4 +357,6 @@ void fs_initialize() {
         "c0100a00 T syscall_handler\n");
 
     create_node("shs", FS_FILE, bin_dir);
+
+    fs_cache_clear();
 }

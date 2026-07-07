@@ -2,7 +2,7 @@ ENTRY(_start)
 
 SECTIONS
 {
-	/* The bootloader puts us at 1MB */
+
 	. = 1M;
 	_kernel_start = .;
 
@@ -31,7 +31,7 @@ SECTIONS
 	}
 	_kernel_end = .;
 
-	/* Discard sections that cause issues with multiboot headers */
+
 	/DISCARD/ :
 	{
 		*(.note.gnu.property)

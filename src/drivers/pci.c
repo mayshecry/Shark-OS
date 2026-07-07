@@ -563,7 +563,7 @@ void run_dhcp(void) {
         pcnet_rx_ready = 0;
     }
     terminal_writestring("DHCP: No OFFER received\n");
-     
+
      ip_address[0] = 169; ip_address[1] = 254;
      ip_address[2] = pcnet_mac[4];
      ip_address[3] = pcnet_mac[5];
@@ -916,7 +916,7 @@ void pci_list_devices() {
                     terminal_writestring("PCNET: PCI cmd before=0x");
                     hex_to_string(cmd, dbuf); terminal_writestring(dbuf);
                     terminal_writestring("\n");
-                    
+
                     cmd |= 0x7;
                     pci_config_write(bus, slot, func, 0x04, cmd);
                     cmd = pci_config_read(bus, slot, func, 0x04);

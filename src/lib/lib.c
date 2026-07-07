@@ -74,15 +74,27 @@ size_t strlen(const char* str) {
     return len;
 }
 
+int fast_strcmp(const char* s1, const char* s2) {
+    while (*s1 && (*s1 == *s2)) {
+        s1++; s2++;
+    }
+    return *(unsigned char*)s1 - *(unsigned char*)s2;
+}
+
 void hex_to_string(uint32_t value, char* buffer) {
     char hex_chars[] = "0123456789ABCDEF";
     buffer[0] = '0';
     buffer[1] = 'x';
-    buffer[10] = '\0';
     for (int i = 0; i < 8; i++) {
-        buffer[9 - i] = hex_chars[value & 0xF];
-        value >>= 4;
+        buffer[2 + i] = hex_chars[(value >> (28 - i * 4)) & 0xF];
     }
+    buffer[10] = '\0';
+}
+
+size_t fast_strlen(const char* str) {
+    const char* s = str;
+    while (*s) s++;
+    return (size_t)(s - str);
 }
 
 void int_to_string(uint32_t value, char* buffer) {
@@ -104,16 +116,9 @@ void int_to_string(uint32_t value, char* buffer) {
     buffer[j] = '\0';
 }
 
-static inline uint64_t rdtsc(void) {
-    uint32_t lo, hi;
-    asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
-    return ((uint64_t)hi << 32) | lo;
-}
-
 void delay_ms(uint32_t ms) {
-    uint64_t start = rdtsc();
-    uint64_t target = start + (uint64_t)ms * 2000000ULL;
-    while (rdtsc() < target) {
-        asm volatile("nop");
+    volatile uint32_t target = uptime_ticks + ms;
+    while ((int32_t)(uptime_ticks - target) < 0) {
+        asm volatile("hlt");
     }
 }

@@ -13,11 +13,15 @@
 .long MAGIC
 .long FLAGS
 .long CHECKSUM
+
+# Multiboot address fields (not used)
 .long 0, 0, 0, 0, 0
-.long 0    
-.long 0    
-.long 0    
-.long 32   
+
+# Graphics fields
+.long 0          # mode_type = 0 (linear framebuffer)
+.long 1024       # width
+.long 768        # height
+.long 32         # depth (32-bit color)
 
 .section .bss
 .align 4096

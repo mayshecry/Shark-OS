@@ -36,7 +36,11 @@ void keyboard_handler(uint8_t scancode) {
         else if (scancode == 0x50) c = 0x11;
         extended_scancode = 0;
     } else {
-        c = shift_pressed ? keyboard_map_shifted[scancode] : keyboard_map[scancode];
+        if (scancode < 128) {
+            c = shift_pressed ? keyboard_map_shifted[scancode] : keyboard_map[scancode];
+        } else {
+            c = 0;
+        }
     }
 
     if (c > 0) {
@@ -46,11 +50,14 @@ void keyboard_handler(uint8_t scancode) {
             key_head = next;
         }
     }
+    outb(0x20, 0x20);
 }
 
 char keyboard_getchar() {
-    if (key_head == key_tail) return 0;
-    char c = key_buffer[key_tail];
-    key_tail = (key_tail + 1) % 256;
+    int head = key_head;
+    int tail = key_tail;
+    if (head == tail) return 0;
+    char c = key_buffer[tail];
+    key_tail = (tail + 1) % 256;
     return c;
 }

@@ -12,9 +12,9 @@ void ui_init_metrics(void) {
 
     font_cell_w = 8 * font_scale;
     font_cell_h = 8 * font_scale;
-    ui_tab_y = font_cell_h;
-    ui_chrome_top = 2 * font_cell_h;
-    ui_footer_h = font_cell_h;
+    ui_tab_y = font_cell_h + 8;  // moved up for higher tab position
+    ui_chrome_top = ui_tab_y + font_cell_h;
+    ui_footer_h = font_cell_h + 4;
     ui_footer_y = h - ui_footer_h;
 
     term_cols = w / font_cell_w;
@@ -45,18 +45,33 @@ void draw_char(char c, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg) {
     uint32_t stride = screen_pitch / 4;
     uint32_t scale = font_scale;
 
-    for (int row = 0; row < 8; row++) {
-        uint8_t font_byte = font8x8[font_idx][row];
-        for (int col = 0; col < 8; col++) {
-            uint32_t color = ((font_byte >> (7 - col)) & 1) ? fg : bg;
-            for (uint32_t sy = 0; sy < scale; sy++) {
-                uint32_t py = y + (uint32_t)row * scale + sy;
-                if (py >= screen_height) continue;
-                uint32_t* row_ptr = &lfbptr[py * stride + x];
-                for (uint32_t sx = 0; sx < scale; sx++) {
-                    uint32_t px = (uint32_t)col * scale + sx;
-                    if (x + px < screen_width) {
-                        row_ptr[px] = color;
+    if (scale == 1) {
+        for (int row = 0; row < 8; row++) {
+            uint8_t font_byte = font8x8[font_idx][row];
+            uint32_t py = y + row;
+            if (py >= screen_height) continue;
+            uint32_t* row_ptr = &lfbptr[py * stride + x];
+            for (int col = 0; col < 8; col++) {
+                uint32_t color = ((font_byte >> (7 - col)) & 1) ? fg : bg;
+                if (x + col < screen_width) {
+                    row_ptr[col] = color;
+                }
+            }
+        }
+    } else {
+        for (int row = 0; row < 8; row++) {
+            uint8_t font_byte = font8x8[font_idx][row];
+            for (int col = 0; col < 8; col++) {
+                uint32_t color = ((font_byte >> (7 - col)) & 1) ? fg : bg;
+                for (uint32_t sy = 0; sy < scale; sy++) {
+                    uint32_t py = y + (uint32_t)row * scale + sy;
+                    if (py >= screen_height) continue;
+                    uint32_t* row_ptr = &lfbptr[py * stride + x];
+                    for (uint32_t sx = 0; sx < scale; sx++) {
+                        uint32_t px = (uint32_t)col * scale + sx;
+                        if (x + px < screen_width) {
+                            row_ptr[px] = color;
+                        }
                     }
                 }
             }
@@ -172,14 +187,13 @@ void draw_cursor(void) {
 
 void terminal_putchar_cli(char c) {
     if (c == '\n') {
-        
-        draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
+        terminal_write_char_internal('\n');
+        draw_cursor();
         return;
     }
     if (c == '\b') {
         if (command_index > 0) {
             command_index--;
-            
             draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
             if (terminal_column > panes[active_pane].col_start) {
                 terminal_column--;
@@ -189,7 +203,6 @@ void terminal_putchar_cli(char c) {
             }
             draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
         } else {
-            
             draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
         }
         draw_cursor();
@@ -218,7 +231,6 @@ void terminal_putchar_editor(char c) {
         return;
     }
     if (c == '\b') {
-        
         draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
         if (editor_buffer_idx > 0) {
             editor_buffer_idx--;
@@ -269,7 +281,9 @@ void terminal_writestring(const char* data) {
     static char line_buf[SCROLLBACK_COLS];
     static int line_len = 0;
     static uint8_t line_color = VGA_COLOR_WHITE;
-    
+    line_len = 0;
+    line_color = terminal_color;
+
     for (size_t i = 0; data[i] != '\0'; i++) {
         if (data[i] == '\n') {
             line_buf[line_len] = '\0';
@@ -289,16 +303,16 @@ void terminal_writestring(const char* data) {
 
 void terminal_draw_scrollback(void) {
     if (scrollback_offset == 0) return;
-    
+
     uint32_t px_start = col_px(panes[active_pane].col_start);
     uint32_t px_width = col_px(panes[active_pane].col_end - panes[active_pane].col_start);
     uint32_t content_h = ui_footer_y - row_px(content_first_row);
     draw_rect(px_start, row_px(content_first_row), px_width, content_h, UI_SURFACE);
-    
+
     int visible_rows = term_max_row - content_first_row;
     int start_line = scrollback.count - scrollback_offset - visible_rows + 1;
     if (start_line < 0) start_line = 0;
-    
+
     int row = content_first_row;
     for (int i = start_line; i < scrollback.count && row < term_max_row; i++) {
         int idx = (scrollback.top + i) % SCROLLBACK_LINES;
@@ -322,6 +336,8 @@ void terminal_initialize(void) {
     panes[0].col = 0;
     panes[0].color = vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK);
     panes[0].cmd_index = 0;
+    panes[0].prompt_end_col = 0;
 
     redraw_all_panes();
+    ui_draw_footer();
 }
