@@ -569,7 +569,7 @@ void run_dhcp(void) {
      ip_address[3] = pcnet_mac[5];
      subnet_mask[0] = 255; subnet_mask[1] = 255; subnet_mask[2] = 0; subnet_mask[3] = 0;
      gateway[0] = gateway[1] = gateway[2] = gateway[3] = 0;
-     dhcp_enabled = false; 
+     dhcp_enabled = false;
      terminal_writestring("DHCP: Falling back to link-local IP ");
      char ipbuf[16];
      int_to_string(ip_address[0], ipbuf); terminal_writestring(ipbuf); terminal_writestring(".");
@@ -985,4 +985,3 @@ void detect_network_cards() {
     }
     terminal_writestring("No supported network adapter found\n");
 }
-

@@ -88,7 +88,7 @@ plugin_t* plugin_get_by_name(const char* name) {
     return NULL;
 }
 
-int plugin_register_builtin(const char* name, plugin_init_t init, 
+int plugin_register_builtin(const char* name, plugin_init_t init,
                              plugin_cleanup_t cleanup, plugin_command_t command) {
     if (g_plugin_count >= MAX_PLUGINS) {
         return -1;

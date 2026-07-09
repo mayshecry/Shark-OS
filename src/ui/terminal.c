@@ -3,16 +3,13 @@
 void ui_init_metrics(void) {
     uint32_t w = (uint32_t)screen_width;
     uint32_t h = (uint32_t)screen_height;
-    if (w >= 1920) font_scale = 2;
-    else if (w >= 1280) font_scale = 2;
-    else if (w >= 800) font_scale = 1;
-    else font_scale = 1;
+    font_scale = (w >= 1280) ? 2 : 1;
     if (font_scale < 1) font_scale = 1;
     if (font_scale > 3) font_scale = 3;
 
     font_cell_w = 8 * font_scale;
     font_cell_h = 8 * font_scale;
-    ui_tab_y = font_cell_h + 8;  // moved up for higher tab position
+    ui_tab_y = font_cell_h + 8;
     ui_chrome_top = ui_tab_y + font_cell_h;
     ui_footer_h = font_cell_h + 4;
     ui_footer_y = h - ui_footer_h;
@@ -45,33 +42,18 @@ void draw_char(char c, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg) {
     uint32_t stride = screen_pitch / 4;
     uint32_t scale = font_scale;
 
-    if (scale == 1) {
-        for (int row = 0; row < 8; row++) {
-            uint8_t font_byte = font8x8[font_idx][row];
-            uint32_t py = y + row;
-            if (py >= screen_height) continue;
-            uint32_t* row_ptr = &lfbptr[py * stride + x];
-            for (int col = 0; col < 8; col++) {
-                uint32_t color = ((font_byte >> (7 - col)) & 1) ? fg : bg;
-                if (x + col < screen_width) {
-                    row_ptr[col] = color;
-                }
-            }
-        }
-    } else {
-        for (int row = 0; row < 8; row++) {
-            uint8_t font_byte = font8x8[font_idx][row];
-            for (int col = 0; col < 8; col++) {
-                uint32_t color = ((font_byte >> (7 - col)) & 1) ? fg : bg;
-                for (uint32_t sy = 0; sy < scale; sy++) {
-                    uint32_t py = y + (uint32_t)row * scale + sy;
-                    if (py >= screen_height) continue;
-                    uint32_t* row_ptr = &lfbptr[py * stride + x];
-                    for (uint32_t sx = 0; sx < scale; sx++) {
-                        uint32_t px = (uint32_t)col * scale + sx;
-                        if (x + px < screen_width) {
-                            row_ptr[px] = color;
-                        }
+    for (int row = 0; row < 8; row++) {
+        uint8_t font_byte = font8x8[font_idx][row];
+        for (int col = 0; col < 8; col++) {
+            uint32_t color = ((font_byte >> (7 - col)) & 1) ? fg : bg;
+            for (uint32_t sy = 0; sy < scale; sy++) {
+                uint32_t py = y + (uint32_t)row * scale + sy;
+                if (py >= screen_height) continue;
+                uint32_t* row_ptr = &lfbptr[py * stride + x];
+                for (uint32_t sx = 0; sx < scale; sx++) {
+                    uint32_t px = (uint32_t)col * scale + sx;
+                    if (x + px < screen_width) {
+                        row_ptr[px] = color;
                     }
                 }
             }
@@ -103,22 +85,17 @@ void terminal_putentryat(char c, uint8_t color, size_t x, size_t y) {
 }
 
 void terminal_set_color(uint8_t color) {
-    if (lite_mode) {
-        terminal_color = vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK);
-    } else {
-        terminal_color = color;
-    }
+    terminal_color = lite_mode ? vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK) : color;
 }
 
 void terminal_scroll() {
     uint32_t start_y_pixels = row_px(content_first_row);
     uint32_t end_y_pixels = row_px(term_max_row);
-    uint32_t scroll_height_pixels = end_y_pixels - start_y_pixels;
     uint32_t stride = screen_pitch / 4;
     uint32_t px_start = col_px(panes[active_pane].col_start);
     uint32_t px_width = col_px(panes[active_pane].col_end - panes[active_pane].col_start);
 
-    for (uint32_t y = start_y_pixels; y < start_y_pixels + scroll_height_pixels; y++) {
+    for (uint32_t y = start_y_pixels; y < start_y_pixels + (end_y_pixels - start_y_pixels); y++) {
         memcpy(
             &lfbptr[y * stride + px_start],
             &lfbptr[(y + font_cell_h) * stride + px_start],

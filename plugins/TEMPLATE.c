@@ -1,8 +1,6 @@
 
-
 #include "sharkapi.h"
 #include <stdint.h>
-
 
 plugin_info_t plugin_info = {
     .version = SHARKAPI_VERSION,
@@ -13,17 +11,14 @@ plugin_info_t plugin_info = {
     .minor = 0
 };
 
-
 int plugin_init(void) {
     sharkapi_println("Example plugin initialized!");
     return 0;
 }
 
-
 void plugin_cleanup(void) {
     sharkapi_println("Example plugin cleaning up...");
 }
-
 
 int plugin_command(int argc, char** argv) {
     sharkapi_printf("Example plugin called with %d arguments\n", argc);
@@ -34,7 +29,6 @@ int plugin_command(int argc, char** argv) {
 
     return 0;
 }
-
 
 int plugin_init_entry(void) {
     return plugin_init();

@@ -1,8 +1,10 @@
 #include "kernel.h"
 #include "plugin_manager.h"
 #include "doom.h"
+#include "flappybird.h"
+#include "smb.h"
+#include "pong.h"
 
-// Marquee scrolling
 extern void ui_draw_chrome(void);
 task_t* create_task(const char* name) {
     spin_lock(&task_list_lock);
@@ -110,10 +112,9 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     apply_theme(selected_theme);
     fs_initialize();
 
-
-    outb(0x21, inb(0x21) & ~0x04); 
-    outb(0xA1, inb(0xA1) & ~0x04); 
-    outb(0x21, inb(0x21) & ~0x02); 
+    outb(0x21, inb(0x21) & ~0x04);
+    outb(0xA1, inb(0xA1) & ~0x04);
+    outb(0x21, inb(0x21) & ~0x02);
     mouse_init();
 
     plugin_manager_init();
@@ -125,6 +126,18 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     extern void doom_plugin_cleanup(void);
     extern int doom_plugin_command(int argc, char** argv);
     plugin_register_builtin("doom", doom_plugin_init, doom_plugin_cleanup, doom_plugin_command);
+    extern int flappybird_plugin_init(void);
+    extern void flappybird_plugin_cleanup(void);
+    extern int flappybird_plugin_command(int argc, char** argv);
+    plugin_register_builtin("flappybird", flappybird_plugin_init, flappybird_plugin_cleanup, flappybird_plugin_command);
+    extern int smb_plugin_init(void);
+    extern void smb_plugin_cleanup(void);
+    extern int smb_plugin_command(int argc, char** argv);
+    plugin_register_builtin("smb", smb_plugin_init, smb_plugin_cleanup, smb_plugin_command);
+    extern int pong_plugin_init(void);
+    extern void pong_plugin_cleanup(void);
+    extern int pong_plugin_command(int argc, char** argv);
+    plugin_register_builtin("pong", pong_plugin_init, pong_plugin_cleanup, pong_plugin_command);
 
     detect_network_cards();
     struct fs_node* user_dir = find_node(root, "User");
@@ -138,8 +151,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
 
     while (1) {
         yield();
-        
-        // Update footer clock every second (timer is ~1000 Hz)
+
         if (uptime_ticks - last_footer_tick >= 1000) {
             last_footer_tick = uptime_ticks;
             ui_draw_footer();
@@ -236,7 +248,6 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             mouse_state.wheel = 0;
             continue;
         }
-
 
         if (c == 0x10 && history_count > 0 && command_index == 0 && current_kernel_mode == KERNEL_MODE_CLI) {
             if (history_index < history_count - 1) history_index++;

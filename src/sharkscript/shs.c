@@ -173,7 +173,7 @@ static logic_expr_t* parse_logic_expr(const char* str) {
         }
     }
     if (cmp_pos) {
-        int skip = (cmp_op == LOG_EQ || cmp_op == LOG_NE) ? 2 : 
+        int skip = (cmp_op == LOG_EQ || cmp_op == LOG_NE) ? 2 :
                    (cmp_op == LOG_CONTAINS) ? 8 : 1;
         *cmp_pos = 0;
         expr->op = cmp_op;

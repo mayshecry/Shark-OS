@@ -1,14 +1,12 @@
 #include "kernel.h"
 #include "doom.h"
 
-
 uint8_t doom_screen[DOOM_SCREEN_H][DOOM_SCREEN_W];
 uint32_t doom_palette[DOOM_PALETTE_SIZE];
 int doom_scale_factor = 1;
 static doom_state_t game_state = DOOM_MENU;
 static bool doom_running = false;
 static player_t player;
-
 
 #define MAX_ENEMIES 32
 #define ENEMY_RADIUS 10
@@ -24,7 +22,7 @@ typedef struct {
     int32_t x, y;
     enemy_type_t type;
     int health;
-    int state;          
+    int state;
     int attack_timer;
 } enemy_t;
 
@@ -32,7 +30,6 @@ static enemy_t enemies[MAX_ENEMIES];
 static int num_enemies = 0;
 static int enemy_kill_count = 0;
 static int32_t z_buffer[DOOM_SCREEN_W];
-
 
 #define FP_ONE 65536
 static inline int32_t int_to_fp(int x) { return (int32_t)x << 16; }
@@ -59,19 +56,16 @@ static inline int32_t fp_div(int32_t a, int32_t b) {
 }
 static inline int32_t fp_abs(int32_t x) { return (x < 0) ? -x : x; }
 
-
 #define SIN_TAB_SIZE 8192
 static int32_t sin_table[SIN_TAB_SIZE];
 
 static void build_trig_tables(void) {
 
-    int quarter = SIN_TAB_SIZE / 4; 
-
+    int quarter = SIN_TAB_SIZE / 4;
 
     for (int i = 0; i <= quarter; i++) {
 
         int32_t x = (i * 102944) / quarter;
-
 
         int32_t x2 = fp_mul(x, x);
         int32_t x3 = fp_mul(x2, x);
@@ -88,23 +82,19 @@ static void build_trig_tables(void) {
         sin_table[i] = val;
     }
 
-
     for (int i = 1; i < quarter; i++) {
         sin_table[quarter + i] = sin_table[quarter - i];
     }
 
-
     for (int i = 1; i < SIN_TAB_SIZE / 2; i++) {
         sin_table[SIN_TAB_SIZE / 2 + i] = -sin_table[i];
     }
-
 
     sin_table[0] = 0;
     sin_table[quarter] = FP_ONE;
     sin_table[SIN_TAB_SIZE / 2] = 0;
     sin_table[SIN_TAB_SIZE / 2 + quarter] = -FP_ONE;
 }
-
 
 static inline int32_t fp_sin(uint32_t angle) {
     return sin_table[(angle >> (32 - 13)) & (SIN_TAB_SIZE - 1)];
@@ -113,7 +103,6 @@ static inline int32_t fp_sin(uint32_t angle) {
 static inline int32_t fp_cos(uint32_t angle) {
     return sin_table[((angle >> (32 - 13)) + SIN_TAB_SIZE / 4) & (SIN_TAB_SIZE - 1)];
 }
-
 
 static void init_doom_palette(void) {
 
@@ -172,25 +161,24 @@ static void init_doom_palette(void) {
         doom_palette[208 + i] = (r << 16) | (g << 8) | b;
     }
 
-    doom_palette[240] = 0x404040; 
-    doom_palette[241] = 0x606060; 
-    doom_palette[242] = 0x808080; 
-    doom_palette[243] = 0x200000; 
-    doom_palette[244] = 0x8B0000; 
-    doom_palette[245] = 0xFF0000; 
-    doom_palette[246] = 0x00AA00; 
-    doom_palette[247] = 0x0000CC; 
-    doom_palette[248] = 0xFFFF00; 
-    doom_palette[249] = 0xFF8800; 
-    doom_palette[250] = 0x00FF00; 
-    doom_palette[251] = 0x4488FF; 
-    doom_palette[252] = 0xFFFF44; 
-    doom_palette[253] = 0x00FFFF; 
-    doom_palette[254] = 0xFF44FF; 
-    doom_palette[255] = 0xFFFFFF; 
-    doom_palette[0] = 0x000000;   
+    doom_palette[240] = 0x404040;
+    doom_palette[241] = 0x606060;
+    doom_palette[242] = 0x808080;
+    doom_palette[243] = 0x200000;
+    doom_palette[244] = 0x8B0000;
+    doom_palette[245] = 0xFF0000;
+    doom_palette[246] = 0x00AA00;
+    doom_palette[247] = 0x0000CC;
+    doom_palette[248] = 0xFFFF00;
+    doom_palette[249] = 0xFF8800;
+    doom_palette[250] = 0x00FF00;
+    doom_palette[251] = 0x4488FF;
+    doom_palette[252] = 0xFFFF44;
+    doom_palette[253] = 0x00FFFF;
+    doom_palette[254] = 0xFF44FF;
+    doom_palette[255] = 0xFFFFFF;
+    doom_palette[0] = 0x000000;
 }
-
 
 #define MAP_W 64
 #define MAP_H 64
@@ -234,41 +222,34 @@ static void build_e1m1_map(void) {
     memset(cell_sector, -1, sizeof(cell_sector));
     num_sectors = 10;
 
-
-    sector_floor[0] = 0;   sector_ceil[0] = 128;  
-    sector_floor[1] = 0;   sector_ceil[1] = 128;  
-    sector_floor[2] = 0;   sector_ceil[2] = 160;  
-    sector_floor[3] = 24;  sector_ceil[3] = 112;  
-    sector_floor[4] = -16; sector_ceil[4] = 96;   
-    sector_floor[5] = 0;   sector_ceil[5] = 128;  
-    sector_floor[6] = 0;   sector_ceil[6] = 128;  
-    sector_floor[7] = 0;   sector_ceil[7] = 144;  
-    sector_floor[8] = 0;   sector_ceil[8] = 128;  
-    sector_floor[9] = 16;  sector_ceil[9] = 120;  
-
+    sector_floor[0] = 0;   sector_ceil[0] = 128;
+    sector_floor[1] = 0;   sector_ceil[1] = 128;
+    sector_floor[2] = 0;   sector_ceil[2] = 160;
+    sector_floor[3] = 24;  sector_ceil[3] = 112;
+    sector_floor[4] = -16; sector_ceil[4] = 96;
+    sector_floor[5] = 0;   sector_ceil[5] = 128;
+    sector_floor[6] = 0;   sector_ceil[6] = 128;
+    sector_floor[7] = 0;   sector_ceil[7] = 144;
+    sector_floor[8] = 0;   sector_ceil[8] = 128;
+    sector_floor[9] = 16;  sector_ceil[9] = 120;
 
     carve_room(4, 4, 14, 12, 0, 1);
 
-
     carve_room(7, 12, 11, 20, 1, 2);
-    carve_door(8, 12, 10, 12);  
-
+    carve_door(8, 12, 10, 12);
 
     carve_room(2, 20, 22, 32, 2, 3);
-    carve_door(8, 20, 10, 20);  
-
+    carve_door(8, 20, 10, 20);
 
     carve_room(9, 23, 15, 29, 3, 4);
-    carve_door(10, 23, 14, 23); 
-    carve_door(10, 29, 14, 29); 
-
+    carve_door(10, 23, 14, 23);
+    carve_door(10, 29, 14, 29);
 
     carve_room(22, 22, 30, 30, 4, 5);
-    carve_door(22, 25, 22, 28); 
-
+    carve_door(22, 25, 22, 28);
 
     carve_room(2, 34, 10, 42, 5, 6);
-    carve_door(4, 32, 8, 32);   
+    carve_door(4, 32, 8, 32);
 
     for (int y = 32; y <= 34; y++)
         for (int x = 4; x <= 8; x++)
@@ -276,7 +257,6 @@ static void build_e1m1_map(void) {
                 game_map[y][x] = 0;
                 if (cell_sector[y][x] < 0) cell_sector[y][x] = 5;
             }
-
 
     carve_room(14, 34, 22, 42, 6, 2);
     for (int y = 32; y <= 34; y++)
@@ -286,18 +266,14 @@ static void build_e1m1_map(void) {
                 if (cell_sector[y][x] < 0) cell_sector[y][x] = 6;
             }
 
-
     carve_room(22, 20, 34, 24, 7, 1);
-    carve_door(22, 21, 22, 23); 
-
+    carve_door(22, 21, 22, 23);
 
     carve_room(34, 18, 42, 26, 8, 3);
-    carve_door(34, 21, 34, 23); 
-
+    carve_door(34, 21, 34, 23);
 
     carve_room(14, 6, 20, 10, 9, 4);
-    carve_door(14, 7, 14, 9);  
-
+    carve_door(14, 7, 14, 9);
 
     for (int y = 0; y < MAP_H; y++) {
         for (int x = 0; x < MAP_W; x++) {
@@ -322,13 +298,11 @@ static void build_e1m1_map(void) {
         }
     }
 
-
     player.x = int_to_fp(9 * 64 + 32);
     player.y = int_to_fp(8 * 64 + 32);
-    player.angle = ANG90; 
+    player.angle = ANG90;
     player.sector = 0;
 }
-
 
 #define TEX_W 64
 #define TEX_H 64
@@ -348,22 +322,19 @@ static void generate_textures(void) {
                 wall_tex[0][y][x] = is_mortar ? (uint8_t)(144 + 4) : (uint8_t)(48 + 8 + ((x * 7 + y * 3) % 12));
             }
 
-
             {
                 int noise = ((x * 17 + y * 31 + x * y) % 19);
                 wall_tex[1][y][x] = (uint8_t)(144 + 6 + noise % 16);
             }
 
-
             {
                 int panel_x = x % 32, panel_y = y % 32;
                 int is_border = (panel_x < 2 || panel_x >= 30 || panel_y < 2 || panel_y >= 30);
                 int is_light = (panel_x >= 12 && panel_x <= 20 && panel_y >= 4 && panel_y <= 8);
-                if (is_light) wall_tex[2][y][x] = (uint8_t)(208 + 16); 
+                if (is_light) wall_tex[2][y][x] = (uint8_t)(208 + 16);
                 else if (is_border) wall_tex[2][y][x] = (uint8_t)(112 + 20);
                 else wall_tex[2][y][x] = (uint8_t)(112 + 8 + ((x + y) % 6));
             }
-
 
             {
                 int v = 144 + 16 + ((x * 3 + y * 7) % 10) - ((x * 11 + y * 5) % 8);
@@ -372,22 +343,19 @@ static void generate_textures(void) {
                 wall_tex[3][y][x] = (uint8_t)v;
             }
 
-
             {
                 int rivet = 0;
                 if ((x % 16 == 2 || x % 16 == 13) && (y % 16 == 2 || y % 16 == 13)) rivet = 1;
                 int seam = (x % 32 == 0 || y % 32 == 0);
-                if (rivet) wall_tex[4][y][x] = (uint8_t)(8); 
-                else if (seam) wall_tex[4][y][x] = (uint8_t)(3); 
+                if (rivet) wall_tex[4][y][x] = (uint8_t)(8);
+                else if (seam) wall_tex[4][y][x] = (uint8_t)(3);
                 else wall_tex[4][y][x] = (uint8_t)(112 + 4 + ((x * 5 + y * 3) % 6));
             }
-
 
             {
                 int grain = (x + ((y * 3 + x * 7) % 6)) % 8;
                 wall_tex[5][y][x] = (uint8_t)(48 + 4 + grain + ((y % 4 == 0) ? 3 : 0));
             }
-
 
             {
                 int bx = x % 16, by = y % 8;
@@ -397,13 +365,11 @@ static void generate_textures(void) {
                 wall_tex[6][y][x] = is_mortar ? (uint8_t)(144 + 2) : (uint8_t)(16 + 6 + ((x * 3 + y * 7) % 8));
             }
 
-
             {
                 int stripe = ((x + y) / 8) % 2;
                 if (stripe) wall_tex[7][y][x] = (uint8_t)(80 + 16 + ((x + y) % 4));
                 else wall_tex[7][y][x] = (uint8_t)(208 + 10 + ((x + y) % 4));
             }
-
 
             {
                 int tile = ((x / 16) + (y / 16)) % 2;
@@ -436,7 +402,6 @@ static void generate_textures(void) {
                 floor_tex[7][y][x] = line ? (uint8_t)(112 + 16) : (uint8_t)(112 + 4 + ((x + y) % 4));
             }
 
-
             ceil_tex[0][y][x] = (uint8_t)(144 + 2 + ((x * 3 + y * 5) % 4));
 
             ceil_tex[1][y][x] = (uint8_t)(3 + ((x + y) % 2));
@@ -459,7 +424,6 @@ static void generate_textures(void) {
     }
 }
 
-
 #define SCREEN_W 320
 #define SCREEN_H 200
 #define FOV_DEG 66
@@ -469,7 +433,7 @@ static void generate_textures(void) {
 
 static void render_view(void) {
     int half_h = (SCREEN_H - HUD_HEIGHT) / 2;
-    int view_h = SCREEN_H - HUD_HEIGHT;  
+    int view_h = SCREEN_H - HUD_HEIGHT;
     int32_t px = player.x, py = player.y;
     uint32_t pa = player.angle;
 
@@ -480,25 +444,23 @@ static void render_view(void) {
     int player_cell_x = fp_to_int(px) / CELL_SIZE;
     int player_cell_y = fp_to_int(py) / CELL_SIZE;
 
-    uint32_t fov_bams = 787480840; 
+    uint32_t fov_bams = 787480840;
     uint32_t half_fov = fov_bams / 2;
     uint32_t angle_step = fov_bams / SCREEN_W;
 
     for (int col = 0; col < SCREEN_W; col++) {
         uint32_t ray_angle = pa - half_fov + (uint32_t)col * angle_step;
-        int32_t ray_dx = fp_sin(ray_angle);  
-        int32_t ray_dy = fp_cos(ray_angle);  
+        int32_t ray_dx = fp_sin(ray_angle);
+        int32_t ray_dy = fp_cos(ray_angle);
 
         int map_x = player_cell_x;
         int map_y = player_cell_y;
-
 
         int32_t delta_x = (ray_dx == 0) ? 0x7FFFFFFF : fp_abs(fp_div(FP_ONE, ray_dx));
         int32_t delta_y = (ray_dy == 0) ? 0x7FFFFFFF : fp_abs(fp_div(FP_ONE, ray_dy));
 
         int step_x, step_y;
         int32_t side_dist_x, side_dist_y;
-
 
         int32_t px_in_cell = px - int_to_fp(player_cell_x * CELL_SIZE);
         int32_t py_in_cell = py - int_to_fp(player_cell_y * CELL_SIZE);
@@ -518,7 +480,6 @@ static void render_view(void) {
             side_dist_y = fp_mul(int_to_fp(CELL_SIZE) - py_in_cell, delta_y) / CELL_SIZE;
         }
 
-
         int hit = 0, side = 0, wall_type = 0;
         int hit_mx = map_x, hit_my = map_y;
         int max_steps = 64;
@@ -534,18 +495,17 @@ static void render_view(void) {
                 side = 1;
             }
             if (map_x < 0 || map_x >= MAP_W || map_y < 0 || map_y >= MAP_H) {
-                break; 
+                break;
             }
             if (game_map[map_y][map_x] > 0) {
                 hit = 1;
                 wall_type = game_map[map_y][map_x];
                 if (wall_type > 7) wall_type = 7;
-                wall_type--;  
+                wall_type--;
                 hit_mx = map_x;
                 hit_my = map_y;
             }
         }
-
 
         int sector = player.sector;
         if (map_x >= 0 && map_x < MAP_W && map_y >= 0 && map_y < MAP_H) {
@@ -588,7 +548,6 @@ static void render_view(void) {
             continue;
         }
 
-
         int32_t perp_dist;
         if (side == 0) {
             int32_t cell_frac = px_in_cell;
@@ -605,7 +564,6 @@ static void render_view(void) {
         }
         z_buffer[col] = perp_dist;
 
-
         {
             uint32_t ray_diff = ray_angle - pa;
             int32_t cos_diff = fp_cos(ray_diff);
@@ -615,14 +573,12 @@ static void render_view(void) {
 
         if (perp_dist < FP_ONE / 4) perp_dist = FP_ONE / 4;
 
-
         int line_height = fp_to_int(fp_div(int_to_fp(CELL_SIZE * view_h), perp_dist));
         if (line_height > view_h * 4) line_height = view_h * 4;
         if (line_height < 1) line_height = 1;
 
         int draw_start = half_h - line_height / 2;
         int draw_end = half_h + line_height / 2;
-
 
         int32_t wall_hit_pos;
         if (side == 0) {
@@ -632,10 +588,8 @@ static void render_view(void) {
         }
         int tex_x = (fp_to_int(wall_hit_pos) % TEX_W + TEX_W) % TEX_W;
 
-
         if (side == 0 && ray_dx > 0) tex_x = TEX_W - tex_x - 1;
         if (side == 1 && ray_dy < 0) tex_x = TEX_W - tex_x - 1;
-
 
         int32_t dist_units = fp_to_int(perp_dist);
         if (dist_units < 1) dist_units = 1;
@@ -644,7 +598,6 @@ static void render_view(void) {
         if (shade < 40) shade = 40;
 
         if (side == 1) shade = shade * 3 / 4;
-
 
         int ceil_end = draw_start;
         if (ceil_end > view_h) ceil_end = view_h;
@@ -664,7 +617,6 @@ static void render_view(void) {
             doom_screen[y][col] = (uint8_t)c;
         }
 
-
         int ds = draw_start < 0 ? 0 : draw_start;
         int de = draw_end > view_h ? view_h : draw_end;
         for (int y = ds; y < de; y++) {
@@ -677,7 +629,6 @@ static void render_view(void) {
             if (shaded > 255) shaded = 255;
             doom_screen[y][col] = (uint8_t)shaded;
         }
-
 
         int floor_start = draw_end;
         if (floor_start < 0) floor_start = 0;
@@ -699,7 +650,6 @@ static void render_view(void) {
     }
 }
 
-
 static void draw_weapon(void) {
     int weapon = player.weapon;
     int cx = SCREEN_W / 2;
@@ -712,41 +662,39 @@ static void draw_weapon(void) {
                 if (x >= 0 && x < SCREEN_W && y >= 0 && y < SCREEN_H - HUD_HEIGHT) {
                     int dx = x - cx, dy = y - (bot - 15);
                     if (dx * dx + dy * dy < 144) {
-                        doom_screen[y][x] = (uint8_t)(48 + 16); 
+                        doom_screen[y][x] = (uint8_t)(48 + 16);
                     }
                 }
             }
         }
     } else if (weapon == 1) {
 
-
         for (int y = bot - 45; y < bot - 20; y++)
             for (int x = cx - 3; x < cx + 3; x++)
                 if (x >= 0 && x < SCREEN_W && y >= 0 && y < bot)
-                    doom_screen[y][x] = (uint8_t)(5); 
+                    doom_screen[y][x] = (uint8_t)(5);
 
         for (int y = bot - 24; y < bot - 4; y++)
             for (int x = cx - 6; x < cx + 6; x++)
                 if (x >= 0 && x < SCREEN_W && y >= 0 && y < bot)
-                    doom_screen[y][x] = (uint8_t)(48 + 10); 
+                    doom_screen[y][x] = (uint8_t)(48 + 10);
 
         for (int y = bot - 20; y < bot - 6; y++)
             for (int x = cx - 10; x < cx - 4; x++)
                 if (x >= 0 && x < SCREEN_W && y >= 0 && y < bot)
-                    doom_screen[y][x] = (uint8_t)(48 + 18); 
+                    doom_screen[y][x] = (uint8_t)(48 + 18);
     } else if (weapon == 2) {
-
 
         for (int y = bot - 50; y < bot - 20; y++) {
             for (int x = cx - 5; x < cx + 5; x++)
                 if (x >= 0 && x < SCREEN_W && y >= 0 && y < bot)
-                    doom_screen[y][x] = (uint8_t)(4); 
+                    doom_screen[y][x] = (uint8_t)(4);
         }
 
         for (int y = bot - 24; y < bot - 2; y++)
             for (int x = cx - 8; x < cx + 8; x++)
                 if (x >= 0 && x < SCREEN_W && y >= 0 && y < bot)
-                    doom_screen[y][x] = (uint8_t)(48 + 6); 
+                    doom_screen[y][x] = (uint8_t)(48 + 6);
 
         for (int y = bot - 28; y < bot - 14; y++) {
             for (int x = cx - 14; x < cx - 6; x++)
@@ -757,7 +705,6 @@ static void draw_weapon(void) {
                     doom_screen[y][x] = (uint8_t)(48 + 20);
         }
     } else if (weapon == 3) {
-
 
         for (int y = bot - 55; y < bot - 18; y++) {
             for (int off = -4; off <= 4; off += 4) {
@@ -773,11 +720,10 @@ static void draw_weapon(void) {
                     doom_screen[y][x] = (uint8_t)(112 + 6);
     } else {
 
-
         for (int y = bot - 50; y < bot - 16; y++)
             for (int x = cx - 8; x < cx + 8; x++)
                 if (x >= 0 && x < SCREEN_W && y >= 0 && y < bot)
-                    doom_screen[y][x] = (uint8_t)(80 + 8); 
+                    doom_screen[y][x] = (uint8_t)(80 + 8);
 
         for (int y = bot - 20; y < bot - 2; y++)
             for (int x = cx - 6; x < cx + 6; x++)
@@ -785,7 +731,6 @@ static void draw_weapon(void) {
                     doom_screen[y][x] = (uint8_t)(48 + 12);
     }
 }
-
 
 static void hud_char(int x, int y, char c, uint8_t color, uint8_t bg) {
     extern uint8_t font8x8[96][8];
@@ -814,17 +759,14 @@ static void hud_str(int x, int y, const char* str, uint8_t color, uint8_t bg) {
 static void draw_hud(void) {
     int hud_y = SCREEN_H - HUD_HEIGHT;
 
-
     for (int y = hud_y; y < SCREEN_H; y++) {
         uint8_t bg = (uint8_t)(2 + (y - hud_y) / 8);
         for (int x = 0; x < SCREEN_W; x++)
             doom_screen[y][x] = bg;
     }
 
-
     for (int x = 0; x < SCREEN_W; x++)
         doom_screen[hud_y][x] = 7;
-
 
     hud_str(5, hud_y + 4, "HEALTH", 250, 0);
     char buf[8];
@@ -833,11 +775,10 @@ static void draw_hud(void) {
     buf[2] = '0' + (player.health) % 10;
     buf[3] = '%'; buf[4] = '\0';
 
-    uint8_t hcolor = 250; 
-    if (player.health < 50) hcolor = 248; 
-    if (player.health < 25) hcolor = 245; 
+    uint8_t hcolor = 250;
+    if (player.health < 50) hcolor = 248;
+    if (player.health < 25) hcolor = 245;
     hud_str(5, hud_y + 16, buf, hcolor, 0);
-
 
     hud_str(75, hud_y + 4, "ARMOR", 251, 0);
     buf[0] = '0' + (player.armor / 100) % 10;
@@ -846,7 +787,6 @@ static void draw_hud(void) {
     buf[3] = '%'; buf[4] = '\0';
     hud_str(75, hud_y + 16, buf, 251, 0);
 
-
     hud_str(150, hud_y + 4, "AMMO", 252, 0);
     buf[0] = '0' + (player.ammo / 100) % 10;
     buf[1] = '0' + (player.ammo / 10) % 10;
@@ -854,14 +794,12 @@ static void draw_hud(void) {
     buf[3] = '\0';
     hud_str(150, hud_y + 16, buf, 252, 0);
 
-
     const char* weapons[] = {"FIST", "PISTOL", "SHOTGUN", "CHAINGUN", "ROCKET"};
     int w_idx = player.weapon;
     if (w_idx < 0) w_idx = 0;
     if (w_idx > 4) w_idx = 4;
     hud_str(SCREEN_W - 72, hud_y + 4, "ARMS", 253, 0);
     hud_str(SCREEN_W - 72, hud_y + 16, weapons[w_idx], 255, 0);
-
 
     int hx = SCREEN_W / 2, hy = (SCREEN_H - HUD_HEIGHT) / 2;
     if (hy > 0 && hy < SCREEN_H - HUD_HEIGHT) {
@@ -873,7 +811,6 @@ static void draw_hud(void) {
         }
     }
 }
-
 
 static void draw_menu(void) {
 
@@ -896,7 +833,6 @@ static void draw_menu(void) {
 
     hud_str((SCREEN_W - 15 * 8) / 2, 85, "SharkOS Edition", 252, 0);
 
-
     for (int x = 40; x < SCREEN_W - 40; x++)
         doom_screen[100][x] = 245;
 
@@ -905,11 +841,9 @@ static void draw_menu(void) {
     hud_str((SCREEN_W - 20 * 8) / 2, 135, "Press ENTER to start", 250, 0);
     hud_str((SCREEN_W - 22 * 8) / 2, 150, "ESC to return to shell", 7, 0);
 
-
     hud_str((SCREEN_W - 24 * 8) / 2, 172, "WASD - Move   Z/X - Turn", 253, 0);
     hud_str((SCREEN_W - 19 * 8) / 2, 185, "SPACE - Shoot  1-5 Wep", 253, 0);
 }
-
 
 #define MOVE_SPEED (FP_ONE * 2 / 3)
 
@@ -1007,7 +941,6 @@ void doom_handle_key(int key) {
     }
 }
 
-
 static void blit_to_fb(void) {
     uint32_t stride = (uint32_t)(screen_pitch / 4);
     int scale = doom_scale_factor;
@@ -1015,7 +948,6 @@ static void blit_to_fb(void) {
     int ox = ((int)screen_width - sw) / 2, oy = ((int)screen_height - sh) / 2;
     if (ox < 0) ox = 0;
     if (oy < 0) oy = 0;
-
 
     if (oy > 0 || ox > 0) {
         for (uint32_t y = 0; y < screen_height; y++) {
@@ -1053,7 +985,6 @@ static void blit_to_fb(void) {
     }
 }
 
-
 static int enemy_dist_fp(int32_t ex, int32_t ey) {
     int32_t dx = ex - player.x;
     int32_t dy = ey - player.y;
@@ -1076,22 +1007,17 @@ static void init_enemies(void) {
     num_enemies = 0;
     enemy_kill_count = 0;
 
-
     spawn_enemy(10, 24, ENEMY_IMP);
     spawn_enemy(14, 24, ENEMY_IMP);
     spawn_enemy(17, 27, ENEMY_IMP);
 
-
     spawn_enemy(26, 26, ENEMY_DEMON);
-
 
     spawn_enemy(8, 16, ENEMY_ZOMBIE);
     spawn_enemy(26, 22, ENEMY_ZOMBIE);
 
-
     spawn_enemy(5, 38, ENEMY_IMP);
     spawn_enemy(19, 38, ENEMY_ZOMBIE);
-
 
     spawn_enemy(38, 22, ENEMY_IMP);
     spawn_enemy(40, 20, ENEMY_DEMON);
@@ -1142,7 +1068,7 @@ static void update_enemies(void) {
         }
 
         if (los && dist_sq < los_dist_sq) {
-            e->state = 1; 
+            e->state = 1;
 
             int32_t speed = int_to_fp(e->type == ENEMY_DEMON ? 2 : 1);
 
@@ -1178,17 +1104,16 @@ static void update_enemies(void) {
                 }
             }
         } else {
-            e->state = 0; 
+            e->state = 0;
         }
 
         if (e->attack_timer > 0) e->attack_timer--;
     }
 }
 
-
 static bool check_collision(int32_t nx_fp, int32_t ny_fp) {
 
-    int margin = 8; 
+    int margin = 8;
     for (int oy = -margin; oy <= margin; oy += margin) {
         for (int ox = -margin; ox <= margin; ox += margin) {
             int ix = (fp_to_int(nx_fp) + ox) / CELL_SIZE;
@@ -1205,7 +1130,6 @@ static void update_player(void) {
     int32_t nx = px + player.velocity_x;
     int32_t ny = py + player.velocity_y;
 
-
     if (!check_collision(nx, ny)) {
         player.x = nx;
         player.y = ny;
@@ -1215,14 +1139,11 @@ static void update_player(void) {
         player.y = ny;
     }
 
-
     player.velocity_x = player.velocity_x * 70 / 100;
     player.velocity_y = player.velocity_y * 70 / 100;
 
-
     if (fp_abs(player.velocity_x) < 64) player.velocity_x = 0;
     if (fp_abs(player.velocity_y) < 64) player.velocity_y = 0;
-
 
     int mx = fp_to_int(player.x) / CELL_SIZE;
     int my = fp_to_int(player.y) / CELL_SIZE;
@@ -1231,9 +1152,7 @@ static void update_player(void) {
         if (s >= 0 && s < num_sectors) player.sector = s;
     }
 
-
 }
-
 
 static void draw_enemies(void) {
     int32_t cos_a = fp_cos(player.angle);
@@ -1365,7 +1284,6 @@ static void draw_enemies(void) {
     }
 }
 
-
 void doom_init(void) {
     build_trig_tables();
     init_doom_palette();
@@ -1404,7 +1322,6 @@ void doom_draw_frame(void) {
 void doom_run(void) {
     if (doom_running) return;
     doom_running = true;
-
 
     while (keyboard_getchar() != 0) yield();
 

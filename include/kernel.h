@@ -1,6 +1,6 @@
+/*Don't touch anything in here you'll brick everything and it will be a disaster */
 #ifndef KERNEL_H
 #define KERNEL_H
-
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -184,10 +184,10 @@ typedef struct {
     char lines[SCROLLBACK_LINES][SCROLLBACK_COLS];
     uint8_t colors[SCROLLBACK_LINES][SCROLLBACK_COLS];
     int count;
-    int top; 
+    int top;
 } scrollback_t;
 extern scrollback_t scrollback;
-extern int scrollback_offset; 
+extern int scrollback_offset;
 extern char command_history[MAX_HISTORY][80];
 extern int history_count;
 extern int history_index;
@@ -212,7 +212,7 @@ typedef struct {
     uint8_t buttons;
     int dx;
     int dy;
-    int wheel; 
+    int wheel;
 } mouse_state_t;
 extern mouse_state_t mouse_state;
 extern int mouse_cursor_x;

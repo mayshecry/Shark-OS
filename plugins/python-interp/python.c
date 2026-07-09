@@ -1,19 +1,15 @@
 
-
 #include "sharkapi.h"
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 
-
 extern void int_to_string(uint32_t value, char* buffer);
-
 
 #define isdigit(c) ((c) >= '0' && (c) <= '9')
 #define isalpha(c) (((c) >= 'a' && (c) <= 'z') || ((c) >= 'A' && (c) <= 'Z'))
 #define isspace(c) ((c) == ' ' || (c) == '\t' || (c) == '\n' || (c) == '\r')
 #define isalnum(c) (isalpha(c) || isdigit(c))
-
 
 static int simple_atoi(const char* str) {
     int result = 0;
@@ -38,7 +34,6 @@ static int simple_atoi(const char* str) {
 #define MAX_TOKENS 128
 #define MAX_TOKEN_LEN 64
 
-
 typedef struct {
     char name[MAX_VAR_NAME];
     char value[MAX_VAR_VALUE];
@@ -51,7 +46,6 @@ typedef struct {
 
 static py_interpreter_t g_py_interp = {0};
 
-
 plugin_info_t plugin_info = {
     .version = SHARKAPI_VERSION,
     .name = "Python Interpreter",
@@ -61,27 +55,26 @@ plugin_info_t plugin_info = {
     .minor = 0
 };
 
-
 typedef enum {
     TOKEN_UNKNOWN,
     TOKEN_NUMBER,
     TOKEN_STRING,
     TOKEN_IDENTIFIER,
-    TOKEN_ASSIGN,     
-    TOKEN_PLUS,       
-    TOKEN_MINUS,      
-    TOKEN_MULT,       
-    TOKEN_DIV,        
-    TOKEN_LPAREN,     
-    TOKEN_RPAREN,     
-    TOKEN_COMMA,      
-    TOKEN_PRINT,      
-    TOKEN_IF,         
-    TOKEN_ELSE,       
-    TOKEN_FOR,        
-    TOKEN_IN,         
-    TOKEN_DEF,        
-    TOKEN_RANGE,      
+    TOKEN_ASSIGN,
+    TOKEN_PLUS,
+    TOKEN_MINUS,
+    TOKEN_MULT,
+    TOKEN_DIV,
+    TOKEN_LPAREN,
+    TOKEN_RPAREN,
+    TOKEN_COMMA,
+    TOKEN_PRINT,
+    TOKEN_IF,
+    TOKEN_ELSE,
+    TOKEN_FOR,
+    TOKEN_IN,
+    TOKEN_DEF,
+    TOKEN_RANGE,
     TOKEN_EOF
 } token_type_t;
 
@@ -99,7 +92,6 @@ static int tokenize(const char* code, token_t* tokens, int max_tokens) {
         while (*p && isspace(*p)) p++;
         if (!*p) break;
 
-
         if (*p == '"' || *p == '\'') {
             char quote = *p;
             char str_val[MAX_TOKEN_LEN] = {0};
@@ -116,7 +108,6 @@ static int tokenize(const char* code, token_t* tokens, int max_tokens) {
             continue;
         }
 
-
         if (isdigit(*p)) {
             char num_str[MAX_TOKEN_LEN] = {0};
             int len = 0;
@@ -130,7 +121,6 @@ static int tokenize(const char* code, token_t* tokens, int max_tokens) {
             token_count++;
             continue;
         }
-
 
         if (isalpha(*p) || *p == '_') {
             char ident[MAX_TOKEN_LEN] = {0};
@@ -162,7 +152,6 @@ static int tokenize(const char* code, token_t* tokens, int max_tokens) {
             token_count++;
             continue;
         }
-
 
         switch (*p) {
             case '=':
@@ -209,7 +198,6 @@ static int tokenize(const char* code, token_t* tokens, int max_tokens) {
     return token_count;
 }
 
-
 int py_get_var(const char* name, char* out_value) {
     for (int i = 0; i < g_py_interp.var_count; i++) {
         if (strcmp(g_py_interp.vars[i].name, (char*)name) == 0) {
@@ -217,7 +205,7 @@ int py_get_var(const char* name, char* out_value) {
             return 0;
         }
     }
-    return -1; 
+    return -1;
 }
 
 void py_set_var(const char* name, const char* value) {
@@ -235,11 +223,9 @@ void py_set_var(const char* name, const char* value) {
     }
 }
 
-
 int py_eval_expr(token_t* tokens, int start, int end, char* out_result) {
     char temp1[MAX_VAR_VALUE] = {0};
     char temp2[MAX_VAR_VALUE] = {0};
-
 
     if (start == end) {
         if (tokens[start].type == TOKEN_NUMBER) {
@@ -252,7 +238,6 @@ int py_eval_expr(token_t* tokens, int start, int end, char* out_result) {
             return py_get_var(tokens[start].value, out_result);
         }
     }
-
 
     for (int i = start; i <= end; i++) {
         if (tokens[i].type == TOKEN_PLUS || tokens[i].type == TOKEN_MINUS ||
@@ -281,10 +266,8 @@ int py_eval_expr(token_t* tokens, int start, int end, char* out_result) {
     return -1;
 }
 
-
 int py_exec_statement(token_t* tokens, int count) {
     if (count == 0) return 0;
-
 
     if (tokens[0].type == TOKEN_PRINT && count >= 2 && tokens[1].type == TOKEN_LPAREN) {
         int i = 2;
@@ -316,7 +299,6 @@ int py_exec_statement(token_t* tokens, int count) {
         return 0;
     }
 
-
     for (int i = 0; i < count; i++) {
         if (tokens[i].type == TOKEN_ASSIGN) {
             char var_name[MAX_VAR_NAME];
@@ -332,7 +314,6 @@ int py_exec_statement(token_t* tokens, int count) {
     return 0;
 }
 
-
 void py_execute_code(const char* code) {
     token_t tokens[MAX_TOKENS];
     int token_count = tokenize(code, tokens, MAX_TOKENS);
@@ -341,7 +322,6 @@ void py_execute_code(const char* code) {
         py_exec_statement(tokens, token_count);
     }
 }
-
 
 int plugin_init(void) {
     sharkapi_println("Python Interpreter loaded!");
@@ -372,7 +352,7 @@ int plugin_command(int argc, char** argv) {
             if (c == '\n' || c == '\r' || idx >= 255) {
                 break;
             }
-            if (c == 8) { 
+            if (c == 8) {
                 if (idx > 0) {
                     idx--;
                     sharkapi_putchar(8);
@@ -448,7 +428,6 @@ int plugin_command(int argc, char** argv) {
 
     return 0;
 }
-
 
 int plugin_init_entry(void) {
     return plugin_init();

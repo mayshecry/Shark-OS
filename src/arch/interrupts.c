@@ -25,13 +25,13 @@ void irq_handler(struct registers* r) {
 }
 
 void syscall_handler(struct registers* r) {
-    
+
     task_t* task = task_list;
     while (task) {
         task->syscall_count++;
         task = task->next;
     }
-    
+
     if (r->eax == 1) {
         terminal_writestring("\nProcess exited.\n");
     } else if (r->eax == 3) {

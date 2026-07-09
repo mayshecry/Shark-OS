@@ -4,7 +4,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-
 #define SHARKAPI_VERSION 0x00010000
 
 typedef struct {
@@ -16,26 +15,22 @@ typedef struct {
     uint16_t minor;
 } plugin_info_t;
 
-
 void sharkapi_print(const char* text);
 void sharkapi_println(const char* text);
 void sharkapi_printf(const char* fmt, ...);
 void sharkapi_putchar(char c);
 void sharkapi_clear_screen(void);
 
-
 void* sharkapi_malloc(size_t size);
 void  sharkapi_free(void* ptr);
 void* sharkapi_realloc(void* ptr, size_t size);
 void* sharkapi_calloc(size_t count, size_t size);
-
 
 size_t sharkapi_strlen(const char* str);
 char*  sharkapi_strcpy(char* dst, const char* src);
 char*  sharkapi_strcat(char* dst, const char* src);
 int    sharkapi_strcmp(const char* a, const char* b);
 char*  sharkapi_strdup(const char* str);
-
 
 typedef void* file_handle_t;
 
@@ -45,7 +40,6 @@ size_t        sharkapi_fread(void* buffer, size_t size, size_t count, file_handl
 size_t        sharkapi_fwrite(const void* buffer, size_t size, size_t count, file_handle_t file);
 int           sharkapi_fseek(file_handle_t file, long offset, int whence);
 long          sharkapi_ftell(file_handle_t file);
-
 
 typedef struct {
     uint32_t color;
@@ -61,17 +55,14 @@ void sharkapi_draw_line(int x1, int y1, int x2, int y2, uint32_t color);
 void sharkapi_draw_text(int x, int y, const char* text, uint32_t color);
 void sharkapi_get_screen_size(int* width, int* height);
 
-
 typedef void (*key_callback_t)(char key, uint8_t scancode);
 
 char  sharkapi_getchar(void);
 void  sharkapi_register_key_handler(key_callback_t callback);
 void  sharkapi_unregister_key_handler(void);
 
-
 uint32_t sharkapi_get_ticks(void);
 void     sharkapi_delay_ms(uint32_t ms);
-
 
 typedef struct {
     char name[256];
@@ -86,7 +77,6 @@ int          sharkapi_file_exists(const char* path);
 uint32_t     sharkapi_file_size(const char* path);
 void         sharkapi_free_file_list(file_info_t* list, int count);
 
-
 typedef void (*task_func_t)(void);
 
 uint32_t sharkapi_create_task(task_func_t func, const char* name);
@@ -95,15 +85,11 @@ uint32_t sharkapi_get_current_task_id(void);
 void     sharkapi_yield(void);
 void     sharkapi_sleep_ms(uint32_t ms);
 
-
 typedef int (*plugin_init_t)(void);
-
 
 typedef void (*plugin_cleanup_t)(void);
 
-
 typedef int (*plugin_command_t)(int argc, char** argv);
-
 
 #define SHARKAPI_COLOR_BLACK       0xFF000000
 #define SHARKAPI_COLOR_WHITE       0xFFFFFFFF
@@ -116,4 +102,4 @@ typedef int (*plugin_command_t)(int argc, char** argv);
 #define SHARKAPI_COLOR_LIGHT_GREY  0xFFCCCCCC
 #define SHARKAPI_COLOR_DARK_GREY   0xFF333333
 
-#endif 
+#endif

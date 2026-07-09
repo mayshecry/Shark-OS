@@ -10,7 +10,7 @@ CFLAGS = -m32 -std=gnu99 -ffreestanding -Os -Wall -Wextra -fno-pie -fno-stack-pr
 ASFLAGS = --32
 LDFLAGS = -m32 -ffreestanding -Os -nostdlib -lgcc -no-pie -Wl,-m,elf_i386 -Wl,-gc-sections -Wl,--strip-all
 
-DIRS = arch drivers fs ui shell lib sharkscript doom
+DIRS = arch drivers fs ui shell lib sharkscript doom flappybird smb pong
 
 all: sharkos.iso
 
@@ -92,8 +92,26 @@ plugins/python-interp.o: plugins/python-interp/python.c include/sharkapi.h inclu
 plugins/doom/doom_plugin.o: plugins/doom/doom_plugin.c include/sharkapi.h include/plugin_manager.h include/doom.h | plugins/doom
 	$(CC) -c plugins/doom/doom_plugin.c -o plugins/doom/doom_plugin.o $(CFLAGS)
 
+plugins/flappybird/flappybird_plugin.o: plugins/flappybird/flappybird_plugin.c include/sharkapi.h include/plugin_manager.h include/flappybird.h | plugins/flappybird
+	$(CC) -c plugins/flappybird/flappybird_plugin.c -o plugins/flappybird/flappybird_plugin.o $(CFLAGS)
+
+plugins/pong/pong_plugin.o: plugins/pong/pong_plugin.c include/sharkapi.h include/plugin_manager.h include/pong.h | plugins/pong
+	$(CC) -c plugins/pong/pong_plugin.c -o plugins/pong/pong_plugin.o $(CFLAGS)
+
+plugins/smb/smb_plugin.o: plugins/smb/smb_plugin.c include/sharkapi.h include/plugin_manager.h include/smb.h | plugins/smb
+	$(CC) -c plugins/smb/smb_plugin.c -o plugins/smb/smb_plugin.o $(CFLAGS)
+
 doom/doom.o: src/doom/doom.c include/kernel.h include/doom.h | doom
 	$(CC) -c src/doom/doom.c -o doom/doom.o $(CFLAGS)
+
+flappybird/flappybird.o: src/flappybird/flappybird.c include/kernel.h include/flappybird.h | flappybird
+	$(CC) -c src/flappybird/flappybird.c -o flappybird/flappybird.o $(CFLAGS)
+
+pong/pong.o: src/pong/pong.c include/kernel.h include/pong.h | pong
+	$(CC) -c src/pong/pong.c -o pong/pong.o $(CFLAGS)
+
+smb/smb.o: src/smb/smb.c include/kernel.h include/smb.h | smb
+	$(CC) -c src/smb/smb.c -o smb/smb.o $(CFLAGS)
 
 sharkscript/shs.o: src/sharkscript/shs.c include/kernel.h include/sharkscript.h | sharkscript
 	$(CC) -c src/sharkscript/shs.c -o sharkscript/shs.o $(CFLAGS)
@@ -102,10 +120,10 @@ sharkos.bin: boot.o arch/io.o arch/interrupts.o arch/cpu.o drivers/keyboard.o dr
              drivers/mouse.o fs/fs.o ui/terminal.o ui/ui.o ui/fastfetch.o ui/mouse.o \
              shell/commands.o shell/spkg.o shell/main.o shell/lite.o \
              lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o \
-             plugins/python-interp.o plugins/doom/doom_plugin.o sharkscript/shs.o doom/doom.o linker.ld
+             plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o linker.ld
 	$(CC) -T linker.ld -o sharkos.bin $(LDFLAGS) boot.o arch/io.o arch/interrupts.o arch/cpu.o \
 		drivers/keyboard.o drivers/pci.o drivers/mouse.o fs/fs.o ui/terminal.o ui/ui.o \
-		ui/fastfetch.o ui/mouse.o shell/commands.o shell/spkg.o shell/main.o shell/lite.o lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o plugins/python-interp.o plugins/doom/doom_plugin.o sharkscript/shs.o doom/doom.o
+		ui/fastfetch.o ui/mouse.o shell/commands.o shell/spkg.o shell/main.o shell/lite.o lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o
 
 sharkos.iso: sharkos.bin grub.cfg
 	mkdir -p isodir/boot/grub
@@ -114,10 +132,14 @@ sharkos.iso: sharkos.bin grub.cfg
 	cp grub.cfg isodir/boot/grub/grub.cfg
 	@echo "# SharkOS Plugins Directory" > isodir/System/Plugins/README.txt
 	@echo "Place plugin binaries here" >> isodir/System/Plugins/README.txt
+	cp plugins/flappybird/flappybird_plugin.o isodir/System/Plugins/flappybird.plg
+	cp plugins/doom/doom_plugin.o isodir/System/Plugins/doom.plg
+	cp plugins/pong/pong_plugin.o isodir/System/Plugins/pong.plg
+	cp plugins/smb/smb_plugin.o isodir/System/Plugins/smb.plg
 	grub-mkrescue -o sharkos.iso isodir
 
 clean:
-	rm -rf isodir arch drivers fs ui shell lib sharkscript doom
-	rm -f *.o sharkos.bin sharkos.iso sharkscript plugins/*.o
+	rm -rf isodir arch drivers fs ui shell lib sharkscript doom flappybird pong smb
+	rm -f *.o sharkos.bin sharkos.iso sharkscript plugins/*.o plugins/flappybird/*.o plugins/pong/*.o plugins/smb/*.o
 
 .PHONY: all clean $(DIRS)

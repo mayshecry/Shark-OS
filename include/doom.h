@@ -4,13 +4,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-
 typedef int32_t fixed_t;
 #define FRACBITS        16
 #define FRACUNIT        (1 << FRACBITS)
 #define FixedMul(a,b)   ((fixed_t)(((int64_t)(a)*(b))>>FRACBITS))
 #define FixedDiv(a,b)   ((fixed_t)(((int64_t)(a)<<FRACBITS)/(b)))
-
 
 #define ANG45           0x20000000
 #define ANG90           0x40000000
@@ -20,7 +18,6 @@ typedef int32_t fixed_t;
 #define FINEANGLES      8192
 #define FINEMASK        (FINEANGLES-1)
 
-
 #define DOOM_SCREEN_W   320
 #define DOOM_SCREEN_H   200
 #define DOOM_PALETTE_SIZE 256
@@ -28,7 +25,6 @@ typedef int32_t fixed_t;
 extern uint8_t doom_screen[DOOM_SCREEN_H][DOOM_SCREEN_W];
 extern uint32_t doom_palette[DOOM_PALETTE_SIZE];
 extern int doom_scale_factor;
-
 
 typedef struct { int16_t x, y; } vertex_t;
 
@@ -77,7 +73,6 @@ typedef struct {
     int16_t tag;
 } sector_t;
 
-
 typedef struct {
     fixed_t x, y, z;
     uint32_t angle;
@@ -92,7 +87,6 @@ typedef struct {
 
 typedef enum { DOOM_MENU, DOOM_PLAYING, DOOM_QUIT } doom_state_t;
 
-
 void doom_init(void);
 void doom_cleanup(void);
 void doom_run(void);
@@ -102,4 +96,4 @@ void doom_set_kernel_mode(void);
 void doom_restore_kernel_mode(void);
 bool doom_is_active(void);
 
-#endif 
+#endif

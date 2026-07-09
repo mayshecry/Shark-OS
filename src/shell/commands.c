@@ -17,14 +17,34 @@ void print_prompt() {
     size_t pane_idx = active_pane;
     panes[pane_idx].col = panes[pane_idx].col_start;
     terminal_column = panes[pane_idx].col_start;
-    
+
     if (terminal_row < content_first_row) {
         terminal_row = content_first_row;
     }
-    
+
     uint8_t prompt_color = vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
     terminal_set_color(prompt_color);
-    terminal_writestring("Z;/superuser/>");
+    terminal_writestring("Z;");
+
+    char path_buf[128];
+    char rev[128];
+    struct fs_node* n = current_dir;
+    int plen = 0;
+    rev[plen++] = '/';
+    while (n && n->parent) {
+        int namelen = strlen(n->name);
+        for (int k = namelen - 1; k >= 0; k--) rev[plen++] = n->name[k];
+        rev[plen++] = '/';
+        n = n->parent;
+    }
+    int j = 0;
+    for (int k = plen - 1; k >= 0; k--) path_buf[j++] = rev[k];
+    if (j > 0 && path_buf[j-1] != '/') path_buf[j++] = '/';
+    path_buf[j] = '\0';
+
+    terminal_writestring(path_buf);
+    terminal_writestring(">");
+
     terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
     panes[pane_idx].prompt_end_col = terminal_column;
     draw_cursor();
@@ -258,25 +278,25 @@ static void cmd_sysinfo(const char* args) {
     terminal_writestring("║       SharkOS System Info        ║\n");
     terminal_writestring("╚══════════════════════════════════╝\n");
     terminal_writestring("\033[0;37m");
-    
+
     char cpu_model[49];
     get_cpu_model(cpu_model);
     terminal_writestring("CPU: ");
     terminal_writestring(cpu_model);
     terminal_writestring("\n");
-    
+
     terminal_writestring("RAM: ");
     uint32_t total_mb = (uint32_t)(total_system_memory >> 20);
     int_to_string(total_mb, buf);
     terminal_writestring(buf);
     terminal_writestring(" MB\n");
-    
+
     terminal_writestring("Resolution: ");
     int_to_string(screen_width, buf); terminal_writestring(buf);
     terminal_writestring("x");
     int_to_string(screen_height, buf); terminal_writestring(buf);
     terminal_writestring("\n");
-    
+
     uint32_t up_secs = uptime_ticks / 100;
     uint32_t hours = up_secs / 3600;
     uint32_t mins = (up_secs % 3600) / 60;
@@ -285,14 +305,14 @@ static void cmd_sysinfo(const char* args) {
     int_to_string(hours, buf); terminal_writestring(buf); terminal_writestring("h ");
     int_to_string(mins, buf); terminal_writestring(buf); terminal_writestring("m ");
     int_to_string(secs, buf); terminal_writestring(buf); terminal_writestring("s\n");
-    
+
     terminal_writestring("Tasks: ");
     int task_count = 0;
     task_t* t;
     for (t = task_list; t; t = t->next) task_count++;
     int_to_string(task_count, buf); terminal_writestring(buf);
     terminal_writestring("\n");
-    
+
     terminal_writestring("\033[0;32m");
     terminal_writestring("SharkOS V2 - The Sharkslayer Edition\n");
     terminal_writestring("\033[0;37m");
@@ -329,17 +349,17 @@ static void cmd_ps(const char* args) {
 static void cmd_htop(const char* args) {
     (void)args;
     spin_lock(&task_list_lock);
-    
+
     uint32_t total_syscalls = 0;
     task_t* t;
     for (t = task_list; t; t = t->next) total_syscalls += t->syscall_count;
-    
+
     char buf[128];
     terminal_writestring("\n\033[0;32m");
     terminal_writestring("htop - SharkOS Task Manager\n");
     terminal_writestring("\033[0;37m");
     terminal_writestring("────────────────────────────────────────\n");
-    
+
     uint32_t up_secs = uptime_ticks / 100;
     uint32_t hours = up_secs / 3600;
     uint32_t mins = (up_secs % 3600) / 60;
@@ -348,7 +368,7 @@ static void cmd_htop(const char* args) {
     int_to_string(hours, buf); terminal_writestring(buf); terminal_writestring("h ");
     int_to_string(mins, buf); terminal_writestring(buf); terminal_writestring("m ");
     int_to_string(secs, buf); terminal_writestring(buf); terminal_writestring("s  |  ");
-    
+
     int task_count = 0;
     for (t = task_list; t; t = t->next) task_count++;
     terminal_writestring("Tasks: ");
@@ -358,13 +378,13 @@ static void cmd_htop(const char* args) {
     int_to_string(total_syscalls, buf);
     terminal_writestring(buf);
     terminal_writestring("\033[0;37m\n");
-    
+
     terminal_writestring("\033[0;36mPID    NAME            STATE      CPU     SYSCALLS\033[0;37m\n");
     terminal_writestring("─────────────────────────────────────────────────\n");
-    
+
     for (t = task_list; t; t = t->next) {
         uint32_t cpu_pct = total_syscalls > 0 ? (t->syscall_count * 100 / total_syscalls) : 0;
-        
+
         terminal_writestring("\033[0;33m");
         int_to_string(t->id, buf);
         terminal_writestring(buf);
@@ -373,26 +393,26 @@ static void cmd_htop(const char* args) {
         int len = strlen(t->name);
         for (int i = len; i < 15; i++) terminal_writestring(" ");
         terminal_writestring("\033[0;37m");
-        
+
         if (t->state == TASK_RUNNING) terminal_writestring("RUNNING   ");
         else if (t->state == TASK_READY) terminal_writestring("READY     ");
         else if (t->state == TASK_SLEEPING) terminal_writestring("SLEEPING  ");
         else terminal_writestring("ZOMBIE    ");
-        
+
         terminal_writestring("\033[0;32m");
         int_to_string(cpu_pct, buf);
         terminal_writestring(buf);
         for (int i = strlen(buf); i < 5; i++) terminal_writestring(" ");
         terminal_writestring("%  \033[0;35m");
-        
+
         int_to_string(t->syscall_count, buf);
         terminal_writestring(buf);
         terminal_writestring("\033[0;37m\n");
     }
-    
+
     terminal_writestring("────────────────────────────────────────\n");
     terminal_writestring("\033[0;37m");
-    
+
     spin_unlock(&task_list_lock);
 }
 
