@@ -419,7 +419,7 @@ void flappybird_handle_key(int key) {
 
     if (state == MENU) {
         static int cheat_idx = 0;
-        const char* target = "1337";/*Holy leet*/
+        const char* target = "1337";/*Holy */
         if (key == target[cheat_idx]) {
             cheat_idx++;
             if (cheat_idx == 4) {
@@ -441,7 +441,12 @@ void flappybird_handle_key(int key) {
             state = PLAYING;
         } else if (state == PLAYING) {
             flap();
-        } else if (state == G
+        } else if (state == GAMEOVER) {
+            state = MENU;
+            init_game();
+        }
+    }
+}
 
 void flappybird_set_kernel_mode(void) { /*don't ask why this is here it fixed my errors so ig just let it be here :3*/
 }
