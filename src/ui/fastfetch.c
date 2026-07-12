@@ -1,4 +1,5 @@
 #include "kernel.h"
+#include "net.h"
 
 #define INFO_HEADER_COLOR VGA_COLOR_LIGHT_BROWN
 #define INFO_LABEL_COLOR VGA_COLOR_LIGHT_CYAN
@@ -94,8 +95,8 @@ void show_fastfetch(void) {
 
     terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  Network  ");
-    terminal_set_color(vga_entry_color(rtl_io_base != 0 ? INFO_OK_COLOR : INFO_VALUE_COLOR, VGA_COLOR_BLACK));
-    terminal_writestring(rtl_io_base != 0 ? "RTL8139 Online" : "Loopback Mode");
+    terminal_set_color(vga_entry_color(net_has_link ? INFO_OK_COLOR : INFO_VALUE_COLOR, VGA_COLOR_BLACK));
+    terminal_writestring(net_has_link ? net_driver_name : "Loopback Mode");
     terminal_set_color(vga_entry_color(INFO_DIM_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  |  ");
     terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));

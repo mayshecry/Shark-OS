@@ -7,7 +7,7 @@ static int mouse_cycle = 0;
 static uint8_t mouse_packet[4];
 
 void mouse_wait(void) {
-    uint32_t timeout = 100000;
+    uint32_t timeout = 10000;
     while (timeout--) {
         if ((inb(0x64) & 0x02) == 0) return;
     }
@@ -22,7 +22,10 @@ void mouse_handler(void) {
     uint8_t status = inb(0x64);
     if (!(status & 0x20)) return;
 
-    mouse_packet[mouse_cycle] = inb(0x60);
+    uint8_t d = inb(0x60);
+    if (mouse_cycle == 0 && (d & 0x08) == 0) return;
+
+    mouse_packet[mouse_cycle] = d;
     mouse_cycle++;
 
     if (mouse_cycle == 3) {
@@ -39,7 +42,7 @@ void mouse_handler(void) {
         mouse_state.wheel = 0;
 
         mouse_cursor_x += dx;
-        mouse_cursor_y += dy;
+        mouse_cursor_y -= dy;
 
         if (mouse_cursor_x < 0) mouse_cursor_x = 0;
         if (mouse_cursor_y < 0) mouse_cursor_y = 0;
@@ -73,6 +76,8 @@ void mouse_init(void) {
     outb(0x60, status);
 
     mouse_wait();
-    outb(0xD4, 0xF4);
+    outb(0x64, 0xD4);
+    mouse_wait();
+    outb(0x60, 0xF4);
     mouse_read();
 }

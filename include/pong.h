@@ -14,6 +14,7 @@ void pong_init(void);
 void pong_cleanup(void);
 void pong_run(void);
 void pong_draw_frame(void);
+void pong_tick(void);
 void pong_handle_key(int key);
 void pong_set_kernel_mode(void);
 void pong_restore_kernel_mode(void);

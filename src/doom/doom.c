@@ -1,5 +1,6 @@
 #include "kernel.h"
 #include "doom.h"
+#include "desktop.h"
 
 uint8_t doom_screen[DOOM_SCREEN_H][DOOM_SCREEN_W];
 uint32_t doom_palette[DOOM_PALETTE_SIZE];
@@ -983,6 +984,7 @@ static void blit_to_fb(void) {
             }
         }
     }
+    flush_screen_to_hw();
 }
 
 static int enemy_dist_fp(int32_t ex, int32_t ey) {
@@ -1323,33 +1325,47 @@ void doom_run(void) {
     if (doom_running) return;
     doom_running = true;
 
+    
     while (keyboard_getchar() != 0) yield();
 
     game_state = DOOM_MENU;
+    doom_set_kernel_mode();
     doom_draw_frame();
 
+    const uint32_t FRAME_INTERVAL = 16; 
     uint32_t last_frame_time = uptime_ticks;
+
     while (doom_running) {
-        yield();
+        
         char c;
-        while ((c = keyboard_getchar()) != 0) {
+        int keys_processed = 0;
+        while (keys_processed < 4 && (c = keyboard_getchar()) != 0) {
+            keys_processed++;
             doom_handle_key((int)c);
-            if (game_state == DOOM_QUIT) break;
+            if (game_state == DOOM_QUIT) {
+                doom_running = false;
+                break;
+            }
         }
+        
+        
         if (game_state == DOOM_PLAYING) {
             update_player();
             update_enemies();
         }
 
+        
         uint32_t now = uptime_ticks;
-        if (now - last_frame_time >= 2) {
+        if (now - last_frame_time >= FRAME_INTERVAL) {
             doom_draw_frame();
             last_frame_time = now;
         }
-        if (game_state == DOOM_QUIT) break;
-        yield();
+        
+        yield(); 
     }
+    
     doom_cleanup();
+    doom_restore_kernel_mode();
 }
 
 void doom_set_kernel_mode(void) {
@@ -1359,6 +1375,10 @@ void doom_set_kernel_mode(void) {
 }
 
 void doom_restore_kernel_mode(void) {
+    if (current_kernel_mode == KERNEL_MODE_DESKTOP) {
+        desktop.dirty = true;
+        return;
+    }
     terminal_initialize();
     redraw_all_panes();
     print_prompt();

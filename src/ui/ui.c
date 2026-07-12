@@ -191,7 +191,7 @@ void ui_draw_chrome(void) {
 
     draw_string_px(info_buf, 4, 2, UI_TEXT, UI_BG);
 
-    const char* os_name = "SharkOS v2.1";
+    const char* os_name = "SharkOS v2.2";
     uint32_t name_x = ((uint32_t)screen_width - strlen(os_name) * font_cell_w) / 2;
     draw_string_px(os_name, name_x, 2, UI_TITLE, UI_BG);
 }

@@ -106,7 +106,7 @@ int plugin_register_builtin(const char* name, plugin_init_t init,
     plugin->init = init;
     plugin->cleanup = cleanup;
     plugin->command = command;
-    plugin->loaded = 0;
+    plugin->loaded = 1;
     plugin->info = NULL;
     plugin->auto_detected = 0;
 
@@ -120,7 +120,7 @@ void plugin_auto_detect(void) {
         return;
     }
 
-    struct fs_node* plugins_subdir = find_node(plugin_dir, "plugins");
+    struct fs_node* plugins_subdir = find_node(plugin_dir, "Plugins");
     if (!plugins_subdir || plugins_subdir->type != FS_DIRECTORY) {
         return;
     }

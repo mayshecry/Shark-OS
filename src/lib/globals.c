@@ -6,6 +6,7 @@ uint32_t vga_to_rgb[] = {
 };
 
 uint32_t* lfbptr;
+uint32_t* hw_lfbptr = NULL;
 uint64_t screen_width;
 uint64_t screen_height;
 uint64_t screen_pitch;
@@ -126,18 +127,6 @@ int next_pid = 1;
 
 spinlock_t task_list_lock = 0;
 
-bool network_initialized = false;
-uint32_t rtl_io_base = 0;
-uint8_t rtl_irq = 0;
-uint8_t* rx_buffer;
-uint8_t current_tx_buffer = 0;
-
-uint8_t ip_address[4] = {0, 0, 0, 0};
-uint8_t subnet_mask[4] = {255, 255, 255, 0};
-uint8_t gateway[4] = {192, 168, 1, 1};
-uint8_t dns_server[4] = {8, 8, 8, 8};
-bool dhcp_enabled = false;
-
 uintptr_t free_memory_start;
 char current_user[32] = "sharkuser";
 
@@ -151,6 +140,7 @@ bool mouse_enabled = false;
 int settings_selected = 0;
 int selected_theme = THEME_SHARKOS;
 bool lite_mode = false;
+bool legacy_mode = false;
 
 theme_t themes[MAX_THEMES] = {
     {
@@ -229,3 +219,7 @@ int history_count = 0;
 int history_index = -1;
 
 volatile uint32_t uptime_ticks = 0;
+
+/* Terminal output capture for desktop terminal window */
+char* terminal_capture_buffer = NULL;
+int terminal_capture_len = 0;

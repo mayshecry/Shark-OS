@@ -1,5 +1,6 @@
 #include "kernel.h"
 #include "smb.h"
+#include "desktop.h"
 
 uint8_t smb_screen[SMB_SCREEN_H][SMB_SCREEN_W];
 uint32_t smb_palette[256];
@@ -692,6 +693,7 @@ static void blit(void) {
             }
         }
     }
+    flush_screen_to_hw();
 }
 
 static void render(void) {
@@ -722,16 +724,21 @@ void smb_run(void) {
 
     while (keyboard_getchar() != 0) yield();
 
-    const uint32_t STEP_INTERVAL = 32;
+    const uint32_t STEP_INTERVAL = 16; /* 60 FPS */
     uint32_t last = uptime_ticks;
 
     while (running) {
-        yield();
-
         char c;
         int action = 0;
-        while ((c = keyboard_getchar()) != 0) {
-            if (c == 27) { running = 0; game_state = 4; break; }
+        int keys_processed = 0;
+        while (keys_processed < 4 && (c = keyboard_getchar()) != 0) {
+            keys_processed++;
+            if (c == 27) { 
+                running = 0; 
+                game_state = 4; 
+                smb_restore_kernel_mode();
+                return; 
+            }
 
             if (game_state == 0 || game_state == 2 || game_state == 3) {
                 if ((c == ' ' || c == '\n') && !action) {
@@ -775,8 +782,6 @@ void smb_run(void) {
             }
         }
 
-        if (game_state == 4) break;
-
         uint32_t now = uptime_ticks;
         if (now - last >= STEP_INTERVAL) {
             if (game_state == 1) {
@@ -787,10 +792,12 @@ void smb_run(void) {
             render();
             last = now;
         }
-        yield();
+        
+        yield(); /* Let multitasking scheduler run other tasks */
     }
 
     smb_cleanup();
+    smb_restore_kernel_mode();
 }
 
 void smb_draw_frame(void) {
@@ -831,6 +838,10 @@ void smb_set_kernel_mode(void) {
 }
 
 void smb_restore_kernel_mode(void) {
+    if (current_kernel_mode == KERNEL_MODE_DESKTOP) {
+        desktop.dirty = true;
+        return;
+    }
     terminal_initialize();
     redraw_all_panes();
     print_prompt();

@@ -4,14 +4,6 @@ void irq_handler(struct registers* r) {
     if (r->int_no >= 40) outb(0xA0, 0x20);
     outb(0x20, 0x20);
 
-    if (rtl_io_base != 0 && r->int_no == (uint32_t)(rtl_irq + 32)) {
-        uint16_t status = inw(rtl_io_base + 0x3E);
-        outw(rtl_io_base + 0x3E, status);
-        if (status & 0x01) {
-            terminal_writestring("\n[Network] Packet Received!");
-        }
-    }
-
     if (r->int_no == 33) {
         uint8_t scancode = inb(0x60);
         keyboard_handler(scancode);
@@ -21,6 +13,10 @@ void irq_handler(struct registers* r) {
     }
     if (r->int_no == 32) {
         uptime_ticks++;
+    }
+    
+    if (r->int_no >= 40) {
+        outb(0x20, 0x20);
     }
 }
 

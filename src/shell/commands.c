@@ -2,6 +2,7 @@
 #include "sharkscript.h"
 #include "plugin_manager.h"
 #include "doom.h"
+#include "net.h"
 #include <stdint.h>
 
 static int simple_atoi(const char* s) {
@@ -447,6 +448,96 @@ static void cmd_bokop(const char* args) {
     terminal_writestring("bokop command executed.\n");
 }
 
+static void cmd_neofetch(const char* args) {
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_BLUE, VGA_COLOR_BLACK));
+    terminal_writestring("\n");
+    terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡠⢄⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\n");
+    terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⢣⠀⠀⠉⣳⠤⠒⢊⠉⠉⠉⠉⡍⡉⠉⡐⠒⡲⢦⠀⠀\n");
+    terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣇⠔⠋⠀⠀⠀⡸⡄⠀⠀⠀⠠⣦⣇⡲⣪⣠⠋⠀⠀\n");
+    terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⠀⢀⡔⠁⠀⠀⠀⠀⠰⣃⣷⢆⠠⠒⢈⣵⣯⣿⠷⠃⠀⠀⠀\n");
+    terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⣠⠊⠀⠀⠀⠀⡀⡠⠀⠀⣹⠁⠀⠀⢀⣀⠴⠊⠀⠀⠀⠀⠀\n");
+    terminal_writestring("       ⠀⠀⠀⠀⠀⠀⡰⠁⢀⠠⢄⣂⠥⢼⠀⠀⣠⠧⠒⠲⡊⢿⡆⠀⠀⠀⠀⠀⠀⠀\n");
+    terminal_writestring("       ⠀⠀⣠⠴⠒⡲⣡⡴⠗⠋⠁⠀⠀⢸⠀⡴⠁⠀⠀⠀⠙⡼⠃⠀⠀⠀⠀⠀⠀⠀\n");
+    terminal_writestring("       ⠀⠀⠉⠉⠒⡟⠉⡆⠀⠀⠀⠀⠀⠘⠼⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\n");
+    terminal_writestring("       ⠀⠀⠀⠀⠀⠸⣴⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\n");
+    terminal_writestring("\n");
+    terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
+    
+    char buf[64];
+    uint32_t total_mb = (uint32_t)(total_system_memory >> 20);
+    uint32_t up_secs = uptime_ticks / 100;
+    uint32_t hours = up_secs / 3600;
+    uint32_t mins = (up_secs % 3600) / 60;
+    uint32_t secs = up_secs % 60;
+    
+    terminal_writestring("\033[0;36m");
+    terminal_writestring("  OS: \033[0;37mSharkOS V2 - The Sharkslayer Edition\n");
+    terminal_writestring("\033[0;36m");
+    terminal_writestring("  Host: \033[0;37mSharkOS PC\n");
+    terminal_writestring("\033[0;36m");
+    terminal_writestring("  Kernel: \033[0;37mSharkOS V2.2\n");
+    terminal_writestring("\033[0;36m");
+    terminal_writestring("  Shell: \033[0;37mnemo-shell\n");
+    terminal_writestring("\033[0;36m");
+    terminal_writestring("  Resolution: \033[0;37m");
+    int_to_string(screen_width, buf); terminal_writestring(buf);
+    terminal_writestring("x");
+    int_to_string(screen_height, buf); terminal_writestring(buf);
+    terminal_writestring("\n");
+    terminal_writestring("\033[0;36m");
+    terminal_writestring("  CPU: \033[0;37m");
+    char cpu_model[49];
+    get_cpu_model(cpu_model);
+    terminal_writestring(cpu_model);
+    terminal_writestring("\n");
+    terminal_writestring("\033[0;36m");
+    terminal_writestring("  Memory: \033[0;37m");
+    int_to_string(total_mb, buf); terminal_writestring(buf);
+    terminal_writestring(" MB\n");
+    terminal_writestring("\033[0;36m");
+    terminal_writestring("  Uptime: \033[0;37m");
+    int_to_string(hours, buf); terminal_writestring(buf); terminal_writestring("h ");
+    int_to_string(mins, buf); terminal_writestring(buf); terminal_writestring("m ");
+    int_to_string(secs, buf); terminal_writestring(buf); terminal_writestring("s\n");
+    terminal_writestring("\033[0;36m");
+    terminal_writestring("  Theme: \033[0;37mSharkOS Blue\n");
+    terminal_writestring("\033[0;37m");
+}
+
+static void cmd_ifconfig(const char* args) {
+    (void)args;
+    net_cmd_ifconfig();
+}
+static void cmd_dhcp(const char* args) {
+    (void)args;
+    net_cmd_dhcp();
+}
+static void cmd_ping(const char* args) {
+    if (strlen(args) == 0) {
+        terminal_writestring("Usage: ping <ip>\n");
+        return;
+    }
+    net_cmd_ping(args);
+}
+static void cmd_wget(const char* args) {
+    if (strlen(args) == 0) {
+        terminal_writestring("Usage: wget <url>\n");
+        return;
+    }
+    net_cmd_wget(args);
+}
+static void cmd_dns(const char* args) {
+    if (strlen(args) == 0) {
+        terminal_writestring("Usage: dns <hostname>\n");
+        return;
+    }
+    net_cmd_dns(args);
+}
+static void cmd_netstat(const char* args) {
+    (void)args;
+    net_cmd_netstat();
+}
+
 static const cmd_entry_t cmd_table[] = {
     {"ls", cmd_ls},
     {"dir", cmd_ls},
@@ -465,9 +556,16 @@ static const cmd_entry_t cmd_table[] = {
     {"ps", cmd_ps},
     {"htop", cmd_htop},
     {"uptime", cmd_uptime},
+    {"neofetch", cmd_neofetch},
     {"poweroff", cmd_poweroff},
     {"reboot", cmd_reboot},
     {"bokop", cmd_bokop},
+    {"ifconfig", cmd_ifconfig},
+    {"dhcp", cmd_dhcp},
+    {"ping", cmd_ping},
+    {"wget", cmd_wget},
+    {"dns", cmd_dns},
+    {"netstat", cmd_netstat},
 };
 
 #define CMD_TABLE_SIZE (sizeof(cmd_table) / sizeof(cmd_table[0]))
@@ -598,6 +696,83 @@ void execute_command(char* cmd) {
                 terminal_writestring("File not found.");
             }
         }
+    } else if (strcmp(cmd_name, "neofetch") == 0) {
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_BLUE, VGA_COLOR_BLACK));
+        terminal_writestring("\n");
+        terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡠⢄⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\n");
+        terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⢣⠀⠀⠉⣳⠤⠒⢊⠉⠉⠉⠉⡍⡉⠉⡐⠒⡲⢦⠀⠀\n");
+        terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣇⠔⠋⠀⠀⠀⡸⡄⠀⠀⠀⠠⣦⣇⡲⣪⣠⠋⠀⠀\n");
+        terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⠀⢀⡔⠁⠀⠀⠀⠀⠰⣃⣷⢆⠠⠒⢈⣵⣯⣿⠷⠃⠀⠀⠀\n");
+        terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⣠⠊⠀⠀⠀⠀⡀⡠⠀⠀⣹⠁⠀⠀⢀⣀⠴⠊⠀⠀⠀⠀⠀\n");
+        terminal_writestring("       ⠀⠀⠀⠀⠀⠀⡰⠁⢀⠠⢄⣂⠥⢼⠀⠀⣠⠧⠒⠲⡊⢿⡆⠀⠀⠀⠀⠀⠀⠀\n");
+        terminal_writestring("       ⠀⠀⣠⠴⠒⡲⣡⡴⠗⠋⠁⠀⠀⢸⠀⡴⠁⠀⠀⠀⠙⡼⠃⠀⠀⠀⠀⠀⠀⠀\n");
+        terminal_writestring("       ⠀⠀⠉⠉⠒⡟⠉⡆⠀⠀⠀⠀⠀⠘⠼⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\n");
+        terminal_writestring("       ⠀⠀⠀⠀⠀⠸⣴⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\n");
+        terminal_writestring("\n");
+        terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
+        
+        char buf[128];
+        uint32_t total_mb = (uint32_t)(total_system_memory >> 20);
+        uint32_t total_kb = (uint32_t)total_system_memory;
+        uint32_t free_kb = (uint32_t)(total_system_memory * 3 / 4);
+        uint32_t avail_kb = (uint32_t)(total_system_memory * 7 / 8);
+        uint32_t up_secs = uptime_ticks / 100;
+        uint32_t hours = up_secs / 3600;
+        uint32_t mins = (up_secs % 3600) / 60;
+        uint32_t secs = up_secs % 60;
+        int task_count = 0;
+        task_t* t;
+        for (t = task_list; t; t = t->next) task_count++;
+        
+        char cpu_model[49];
+        get_cpu_model(cpu_model);
+        
+        terminal_writestring("\033[0;36m");
+        terminal_writestring("  OS: \033[0;37mSharkOS V2 - The Sharkslayer Edition\n");
+        terminal_writestring("\033[0;36m");
+        terminal_writestring("  Host: \033[0;37mSharkOS PC\n");
+        terminal_writestring("\033[0;36m");
+        terminal_writestring("  Kernel: \033[0;37mSharkOS V2.2\n");
+        terminal_writestring("\033[0;36m");
+        terminal_writestring("  Shell: \033[0;37mnemo-shell\n");
+        terminal_writestring("\033[0;36m");
+        terminal_writestring("  Resolution: \033[0;37m");
+        int_to_string(screen_width, buf); terminal_writestring(buf);
+        terminal_writestring("x");
+        int_to_string(screen_height, buf); terminal_writestring(buf);
+        terminal_writestring("\n");
+        terminal_writestring("\033[0;36m");
+        terminal_writestring("  CPU: \033[0;37m");
+        terminal_writestring(cpu_model);
+        terminal_writestring("\n");
+        terminal_writestring("\033[0;36m");
+        terminal_writestring("  CPU Speed: \033[0;37m2394.466 MHz\n");
+        terminal_writestring("\033[0;36m");
+        terminal_writestring("  Cache: \033[0;37m6144 KB\n");
+        terminal_writestring("\033[0;36m");
+        terminal_writestring("  Memory: \033[0;37m");
+        int_to_string(total_mb, buf); terminal_writestring(buf);
+        terminal_writestring(" MB\n");
+        terminal_writestring("\033[0;36m");
+        terminal_writestring("  Memory Free: \033[0;37m");
+        int_to_string((uint32_t)(free_kb >> 10), buf); terminal_writestring(buf);
+        terminal_writestring(" MB\n");
+        terminal_writestring("\033[0;36m");
+        terminal_writestring("  Memory Avail: \033[0;37m");
+        int_to_string((uint32_t)(avail_kb >> 10), buf); terminal_writestring(buf);
+        terminal_writestring(" MB\n");
+        terminal_writestring("\033[0;36m");
+        terminal_writestring("  Uptime: \033[0;37m");
+        int_to_string(hours, buf); terminal_writestring(buf); terminal_writestring("h ");
+        int_to_string(mins, buf); terminal_writestring(buf); terminal_writestring("m ");
+        int_to_string(secs, buf); terminal_writestring(buf); terminal_writestring("s\n");
+        terminal_writestring("\033[0;36m");
+        terminal_writestring("  Tasks: \033[0;37m");
+        int_to_string(task_count, buf); terminal_writestring(buf);
+        terminal_writestring("\n");
+        terminal_writestring("\033[0;36m");
+        terminal_writestring("  Theme: \033[0;37mSharkOS Blue\n");
+        terminal_writestring("\033[0;37m");
     } else if (strcmp(cmd_name, "fortune") == 0) {
         const char* fortunes[] = {
             "🦈 The shark is always hungry.",

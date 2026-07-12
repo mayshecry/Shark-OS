@@ -1,5 +1,6 @@
 #include "kernel.h"
 #include "pong.h"
+#include "desktop.h"
 
 uint8_t pong_screen[PONG_SCREEN_H][PONG_SCREEN_W];
 uint32_t pong_palette[256];
@@ -32,7 +33,6 @@ static int player_score, cpu_score;
 static int running;
 static unsigned int pong_rng_state;
 
-/* butter to move smooth*/
 static int key_up_pressed = 0;
 static int key_down_pressed = 0;
 
@@ -117,6 +117,8 @@ static void init_game(void) {
     player_score = 0;
     cpu_score = 0;
     reset_ball();
+    key_up_pressed = 0;
+    key_down_pressed = 0;
 }
 
 static void draw_menu(void) {
@@ -165,7 +167,6 @@ static void draw_game(void) {
     draw_number(180, 10, cpu_score, COL_CPU);
 }
 
-/* physics and cpu none sense*/
 static void update(void) {
     int cpu_center = cpu_y + PADDLE_H / 2;
     if (cpu_center < ball_y - 4)
@@ -231,11 +232,10 @@ static void update(void) {
         reset_ball();
     }
 
-    /* smooth speed bitch */
     if (key_up_pressed && player_y > 0)
-        player_y -= 3;
+        player_y -= 6;
     if (key_down_pressed && player_y < 200 - PADDLE_H)
-        player_y += 3;
+        player_y += 6;
 }
 
 static void blit(void) {
@@ -257,6 +257,7 @@ static void blit(void) {
             }
         }
     }
+    flush_screen_to_hw();
 }
 
 void pong_init(void) {
@@ -272,34 +273,43 @@ void pong_cleanup(void) {
     state = QUIT;
 }
 
+void pong_clear_keys(void) {
+    int max_clear = 256;
+    while (keyboard_getchar() != 0 && max_clear > 0) {
+        yield();
+        max_clear--;
+    }
+}
+
 void pong_run(void) {
     if (!running) return;
 
-    while (keyboard_getchar() != 0) yield();
+    pong_clear_keys();
 
     state = MENU;
 
-    /* 60fps goes brrrrr */
-    const uint32_t STEP_INTERVAL = 16;
+    const uint32_t STEP_INTERVAL = 16; 
     uint32_t last = uptime_ticks;
 
     while (running) {
-        yield();
+        key_up_pressed = 0;
+        key_down_pressed = 0;
 
         char c;
-        while ((c = keyboard_getchar()) != 0) {
-            if (c == 27) { running = 0; state = QUIT; break; }
+        int keys_processed = 0;
+        while (keys_processed < 4 && (c = keyboard_getchar()) != 0) {
+            keys_processed++;
+            if (c == 27) { running = 0; state = QUIT; pong_restore_kernel_mode(); return; }
             if (c == '\n') {
                 if (state == MENU) {
+                    pong_clear_keys();
                     init_game();
                     state = PLAYING;
-                    while (keyboard_getchar() != 0);
                 } else if (state == GAMEOVER) {
                     state = MENU;
                     init_game();
                 }
             }
-            /* Movement shizzle */
             if (c == 'w' || c == 'W') key_up_pressed = 1;
             if (c == 's' || c == 'S') key_down_pressed = 1;
         }
@@ -330,15 +340,43 @@ void pong_run(void) {
             blit();
             last = now;
         }
-        yield();
+        
+        yield(); 
     }
 
     pong_cleanup();
+    pong_restore_kernel_mode();
 }
 
 void pong_draw_frame(void) {
     if (state == PLAYING) draw_game();
     else if (state == MENU) draw_menu();
+    blit();
+}
+
+void pong_tick(void) {
+    if (state != PLAYING) return;
+    
+    key_up_pressed = 0;
+    key_down_pressed = 0;
+    
+    char c;
+    int keys_processed = 0;
+    while (keys_processed < 4 && (c = keyboard_getchar()) != 0) {
+        keys_processed++;
+        if (c == 27) { running = 0; state = QUIT; pong_restore_kernel_mode(); return; }
+        if (c == '\n') {
+            if (state == GAMEOVER) {
+                state = MENU;
+                init_game();
+            }
+        }
+        if (c == 'w' || c == 'W') key_up_pressed = 1;
+        if (c == 's' || c == 'S') key_down_pressed = 1;
+    }
+    
+    update();
+    draw_game();
     blit();
 }
 
@@ -363,6 +401,11 @@ void pong_set_kernel_mode(void) {
 }
 
 void pong_restore_kernel_mode(void) {
+    if (current_kernel_mode == KERNEL_MODE_DESKTOP) {
+        
+        desktop.dirty = true;
+        return;
+    }
     terminal_initialize();
     redraw_all_panes();
     print_prompt();

@@ -122,3 +122,15 @@ void delay_ms(uint32_t ms) {
         asm volatile("hlt");
     }
 }
+
+extern uint64_t screen_width;
+extern uint64_t screen_height;
+extern uint64_t screen_pitch;
+extern uint32_t* hw_lfbptr;
+
+void flush_screen_to_hw(void) {
+    if (!hw_lfbptr || !lfbptr) return;
+    uint32_t fb_size = screen_pitch * screen_height;
+    memcpy(hw_lfbptr, lfbptr, fb_size);
+}
+

@@ -1,11 +1,20 @@
 #include "kernel.h"
+#include "desktop.h"
 #include "plugin_manager.h"
 #include "doom.h"
 #include "flappybird.h"
 #include "smb.h"
 #include "pong.h"
+#include "geometrydash.h"
+#include "net.h"
 
 extern void ui_draw_chrome(void);
+extern void ui_draw_footer(void);
+extern void redraw_all_panes(void);
+extern void mouse_update_cursor(void);
+extern void mouse_draw_cursor(void);
+extern void mouse_restore_under_cursor(void);
+
 task_t* create_task(const char* name) {
     spin_lock(&task_list_lock);
     task_t* t = (task_t*)kmalloc(sizeof(task_t));
@@ -16,9 +25,11 @@ task_t* create_task(const char* name) {
     spin_unlock(&task_list_lock);
     return t;
 }
+
 void yield(void) {
     asm volatile("hlt");
 }
+
 struct multiboot_info {
     uint32_t flags, mem_lower, mem_upper, boot_device, cmdline;
     uint32_t mods_count, mods_addr, num, size, addr, shndx;
@@ -30,8 +41,11 @@ struct multiboot_info {
     uint32_t framebuffer_width, framebuffer_height;
     uint8_t framebuffer_bpp, framebuffer_type;
 } __attribute__((packed));
+
 struct multiboot_mmap_entry { uint32_t size, addr_low, addr_high, len_low, len_high, type; } __attribute__((packed));
+
 static void boot_print(const char* s) { terminal_writestring(s); }
+
 void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     if (magic != 0x2BADB002) return;
     asm volatile("cli");
@@ -47,6 +61,14 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
                 }
                 lite_pos++;
             }
+            char* legacy_pos = cmdline;
+            while (*legacy_pos) {
+                if (*legacy_pos == 'l' && *(legacy_pos+1) == 'e' && *(legacy_pos+2) == 'g' && *(legacy_pos+3) == 'a' && *(legacy_pos+4) == 'c' && *(legacy_pos+5) == 'y') {
+                    legacy_mode = true;
+                    break;
+                }
+                legacy_pos++;
+            }
         }
     }
 
@@ -56,7 +78,35 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     screen_pitch = mb_info->framebuffer_pitch;
     if (screen_width < 320) screen_width = 320;
     if (screen_height < 200) screen_height = 200;
-    total_system_memory = ((uint64_t)mb_info->mem_upper + (uint64_t)mb_info->mem_lower);
+    
+    /* Calculate total system memory */
+    uint64_t mem_kb = ((uint64_t)mb_info->mem_upper + (uint64_t)mb_info->mem_lower);
+    total_system_memory = mem_kb * 1024;
+    
+    if (mb_info->flags & (1 << 6)) {
+        struct multiboot_mmap_entry* mmap = (struct multiboot_mmap_entry*)(uintptr_t)mb_info->mmap_addr;
+        uint32_t mmap_len = mb_info->mmap_length;
+        uint64_t highest_addr = 0;
+        uint32_t entries = mmap_len / sizeof(struct multiboot_mmap_entry);
+        for (uint32_t i = 0; i < entries; i++) {
+            if (mmap[i].type == 1) {
+                uint64_t region_start = ((uint64_t)mmap[i].addr_high << 32) | (uint64_t)mmap[i].addr_low;
+                uint64_t region_len = ((uint64_t)mmap[i].len_high << 32) | (uint64_t)mmap[i].len_low;
+                uint64_t region_end = region_start + region_len;
+                if (region_start < 4294967296ULL && region_end > highest_addr) {
+                    highest_addr = region_end;
+                }
+            }
+        }
+        if (highest_addr > 0) {
+            total_system_memory = highest_addr;
+        }
+    }
+    
+    if (total_system_memory > 2147483648) {
+        total_system_memory = 2147483648;
+    }
+    
     pmm_init(total_system_memory);
     ui_init_metrics();
 
@@ -71,7 +121,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     terminal_row = content_first_row;
     terminal_column = 0;
 
-    if (lite_mode) {
+    if (lite_mode || legacy_mode) {
         extern void lite_kmain(void);
         lite_kmain();
     }
@@ -95,15 +145,33 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     terminal_writestring("x");
     int_to_string(screen_height, buf); terminal_writestring(buf);
     terminal_writestring("\n[    0.000003] SHKRNL boot complete.\n");
+
+    boot_screen_show();
+    boot_screen_update("Loading kernel...", 5);
+
     terminal_initialize();
+    boot_screen_update("Initializing descriptors...", 15);
     init_descriptor_tables();
-    outb(0x21, inb(0x21) & ~0x01 & ~0x02);
+    
+    outb(0x21, 0x11);
+    outb(0xA1, 0x11);
+    outb(0x21, 0x20);
+    outb(0xA1, 0x28);
+    outb(0x21, 0x04);
+    outb(0xA1, 0x02);
+    outb(0x21, 0x01);
+    outb(0xA1, 0x01);
+    outb(0x21, 0x00);
+    outb(0xA1, 0x00);
+    outb(0x21, 0xFE);
+    outb(0xA1, 0xFF);
 
     uint16_t divisor = 1193182 / 1000;
     outb(0x43, 0x36);
     outb(0x40, divisor & 0xFF);
     outb(0x40, (divisor >> 8) & 0xFF);
     asm volatile("sti");
+    boot_screen_update("Setting up filesystem...", 25);
     terminal_clear();
     strcpy(current_user, "sharkuser");
     tiling_enabled = 1;
@@ -111,11 +179,13 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     selected_theme = 0;
     apply_theme(selected_theme);
     fs_initialize();
+    boot_screen_update("Initializing input devices...", 40);
 
     outb(0x21, inb(0x21) & ~0x04);
-    outb(0xA1, inb(0xA1) & ~0x04);
+    outb(0xA1, inb(0xA1) & ~0x10);
     outb(0x21, inb(0x21) & ~0x02);
     mouse_init();
+    boot_screen_update("Loading plugins...", 55);
 
     plugin_manager_init();
     extern int plugin_init_entry(void);
@@ -138,166 +208,74 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     extern void pong_plugin_cleanup(void);
     extern int pong_plugin_command(int argc, char** argv);
     plugin_register_builtin("pong", pong_plugin_init, pong_plugin_cleanup, pong_plugin_command);
+    extern int geometrydash_plugin_init(void);
+    extern void geometrydash_plugin_cleanup(void);
+    extern int geometrydash_plugin_command(int argc, char** argv);
+    plugin_register_builtin("gdash", geometrydash_plugin_init, geometrydash_plugin_cleanup, geometrydash_plugin_command);
+    boot_screen_update("Detecting hardware...", 70);
 
-    detect_network_cards();
+    net_init();
+    net_stack_init();
     struct fs_node* user_dir = find_node(root, "User");
     if (user_dir) strcpy(user_dir->name, current_user);
     while (keyboard_getchar() != 0);
     terminal_clear();
-    redraw_all_panes();
-    print_prompt();
+    boot_screen_update("Starting desktop environment...", 85);
 
-    volatile uint32_t last_footer_tick = 0;
+    current_kernel_mode = KERNEL_MODE_DESKTOP;
+    rtc_init();
+    desktop_init();
+    boot_screen_update("Ready!", 100);
+    
+    for (volatile int i = 0; i < 1000000; i++);
+    boot_screen_hide();
+
+    asm volatile("sti");
+
+    hw_lfbptr = lfbptr;
+
+    desktop_render();
+    if (mouse_enabled) {
+        mouse_draw_cursor();
+    }
+
+    bool full_redraw = true;
 
     while (1) {
         yield();
 
-        if (uptime_ticks - last_footer_tick >= 1000) {
-            last_footer_tick = uptime_ticks;
-            ui_draw_footer();
+        if (mouse_enabled) {
+            int mx = mouse_cursor_x;
+            int my = mouse_cursor_y;
+            int buttons = mouse_state.buttons;
+            
+            /* Only process clicks, not movement (to avoid freezing) */
+            if (buttons != 0 && !desktop_mouse_down) {
+                desktop_handle_mouse(mx, my, buttons);
+                desktop.dirty = true;
+            }
+            if (mx != desktop_mouse_x || my != desktop_mouse_y) {
+                desktop_mouse_x = mx;
+                desktop_mouse_y = my;
+                desktop.dirty = true;  /* Force re-render to clear old cursor */
+            }
         }
 
         char c = keyboard_getchar();
-        if (c == 0) {
-            continue;
+        if (c != 0) {
+            desktop_handle_keyboard(c);
         }
 
-        if (current_kernel_mode == KERNEL_MODE_SETTINGS) {
-            if (c == 27) {
-                settings_close();
-            } else if (c == 0x10) {
-                if (settings_selected > 0) settings_selected--;
-                settings_draw();
-            } else if (c == 0x11) {
-                if (settings_selected < 2) settings_selected++;
-                settings_draw();
-            } else if (c == '\n') {
-                if (settings_selected == 0) {
-                    tiling_enabled = !tiling_enabled;
-                } else if (settings_selected == 1) {
-                    mouse_enabled = !mouse_enabled;
-                } else if (settings_selected == 2) {
-                    selected_theme = (selected_theme + 1) % MAX_THEMES;
-                    apply_theme(selected_theme);
-                }
-                settings_draw();
+        net_poll();
+        
+        if (full_redraw || desktop.dirty) {
+            if (desktop.dirty) {
+                desktop_render();
             }
-            continue;
-        }
-
-        if (current_kernel_mode == KERNEL_MODE_EDITOR) {
-            if (c == 27) {
-                if (editor_target_file) {
-                    size_t si;
-                    for (si = 0; si < editor_buffer_idx && si < MAX_FILE_CONTENT_SIZE - 1; si++) {
-                        editor_target_file->content[si] = editor_buffer[si];
-                    }
-                    editor_target_file->content[si] = '\0';
-                    editor_target_file->content_len = si;
-                }
-                current_kernel_mode = KERNEL_MODE_CLI;
-                terminal_clear();
-                print_prompt();
-                continue;
+            if (mouse_enabled) {
+                mouse_draw_cursor();
             }
-            terminal_putchar_editor(c);
-            continue;
+            full_redraw = false;
         }
-
-        if (current_kernel_mode == KERNEL_MODE_FAQ) {
-            if (c == 27 || c == '?') {
-                faq_close();
-            }
-            continue;
-        }
-
-        if (ctrl_pressed && c == 's') {
-            settings_open();
-            continue;
-        }
-        if (c == '\t') {
-            int new_pane = (active_pane + 1) % pane_count;
-            active_pane = new_pane;
-            draw_pane_tabs();
-            terminal_row = panes[new_pane].row;
-            terminal_column = panes[new_pane].col_start;
-            print_prompt();
-            continue;
-        }
-        if (command_index == 0) {
-            if (c == '+') {
-                split_active_pane();
-                continue;
-            }
-            if (c == '-') {
-                close_active_pane();
-                continue;
-            }
-            if (c == '?') {
-                faq_open();
-                continue;
-            }
-        }
-
-        if (mouse_state.wheel != 0 && current_kernel_mode == KERNEL_MODE_CLI) {
-            scrollback_offset += mouse_state.wheel;
-            if (scrollback_offset < 0) scrollback_offset = 0;
-            if (scrollback_offset > scrollback.count) scrollback_offset = scrollback.count;
-            terminal_draw_scrollback();
-            draw_cursor();
-            mouse_state.wheel = 0;
-            continue;
-        }
-
-        if (c == 0x10 && history_count > 0 && command_index == 0 && current_kernel_mode == KERNEL_MODE_CLI) {
-            if (history_index < history_count - 1) history_index++;
-            else history_index = 0;
-
-            draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
-            terminal_column = panes[active_pane].prompt_end_col;
-
-            terminal_writestring(command_history[history_count - 1 - history_index]);
-            command_index = strlen(command_history[history_count - 1 - history_index]);
-            strcpy(command_buffer, command_history[history_count - 1 - history_index]);
-            draw_cursor();
-            continue;
-        }
-        if (c == 0x11 && history_count > 0 && command_index == 0 && current_kernel_mode == KERNEL_MODE_CLI) {
-            if (history_index > 0) history_index--;
-            else history_index = history_count - 1;
-            draw_rect(col_px(terminal_column), row_px(terminal_row), font_cell_w, font_cell_h, UI_SURFACE);
-            terminal_column = panes[active_pane].prompt_end_col;
-            terminal_writestring(command_history[history_count - 1 - history_index]);
-            command_index = strlen(command_history[history_count - 1 - history_index]);
-            strcpy(command_buffer, command_history[history_count - 1 - history_index]);
-            draw_cursor();
-            continue;
-        }
-
-        terminal_putchar_cli(c);
-        if (c == '\n') {
-            command_buffer[command_index] = '\0';
-
-             if (history_count < MAX_HISTORY) {
-                 strcpy(command_history[history_count], command_buffer);
-                 history_count++;
-             } else {
-                 for (int h = 0; h < MAX_HISTORY - 1; h++) {
-                     strcpy(command_history[h], command_history[h + 1]);
-                 }
-                 strcpy(command_history[MAX_HISTORY - 1], command_buffer);
-             }
-             history_index = -1;
-             scrollback_offset = 0;
-             execute_command(command_buffer);
-             command_index = 0;
-             command_buffer[0] = '\0';
-             if (current_kernel_mode == KERNEL_MODE_CLI) {
-                 if (terminal_column != panes[active_pane].col_start) {
-                     terminal_putchar('\n');
-                 }
-                 print_prompt();
-             }
-         }
     }
 }

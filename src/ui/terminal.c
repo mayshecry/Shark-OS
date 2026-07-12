@@ -274,7 +274,16 @@ void terminal_writestring(const char* data) {
                 line_buf[line_len++] = data[i];
             }
         }
-        terminal_write_char_internal(data[i]);
+        
+        
+        if (!terminal_capture_buffer) {
+            terminal_write_char_internal(data[i]);
+        }
+        
+        
+        if (terminal_capture_buffer && terminal_capture_len < 4000) {
+            terminal_capture_buffer[terminal_capture_len++] = data[i];
+        }
     }
 }
 

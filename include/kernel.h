@@ -1,4 +1,4 @@
-/*Don't touch anything in here you'll brick everything and it will be a disaster */
+
 #ifndef KERNEL_H
 #define KERNEL_H
 #include <stdbool.h>
@@ -49,6 +49,7 @@ static inline uint32_t inl(uint16_t port) {
 }
 
 extern uint32_t* lfbptr;
+extern uint32_t* hw_lfbptr;
 extern uint64_t screen_width;
 extern uint64_t screen_height;
 extern uint64_t screen_pitch;
@@ -125,24 +126,13 @@ void spin_lock(spinlock_t *lock);
 void spin_unlock(spinlock_t *lock);
 void yield(void);
 
-extern bool network_initialized;
-extern uint32_t rtl_io_base;
-extern uint8_t rtl_irq;
-extern uint8_t* rx_buffer;
-extern uint8_t current_tx_buffer;
-
-extern uint8_t ip_address[4];
-extern uint8_t subnet_mask[4];
-extern uint8_t gateway[4];
-extern uint8_t dns_server[4];
-extern bool dhcp_enabled;
 extern uintptr_t free_memory_start;
 extern uintptr_t free_memory_end;
 extern char current_user[32];
 
 extern uint8_t font8x8[96][8];
 
-typedef enum { KERNEL_MODE_CLI, KERNEL_MODE_EDITOR, KERNEL_MODE_FAQ, KERNEL_MODE_SETTINGS } kernel_mode_t;
+typedef enum { KERNEL_MODE_CLI, KERNEL_MODE_EDITOR, KERNEL_MODE_FAQ, KERNEL_MODE_SETTINGS, KERNEL_MODE_DESKTOP } kernel_mode_t;
 extern kernel_mode_t current_kernel_mode;
 
 #define MAX_FILE_CONTENT_SIZE 2048
@@ -160,6 +150,7 @@ extern bool tiling_enabled;
 extern bool mouse_enabled;
 extern int selected_theme;
 extern bool lite_mode;
+extern bool legacy_mode;
 
 #define MAX_PANES 4
 #define PANE_GAP 1
@@ -192,6 +183,10 @@ extern char command_history[MAX_HISTORY][80];
 extern int history_count;
 extern int history_index;
 extern volatile uint32_t uptime_ticks;
+
+
+extern char* terminal_capture_buffer;
+extern int terminal_capture_len;
 
 #define terminal_row     (panes[active_pane].row)
 #define terminal_column  (panes[active_pane].col)
@@ -230,8 +225,7 @@ typedef struct {
     uint8_t  e_ident[16]; uint16_t e_type; uint16_t e_machine;
     uint32_t e_version; uint32_t e_entry; uint32_t e_phoff;
     uint32_t e_shoff; uint32_t e_flags; uint16_t e_ehsize;
-    uint16_t e_phentsize; uint16_t e_phnum; uint16_t e_shentsize;
-    uint16_t e_shnum; uint16_t e_shstrndx;
+    uint16_t e_phentsize; uint16_t e_phnum; uint16_t e_shstrndx;
 } Elf32_Ehdr;
 
 typedef struct {
@@ -256,16 +250,12 @@ void delay_ms(uint32_t ms);
 void init_descriptor_tables(void);
 void pmm_init(uint64_t mem_size);
 void* kmalloc(size_t size);
+void kfree(void* ptr);
 uintptr_t virt_to_phys(void* addr);
 
-void rtl8139_init(void);
-void rtl8139_send_packet(void* data, uint32_t len);
 uint32_t pci_config_read(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
 void pci_config_write(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t value);
 void pci_list_devices(void);
-void detect_network_cards(void);
-void send_icmp_ping(const char* target);
-void send_dhcp_discover(void);
 
 void get_cpu_model(char* buffer);
 void shutdown(void);
@@ -338,9 +328,22 @@ void mouse_handler(void);
 void mouse_wait(void);
 uint8_t mouse_read(void);
 void mouse_update_cursor(void);
+void mouse_draw_cursor_only(void);
 
 void irq_handler(struct registers* r);
 void isr_handler(struct registers* r);
 void syscall_handler(struct registers* r);
+
+void flush_screen_to_hw(void);
+
+
+void rtc_init(void);
+void rtc_read_time(void);
+extern uint32_t rtc_seconds;
+extern uint32_t rtc_minutes;
+extern uint32_t rtc_hours;
+extern uint32_t rtc_day;
+extern uint32_t rtc_month;
+extern uint32_t rtc_year;
 
 #endif
