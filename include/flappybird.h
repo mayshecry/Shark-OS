@@ -13,9 +13,11 @@ extern uint32_t flappybird_palette[256];
 void flappybird_init(void);
 void flappybird_cleanup(void);
 void flappybird_run(void);
+void flappybird_tick(void);
 void flappybird_draw_frame(void);
 void flappybird_handle_key(int key);
 void flappybird_set_kernel_mode(void);
 void flappybird_restore_kernel_mode(void);
+void flappybird_set_window_rect(int x, int y, int w, int h);
 
 #endif

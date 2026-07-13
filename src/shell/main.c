@@ -249,10 +249,9 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             int my = mouse_cursor_y;
             int buttons = mouse_state.buttons;
             
-            /* Only process clicks, not movement (to avoid freezing) */
-            if (buttons != 0 && !desktop_mouse_down) {
+            /* Process mouse clicks and releases */
+            if (buttons != 0 || (buttons == 0 && desktop_mouse_down)) {
                 desktop_handle_mouse(mx, my, buttons);
-                desktop.dirty = true;
             }
             if (mx != desktop_mouse_x || my != desktop_mouse_y) {
                 desktop_mouse_x = mx;
@@ -276,6 +275,12 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
                 mouse_draw_cursor();
             }
             full_redraw = false;
+        }
+        
+        /* Game tick for focused game window */
+        window_t* focused = window_get_focused();
+        if (focused && focused->game_tick) {
+            focused->game_tick();
         }
     }
 }

@@ -91,7 +91,8 @@ struct window {
     void (*draw_func)(window_t* w);
     void (*keyboard_func)(window_t* w, char c);
     void (*mouse_func)(window_t* w, int mx, int my, int buttons);
-    void (*close_func)(window_t* w);
+    void (*close_func)(void);
+    void (*game_tick)(void);
     void* user_data;
 };
 
@@ -178,6 +179,7 @@ void window_end_drag(void);
 void window_redraw_clients(void);
 void window_save_background(window_t* w);
 void window_restore_background(window_t* w);
+void window_close_by_ptr(window_t* w);
 
 
 int desktop_icon_add(const char* label, window_type_t type);
@@ -220,6 +222,8 @@ void app_window_keyboard_terminal(window_t* w, char c);
 void app_window_keyboard_doom(window_t* w, char c);
 void app_window_keyboard_flappybird(window_t* w, char c);
 void app_window_keyboard_smb(window_t* w, char c);
+void app_window_keyboard_pong(window_t* w, char c);
+void app_window_keyboard_gdash(window_t* w, char c);
 void app_window_keyboard_notepad(window_t* w, char c);
 void app_window_keyboard_filemanager(window_t* w, char c);
 

@@ -106,19 +106,45 @@ void desktop_icon_launch_offset(window_type_t type, const char* title) {
     int win_y = 30 + (desktop.window_count * 30) % 120;
     int is_game = (type == WINDOW_TYPE_DOOM || type == WINDOW_TYPE_FLAPPYBIRD || type == WINDOW_TYPE_SMB || type == WINDOW_TYPE_PONG || type == WINDOW_TYPE_GDASH);
     if (is_game) {
-        switch (type) {
-            case WINDOW_TYPE_PONG: pong_init(); pong_run(); break;
-            case WINDOW_TYPE_DOOM: doom_init(); doom_run(); break;
-            case WINDOW_TYPE_FLAPPYBIRD: flappybird_init(); flappybird_run(); break;
-            case WINDOW_TYPE_SMB: smb_init(); smb_run(); break;
-            case WINDOW_TYPE_GDASH: gd_init(); gd_run(); break;
-            default: break;
-        }
-        return;
+        win_w = 640; win_h = 480;
     }
     if (win_x + win_w > (int)screen_width) win_x = screen_width - win_w - 20;
     if (win_y + win_h > (int)screen_height - TASKBAR_HEIGHT) win_y = screen_height - TASKBAR_HEIGHT - win_h - 20;
-    window_create(type, title, win_x, win_y, win_w, win_h);
+    int win_idx = window_create(type, title, win_x, win_y, win_w, win_h);
+    if (win_idx >= 0) {
+        window_t* win = &desktop.windows[win_idx];
+        if (is_game) {
+                switch (type) {
+                    case WINDOW_TYPE_PONG:
+                        pong_init();
+                        win->game_tick = pong_tick;
+                        win->close_func = pong_cleanup;
+                        break;
+                    case WINDOW_TYPE_DOOM:
+                        doom_init();
+                        win->game_tick = doom_tick;
+                        win->close_func = doom_cleanup;
+                        break;
+                    case WINDOW_TYPE_FLAPPYBIRD:
+                        flappybird_init();
+                        win->game_tick = flappybird_tick;
+                        win->close_func = flappybird_cleanup;
+                        break;
+                    case WINDOW_TYPE_SMB:
+                        smb_init();
+                        win->game_tick = smb_tick;
+                        win->close_func = smb_cleanup;
+                        break;
+                    case WINDOW_TYPE_GDASH:
+                        gd_init();
+                        win->game_tick = gd_tick;
+                        win->close_func = gd_cleanup;
+                        break;
+                    default: break;
+                }
+        }
+        desktop.dirty = true;
+    }
 }
 
 void desktop_icon_launch(int idx) {
@@ -220,6 +246,7 @@ void desktop_render(void) {
     window_draw_all();
     if (desktop.start_menu.visible) start_menu_draw();
     desktop_draw_taskbar();
+    flush_screen_to_hw();
 }
 
 void desktop_handle_mouse(int mx, int my, int buttons) {
@@ -292,7 +319,7 @@ void desktop_handle_mouse(int mx, int my, int buttons) {
             bool new_hover = (mx >= desktop.icons[i].icon_x && mx < desktop.icons[i].icon_x + DESKTOP_ICON_SIZE && my >= desktop.icons[i].icon_y && my < desktop.icons[i].icon_y + DESKTOP_ICON_SIZE + 16);
             if (new_hover != desktop.icons[i].hovered) { desktop.icons[i].hovered = new_hover; icons_changed = true; }
         }
-        if (icons_changed) desktop.icons_dirty = true;
+        if (icons_changed) { desktop.icons_dirty = true; desktop.dirty = true; }
     }
 }
 

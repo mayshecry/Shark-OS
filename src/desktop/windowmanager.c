@@ -111,9 +111,11 @@ int window_create(window_type_t type, const char* title, int x, int y, int w, in
             break;
         case WINDOW_TYPE_PONG:
             win->draw_func = app_window_draw_pong;
+            win->keyboard_func = app_window_keyboard_pong;
             break;
         case WINDOW_TYPE_GDASH:
             win->draw_func = app_window_draw_gdash;
+            win->keyboard_func = app_window_keyboard_gdash;
             break;
         case WINDOW_TYPE_SETTINGS:
             win->draw_func = app_window_draw_settings;
@@ -142,13 +144,13 @@ int window_create(window_type_t type, const char* title, int x, int y, int w, in
             break;
     }
     
+    desktop.window_count++;
     
     for (int i = 0; i < desktop.window_count; i++) {
         if (i != idx) desktop.windows[i].has_focus = false;
     }
-    
-    desktop.window_count++;
     window_save_background(win);
+    desktop.dirty = true;
     return idx;
 }
 
@@ -159,7 +161,7 @@ void window_close(int idx) {
     window_restore_background(win);
     
     if (win->close_func) {
-        win->close_func(win);
+        win->close_func();
     }
     
     if (win->fb_backup) {
@@ -481,6 +483,7 @@ void window_drag_update(int mx, int my) {
     w->rect.client_x = new_x + BORDER_W;
     w->rect.client_y = new_y + TITLEBAR_H;
     window_save_background(w);
+    w->needs_redraw = true;
     desktop.dirty = true;
 }
 
@@ -548,6 +551,16 @@ void window_end_drag(void) {
         window_t* w = &desktop.windows[desktop_resize_window];
         w->is_resizing = false;
         desktop_resize_window = -1;
+    }
+}
+
+void window_close_by_ptr(window_t* w) {
+    if (!w) return;
+    for (int i = 0; i < desktop.window_count; i++) {
+        if (&desktop.windows[i] == w) {
+            window_close(i);
+            break;
+        }
     }
 }
 

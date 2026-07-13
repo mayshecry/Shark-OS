@@ -74,6 +74,7 @@ typedef struct {
 } coin_t;
 
 static uint8_t level[LEVEL_H][LEVEL_W];
+static int window_x = 0, window_y = 0, window_w = 640, window_h = 480;
 static player_t player;
 static goomba_t goombas[MAX_GOOMBAS];
 static int goomba_count;
@@ -676,24 +677,32 @@ static void draw_win(void) {
 
 static void blit(void) {
     uint32_t stride = (uint32_t)(screen_pitch / 4);
-    int scale_x = (int)screen_width / 320;
-    int scale_y = (int)screen_height / 200;
-    int scale = (scale_x < scale_y) ? scale_x : scale_y;
+    int scale = 2;  /* Fixed scale for 320x200 to 640x400 */
     if (scale < 1) scale = 1;
 
-    for (int y = 0; y < 200 && y * scale < (int)screen_height; y++) {
-        for (int sy = 0; sy < scale && y * scale + sy < (int)screen_height; sy++) {
-            int fy = y * scale + sy;
-            for (int x = 0; x < 320 && x * scale < (int)screen_width; x++) {
+    for (int y = 0; y < 200 && y * scale < window_h; y++) {
+        for (int sy = 0; sy < scale && y * scale + sy < window_h; sy++) {
+            int fy = window_y + y * scale + sy;
+            if (fy < 0) continue;
+            if (fy >= (int)screen_height) continue;
+            for (int x = 0; x < 320 && x * scale < window_w; x++) {
                 uint32_t color = smb_palette[smb_screen[y][x]];
-                for (int sx = 0; sx < scale && x * scale + sx < (int)screen_width; sx++) {
-                    int fx = x * scale + sx;
+                for (int sx = 0; sx < scale && x * scale + sx < window_w; sx++) {
+                    int fx = window_x + x * scale + sx;
+                    if (fx < 0) continue;
+                    if (fx >= (int)screen_width) continue;
                     lfbptr[fy * stride + fx] = color;
                 }
             }
         }
     }
-    flush_screen_to_hw();
+}
+
+void smb_set_window_rect(int x, int y, int w, int h) {
+    window_x = x;
+    window_y = y;
+    window_w = w;
+    window_h = h;
 }
 
 static void render(void) {
@@ -835,6 +844,46 @@ void smb_handle_key(int key) {
 }
 
 void smb_set_kernel_mode(void) {
+}
+
+void smb_tick(void) {
+    if (game_state == 4) return;
+    
+    char c;
+    int keys_processed = 0;
+    while (keys_processed < 4 && (c = keyboard_getchar()) != 0) {
+        keys_processed++;
+        if (c == 27) { running = 0; game_state = 4; smb_restore_kernel_mode();
+            if (current_kernel_mode == KERNEL_MODE_DESKTOP) desktop.dirty = true;
+            return;
+        }
+
+        if (game_state == 1) {
+            if (c == 0x4D) { player.vx_fx = to_fx(3); player.facing = 1; }
+            else if (c == 0x4B) { player.vx_fx = to_fx(-3); player.facing = -1; }
+            else if (c == 0x48) {
+                if (player.on_ground && player.can_jump) {
+                    player.vy_fx = to_fx(-10);
+                    player.on_ground = 0;
+                    player.can_jump = 0;
+                }
+            }
+            else if (c == ' ' || c == '\n') {
+                if (player.on_ground && player.can_jump) {
+                    player.vy_fx = to_fx(-10);
+                    player.on_ground = 0;
+                    player.can_jump = 0;
+                }
+            }
+        }
+    }
+
+    if (game_state == 1) {
+        update_player();
+        update_goombas();
+        timer++;
+    }
+    render();
 }
 
 void smb_restore_kernel_mode(void) {

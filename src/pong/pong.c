@@ -36,6 +36,8 @@ static unsigned int pong_rng_state;
 static int key_up_pressed = 0;
 static int key_down_pressed = 0;
 
+static int window_x = 0, window_y = 0, window_w = 640, window_h = 480;
+
 static void set_px(int x, int y, uint8_t c) {
     if (x >= 0 && x < 320 && y >= 0 && y < 200)
         pong_screen[y][x] = c;
@@ -215,7 +217,7 @@ static void update(void) {
         if (ball_vy < -4) ball_vy = -4;
     }
 
-    if (ball_x < 0) {
+    if (ball_x + BALL_SIZE < 0) {
         cpu_score++;
         if (cpu_score >= 10) {
             state = GAMEOVER;
@@ -223,7 +225,7 @@ static void update(void) {
         }
         reset_ball();
     }
-    if (ball_x > 320) {
+    if (ball_x >= 320) {
         player_score++;
         if (player_score >= 10) {
             state = GAMEOVER;
@@ -240,24 +242,32 @@ static void update(void) {
 
 static void blit(void) {
     uint32_t stride = (uint32_t)(screen_pitch / 4);
-    int scale_x = (int)screen_width / 320;
-    int scale_y = (int)screen_height / 200;
-    int scale = (scale_x < scale_y) ? scale_x : scale_y;
+    int scale = 2;  /* Scale 320x200 to 640x400 */
     if (scale < 1) scale = 1;
 
-    for (int y = 0; y < 200 && y * scale < (int)screen_height; y++) {
-        for (int sy = 0; sy < scale && y * scale + sy < (int)screen_height; sy++) {
-            int fy = y * scale + sy;
-            for (int x = 0; x < 320 && x * scale < (int)screen_width; x++) {
+    for (int y = 0; y < 200 && y * scale < window_h; y++) {
+        for (int sy = 0; sy < scale && y * scale + sy < window_h; sy++) {
+            int fy = window_y + y * scale + sy;
+            if (fy < 0) continue;
+            if (fy >= (int)screen_height) continue;
+            for (int x = 0; x < 320 && x * scale < window_w; x++) {
                 uint32_t color = pong_palette[pong_screen[y][x]];
-                for (int sx = 0; sx < scale && x * scale + sx < (int)screen_width; sx++) {
-                    int fx = x * scale + sx;
+                for (int sx = 0; sx < scale && x * scale + sx < window_w; sx++) {
+                    int fx = window_x + x * scale + sx;
+                    if (fx < 0) continue;
+                    if (fx >= (int)screen_width) continue;
                     lfbptr[fy * stride + fx] = color;
                 }
             }
         }
     }
-    flush_screen_to_hw();
+}
+
+void pong_set_window_rect(int x, int y, int w, int h) {
+    window_x = x;
+    window_y = y;
+    window_w = w;
+    window_h = h;
 }
 
 void pong_init(void) {
@@ -354,29 +364,43 @@ void pong_draw_frame(void) {
     blit();
 }
 
+static uint32_t pong_last_tick_time = 0;
+
 void pong_tick(void) {
-    if (state != PLAYING) return;
+    if (state == QUIT) return;
     
-    key_up_pressed = 0;
-    key_down_pressed = 0;
-    
-    char c;
-    int keys_processed = 0;
-    while (keys_processed < 4 && (c = keyboard_getchar()) != 0) {
-        keys_processed++;
-        if (c == 27) { running = 0; state = QUIT; pong_restore_kernel_mode(); return; }
-        if (c == '\n') {
-            if (state == GAMEOVER) {
-                state = MENU;
-                init_game();
-            }
-        }
-        if (c == 'w' || c == 'W') key_up_pressed = 1;
-        if (c == 's' || c == 'S') key_down_pressed = 1;
+    /* Frame rate limiting for desktop mode */
+    uint32_t now = uptime_ticks;
+    if (now - pong_last_tick_time < 16) {
+        blit();
+        return;
     }
+    pong_last_tick_time = now;
     
-    update();
-    draw_game();
+    if (state == PLAYING) {
+        update();
+        draw_game();
+        /* Clear key state after update - keys are momentary in desktop mode */
+        key_up_pressed = 0;
+        key_down_pressed = 0;
+    } else if (state == MENU) {
+        draw_menu();
+    } else if (state == GAMEOVER) {
+        fill_rect(0, 0, 320, 200, COL_BG);
+        int tx = 320 / 2 - 5 * 4;
+        int ty = 90;
+        const char* msg = (player_score >= 10) ? "YOU WIN!" : "CPU WINS!";
+        for (int i = 0; msg[i]; i++)
+            draw_font_char(tx + i * 8, ty, msg[i], COL_WHITE);
+        draw_number(320 / 2 - 4, 110, player_score, COL_P1);
+        draw_font_char(320 / 2 - 8, 110, '-', COL_WHITE);
+        draw_number(320 / 2 + 2, 110, cpu_score, COL_CPU);
+        tx = 320 / 2 - 13 * 4;
+        ty = 130;
+        const char* retry = "Press ENTER to retry";
+        for (int i = 0; retry[i]; i++)
+            draw_font_char(tx + i * 8, ty, retry[i], COL_GREY);
+    }
     blit();
 }
 
@@ -391,8 +415,8 @@ void pong_handle_key(int key) {
             init_game();
         }
     }
-    if (key == 'w' || key == 'W') key_up_pressed = 1;
-    if (key == 's' || key == 'S') key_down_pressed = 1;
+    if (key == 'w' || key == 'W' || key == 72 || key == 80) key_up_pressed = 1;  /* W or UP arrow */
+    if (key == 's' || key == 'S' || key == 80) key_down_pressed = 1;  /* S or DOWN arrow */
 }
 
 void pong_set_kernel_mode(void) {

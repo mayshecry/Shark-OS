@@ -40,11 +40,14 @@ static state_t state = MENU;
 
 static int bird_x_fix, bird_y_fix, bird_vel_fix;
 static int alive;
+
+static int window_x = 0, window_y = 0, window_w = 640, window_h = 480;
 static pipe_t pipes[16];
 static int pipe_count;
 static int score, best_score;
 static int running;
 static int auto_play = 0;
+static uint32_t last_tick_time = 0;
 static void set_px(int x, int y, uint8_t c) {
     if (x >= 0 && x < 320 && y >= 0 && y < 200)
         flappybird_screen[y][x] = c;
@@ -69,8 +72,8 @@ static void draw_bird(int x, int y, uint8_t bc) {
 }
 
 static void draw_pipe(pipe_t *p) {
-    int gt = p->y - 40;
-    int gb = p->y + 40;
+    int gt = p->y - 65;  /* Larger gap - easier gameplay */
+    int gb = p->y + 65;
 
     fill_rect(p->x, 0, 28, gt, COL_PIPE);
     fill_rect(p->x - 3, gt - 8, 34, 8, COL_PBRIM);
@@ -147,24 +150,39 @@ static void draw_hud(void) {
 
 static void blit(void) {
     uint32_t stride = (uint32_t)(screen_pitch / 4);
-    int scale_x = (int)screen_width / 320;
-    int scale_y = (int)screen_height / 200;
-    int scale = (scale_x < scale_y) ? scale_x : scale_y;
+    /* Calculate scale to fit window, targeting 320x200 */
+    int scale = 2;
     if (scale < 1) scale = 1;
 
-    for (int y = 0; y < 200 && y * scale < (int)screen_height; y++) {
-        for (int sy = 0; sy < scale && y * scale + sy < (int)screen_height; sy++) {
-            int fy = y * scale + sy;
-            for (int x = 0; x < 320 && x * scale < (int)screen_width; x++) {
+    int max_y = (window_h / scale);
+    int max_x = (window_w / scale);
+    
+    if (max_y > 200) max_y = 200;
+    if (max_x > 320) max_x = 320;
+
+    for (int y = 0; y < max_y; y++) {
+        for (int sy = 0; sy < scale && window_y + y * scale + sy < window_y + window_h; sy++) {
+            int fy = window_y + y * scale + sy;
+            if (fy < 0) continue;
+            if (fy >= (int)screen_height) continue;
+            for (int x = 0; x < max_x; x++) {
                 uint32_t color = flappybird_palette[flappybird_screen[y][x]];
-                for (int sx = 0; sx < scale && x * scale + sx < (int)screen_width; sx++) {
-                    int fx = x * scale + sx;
+                for (int sx = 0; sx < scale && window_x + x * scale + sx < window_x + window_w; sx++) {
+                    int fx = window_x + x * scale + sx;
+                    if (fx < 0) continue;
+                    if (fx >= (int)screen_width) continue;
                     lfbptr[fy * stride + fx] = color;
                 }
             }
         }
     }
-    flush_screen_to_hw();
+}
+
+void flappybird_set_window_rect(int x, int y, int w, int h) {
+    window_x = x;
+    window_y = y;
+    window_w = w;
+    window_h = h;
 }
 
 static void build_pal(void) { /*Holy shit it's builidng a birb*/
@@ -192,18 +210,22 @@ static void build_pal(void) { /*Holy shit it's builidng a birb*/
 
 static void spawn_pipe(void) { /*Nintendo i know it looks like mario his pipes but i just a pijpbeurt (the dutch will understand!)*/
     if (pipe_count >= 16) return;
-    pipes[pipe_count].x = 320;
-
-    pipes[pipe_count].y = 85 + (score * 7 % 60);
-    if (pipes[pipe_count].y < 85) pipes[pipe_count].y = 85;
-    if (pipes[pipe_count].y > 145) pipes[pipe_count].y = 145;
+    
+    /* First pipe spawns further away for easier start */
+    int spawn_x = (pipe_count == 0) ? 380 : 320;
+    
+    /* Center the gap in screen (bird at y=100), with some variation */
+    pipes[pipe_count].x = spawn_x;
+    pipes[pipe_count].y = 100 + (score * 7 % 40) - 20;  /* Range 80-120, centered at 100 */
+    if (pipes[pipe_count].y < 80) pipes[pipe_count].y = 80;
+    if (pipes[pipe_count].y > 120) pipes[pipe_count].y = 120;
     pipe_count++;
 }
 
 static void flap(void); /*foward heb je hulp nodig dat is hier*/
 static void init_game(void) {
     bird_x_fix = to_fix(60);
-    bird_y_fix = to_fix(80);
+    bird_y_fix = to_fix(100);  /* Start bird in middle of screen */
     bird_vel_fix = 0;
     alive = 1;
     pipe_count = 0;
@@ -236,9 +258,13 @@ static void auto_flap(void) {
 static void update(void) {
     if (!alive) return; /*this would return false with my mental state im not alive*/
 
-    bird_vel_fix += to_fix(1) / 2;
+    bird_vel_fix += to_fix(1) / 4;  /* Even lighter gravity - easier gameplay */
 
+    /* Lower max fall speed */
     if (bird_vel_fix > to_fix(6)) bird_vel_fix = to_fix(6);
+    
+    /* Added buffer from top of screen */
+    if (bird_y_fix < to_fix(10)) bird_y_fix = to_fix(10);
 
     bird_y_fix += bird_vel_fix;
 
@@ -261,8 +287,8 @@ static void update(void) {
         }
 
         if (60 + 3 < pipes[i].x + 28 && 60 + 9 > pipes[i].x) {
-            int gt = pipes[i].y - 40;
-            int gb = pipes[i].y + 40;
+            int gt = pipes[i].y - 65;  /* Match draw_pipe gap */
+            int gb = pipes[i].y + 65;
 
             if (by + 1 < gt || by + 7 > gb) {
                 alive = 0;
@@ -288,9 +314,20 @@ static void update(void) {
     }
 }
 
+/* Check if bird is within the gap of the first pipe */
+static int check_first_pipe_collision(void) {
+    if (pipe_count == 0) return 0;
+    int gt = pipes[0].y - 55;
+    int gb = pipes[0].y + 55;
+    int by = to_int(bird_y_fix);
+    /* Bird is 8 pixels tall, check if it fits */
+    if (by + 8 <= gt || by >= gb) return 1; /* Clear collision */
+    return 0; /* Safe passage */
+}
+
 static void flap(void) { /*flap go up velocity is fucked (it works but it's fucked still needs a bit of magic)*/
     if (!alive) return;
-    bird_vel_fix = to_fix(-7);
+    bird_vel_fix = to_fix(-7);  /* Moderate flap - easier to control */
 }
 
 static void draw_menu(void) { /*menu goes brrrr*/
@@ -453,6 +490,49 @@ void flappybird_handle_key(int key) {
 }
 
 void flappybird_set_kernel_mode(void) { /*don't ask why this is here it fixed my errors so ig just let it be here :3*/
+}
+
+void flappybird_tick(void) {
+    if (state == QUIT) return;
+    
+    /* Frame rate limiting for desktop mode */
+    uint32_t now = uptime_ticks;
+    if (now - last_tick_time < 16) {
+        render_frame();
+        return;
+    }
+    last_tick_time = now;
+    
+    char c;
+    int keys_processed = 0;
+    while (keys_processed < 4 && (c = keyboard_getchar()) != 0) {
+        keys_processed++;
+        if (c == 27) { running = 0; state = QUIT; flappybird_restore_kernel_mode();
+            if (current_kernel_mode == KERNEL_MODE_DESKTOP) desktop.dirty = true;
+            return;
+        }
+        /* Handle game start and input */
+        if (c == ' ' || c == '\n' || c == 'w' || c == 'W') {
+            if (state == MENU) {
+                init_game();
+                state = PLAYING;
+                /* Clear buffered keys to prevent instant death */
+                while (keyboard_getchar() != 0) { }
+            } else if (state == PLAYING) {
+                flap();
+            } else if (state == GAMEOVER) {
+                state = MENU;
+                init_game();
+            }
+        }
+    }
+    
+    if (state == PLAYING) {
+        if (auto_play) auto_flap();
+        update();
+        if (!alive) state = GAMEOVER;
+    }
+    render_frame();
 }
 
 void flappybird_restore_kernel_mode(void) {

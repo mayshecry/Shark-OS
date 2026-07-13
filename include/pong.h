@@ -18,5 +18,6 @@ void pong_tick(void);
 void pong_handle_key(int key);
 void pong_set_kernel_mode(void);
 void pong_restore_kernel_mode(void);
+void pong_set_window_rect(int x, int y, int w, int h);
 
 #endif

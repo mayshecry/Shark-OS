@@ -96,7 +96,13 @@ int plugin_register_builtin(const char* name, plugin_init_t init,
 
     for (int i = 0; i < g_plugin_count; i++) {
         if (strcmp(g_plugins[i].name, (char*)name) == 0) {
-            return -2;
+            /* Update existing auto-detected plugin with builtin functions */
+            g_plugins[i].init = init;
+            g_plugins[i].cleanup = cleanup;
+            g_plugins[i].command = command;
+            g_plugins[i].loaded = 1;
+            g_plugins[i].auto_detected = 0;
+            return g_plugins[i].id;
         }
     }
 
@@ -128,8 +134,8 @@ void plugin_auto_detect(void) {
     for (int i = 0; i < plugins_subdir->num_children; i++) {
         struct fs_node* child = plugins_subdir->children[i];
         if (child->type == FS_FILE) {
-            const char* ext = strstr(child->name, ".plg");
-            if (ext && strcmp(ext, ".plg") == 0) {
+            int name_len = strlen(child->name);
+            if (name_len > 4 && strcmp(child->name + name_len - 4, ".plg") == 0) {
                 char plugin_name[MAX_PLUGIN_NAME];
                 int name_len = strlen(child->name) - 4;
                 if (name_len >= MAX_PLUGIN_NAME) name_len = MAX_PLUGIN_NAME - 1;

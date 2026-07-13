@@ -11,6 +11,9 @@
 static const char* start_menu_items[] = {
     "Terminal",
     "Settings",
+    "Notepad",
+    "File Manager",
+    "Network",
     "FAQ",
     "System Info",
     "About",
@@ -20,12 +23,15 @@ static const char* start_menu_items[] = {
 static window_type_t start_menu_types[] = {
     WINDOW_TYPE_TERMINAL,
     WINDOW_TYPE_SETTINGS,
+    WINDOW_TYPE_NOTEPAD,
+    WINDOW_TYPE_FILEMANAGER,
+    WINDOW_TYPE_NETWORK,
     WINDOW_TYPE_FAQ,
     WINDOW_TYPE_FASTFETCH,
     WINDOW_TYPE_ABOUT
 };
 
-static int start_menu_count = 5;
+static int start_menu_count = 8;
 
 void start_menu_open(void) {
     desktop.start_menu.active = true;
@@ -41,6 +47,27 @@ void start_menu_open(void) {
     start_menu_items[start_menu_count] = "Terminal";
     start_menu_types[start_menu_count] = WINDOW_TYPE_TERMINAL;
     start_menu_count++;
+    
+    if (start_menu_count < 10) {
+        start_menu_items[start_menu_count] = "Settings";
+        start_menu_types[start_menu_count] = WINDOW_TYPE_SETTINGS;
+        start_menu_count++;
+    }
+    if (start_menu_count < 10) {
+        start_menu_items[start_menu_count] = "Notepad";
+        start_menu_types[start_menu_count] = WINDOW_TYPE_NOTEPAD;
+        start_menu_count++;
+    }
+    if (start_menu_count < 10) {
+        start_menu_items[start_menu_count] = "File Manager";
+        start_menu_types[start_menu_count] = WINDOW_TYPE_FILEMANAGER;
+        start_menu_count++;
+    }
+    if (start_menu_count < 10) {
+        start_menu_items[start_menu_count] = "Network";
+        start_menu_types[start_menu_count] = WINDOW_TYPE_NETWORK;
+        start_menu_count++;
+    }
     
     
     int plugin_count = 0;
@@ -72,11 +99,6 @@ void start_menu_open(void) {
     }
     
     
-    if (start_menu_count < 10) {
-        start_menu_items[start_menu_count] = "Settings";
-        start_menu_types[start_menu_count] = WINDOW_TYPE_SETTINGS;
-        start_menu_count++;
-    }
     if (start_menu_count < 10) {
         start_menu_items[start_menu_count] = "FAQ";
         start_menu_types[start_menu_count] = WINDOW_TYPE_FAQ;

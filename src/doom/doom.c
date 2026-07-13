@@ -9,6 +9,8 @@ static doom_state_t game_state = DOOM_MENU;
 static bool doom_running = false;
 static player_t player;
 
+static int window_x = 0, window_y = 0, window_w = 640, window_h = 480;
+
 #define MAX_ENEMIES 32
 #define ENEMY_RADIUS 10
 
@@ -944,47 +946,37 @@ void doom_handle_key(int key) {
 
 static void blit_to_fb(void) {
     uint32_t stride = (uint32_t)(screen_pitch / 4);
+    /* Always use scale 2 for 320x200 to 640x400 (aspect ratio preserved) */
     int scale = doom_scale_factor;
-    int sw = SCREEN_W * scale, sh = SCREEN_H * scale;
-    int ox = ((int)screen_width - sw) / 2, oy = ((int)screen_height - sh) / 2;
-    if (ox < 0) ox = 0;
-    if (oy < 0) oy = 0;
+    if (scale < 2) scale = 2;  /* Minimum scale 2 for desktop windows */
+    int sw = SCREEN_W * scale;
+    int sh = SCREEN_H * scale;
 
-    if (oy > 0 || ox > 0) {
-        for (uint32_t y = 0; y < screen_height; y++) {
-            if (y < (uint32_t)oy || y >= (uint32_t)(oy + sh)) {
-                for (uint32_t x = 0; x < screen_width; x++)
-                    lfbptr[y * stride + x] = 0;
-            } else {
-                for (int x = 0; x < ox; x++)
-                    lfbptr[y * stride + x] = 0;
-                for (uint32_t x = (uint32_t)(ox + sw); x < screen_width; x++)
-                    lfbptr[y * stride + x] = 0;
-            }
-        }
-    }
-
-    if (scale == 1) {
-        for (int y = 0; y < SCREEN_H && (y + oy) < (int)screen_height; y++)
-            for (int x = 0; x < SCREEN_W && (x + ox) < (int)screen_width; x++)
-                lfbptr[(y + oy) * stride + x + ox] = doom_palette[doom_screen[y][x]];
-    } else {
-        for (int y = 0; y < SCREEN_H; y++) {
-            for (int sy = 0; sy < scale; sy++) {
-                int fy = y * scale + sy + oy;
-                if (fy >= (int)screen_height) break;
-                for (int x = 0; x < SCREEN_W; x++) {
-                    uint32_t color = doom_palette[doom_screen[y][x]];
-                    for (int sx = 0; sx < scale; sx++) {
-                        int fx = x * scale + sx + ox;
-                        if (fx >= (int)screen_width) break;
-                        lfbptr[fy * stride + fx] = color;
-                    }
+    for (int y = 0; y < SCREEN_H && y * scale < sh; y++) {
+        for (int sy = 0; sy < scale && y * scale + sy < sh; sy++) {
+            int fy = window_y + y * scale + sy;
+            for (int x = 0; x < SCREEN_W && x * scale < sw; x++) {
+                uint32_t color = doom_palette[doom_screen[y][x]];
+                for (int sx = 0; sx < scale && x * scale + sx < sw; sx++) {
+                    int fx = window_x + x * scale + sx;
+                    lfbptr[fy * stride + fx] = color;
                 }
             }
         }
     }
-    flush_screen_to_hw();
+}
+
+void doom_set_window_rect(int x, int y, int w, int h) {
+    window_x = x;
+    window_y = y;
+    window_w = w;
+    window_h = h;
+    
+    /* Calculate scale based on window client area */
+    doom_scale_factor = 1;
+    if (w >= 640 && h >= 400) doom_scale_factor = 2;
+    if (w >= 1280 && h >= 800) doom_scale_factor = 4;
+    if (doom_scale_factor < 1) doom_scale_factor = 1;
 }
 
 static int enemy_dist_fp(int32_t ex, int32_t ey) {
@@ -1369,9 +1361,28 @@ void doom_run(void) {
 }
 
 void doom_set_kernel_mode(void) {
-    doom_scale_factor = 1;
-    if (screen_width >= 640 && screen_height >= 400) doom_scale_factor = 2;
-    if (screen_width >= 1280 && screen_height >= 800) doom_scale_factor = 4;
+    /* Initialize with a reasonable scale for 320x200 screen */
+    doom_scale_factor = 2;
+}
+
+void doom_tick(void) {
+    if (game_state == DOOM_QUIT) return;
+    
+    while (keyboard_getchar() != 0) {
+        char c = keyboard_getchar();
+        doom_handle_key((int)c);
+        if (game_state == DOOM_QUIT) {
+            doom_running = false;
+            doom_restore_kernel_mode();
+            return;
+        }
+    }
+    
+    if (game_state == DOOM_PLAYING) {
+        update_player();
+        update_enemies();
+    }
+    doom_draw_frame();
 }
 
 void doom_restore_kernel_mode(void) {

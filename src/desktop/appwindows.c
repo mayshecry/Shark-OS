@@ -82,12 +82,11 @@ void app_window_draw_terminal(window_t* w) {
     if (blink++ >= 60) blink = 0;
 }
 
-void app_window_draw_doom(window_t* w) { doom_draw_frame(); }
-void app_window_draw_flappybird(window_t* w) { flappybird_draw_frame(); }
-void app_window_draw_smb(window_t* w) { smb_draw_frame(); }
-void app_window_draw_pong(window_t* w) { pong_draw_frame(); }
-void app_window_draw_gdash(window_t* w) { gd_draw_frame(); }
-
+void app_window_draw_doom(window_t* w) { doom_set_window_rect(w->rect.client_x, w->rect.client_y, w->rect.client_w, w->rect.client_h); doom_draw_frame(); }
+void app_window_draw_flappybird(window_t* w) { flappybird_set_window_rect(w->rect.client_x, w->rect.client_y, w->rect.client_w, w->rect.client_h); flappybird_draw_frame(); }
+void app_window_draw_smb(window_t* w) { smb_set_window_rect(w->rect.client_x, w->rect.client_y, w->rect.client_w, w->rect.client_h); smb_draw_frame(); }
+void app_window_draw_pong(window_t* w) { pong_set_window_rect(w->rect.client_x, w->rect.client_y, w->rect.client_w, w->rect.client_h); pong_draw_frame(); }
+void app_window_draw_gdash(window_t* w) { gd_set_window_rect(w->rect.client_x, w->rect.client_y, w->rect.client_w, w->rect.client_h); gd_draw_frame(); }
 typedef struct {
     int y;
     uint32_t color;
@@ -560,6 +559,7 @@ void app_window_draw_network(window_t* w) {
 }
 
 void app_window_keyboard_terminal(window_t* w, char c) {
+    if (c == 27) return; /* ESC - let desktop handle it */
     if (c == '\n') {
         if (terminal_buf_len > 0) {
             terminal_buffer[terminal_buf_len] = '\0';
@@ -597,3 +597,19 @@ void app_window_keyboard_terminal(window_t* w, char c) {
 void app_window_keyboard_doom(window_t* w, char c) { (void)w; doom_handle_key((int)c); }
 void app_window_keyboard_flappybird(window_t* w, char c) { (void)w; flappybird_handle_key((int)c); }
 void app_window_keyboard_smb(window_t* w, char c) { (void)w; smb_handle_key((int)c); }
+
+void app_window_keyboard_pong(window_t* w, char c) {
+    if (c == 27) { window_close_by_ptr(w); return; }
+    pong_handle_key((int)c);
+}
+
+void app_window_keyboard_gdash(window_t* w, char c) {
+    if (c == 27) { window_close_by_ptr(w); return; }
+    gd_handle_key((int)c);
+}
+
+static void pong_cleanup_wrapper(void) { pong_cleanup(); }
+static void doom_cleanup_wrapper(void) { doom_cleanup(); }
+static void flappybird_cleanup_wrapper(void) { flappybird_cleanup(); }
+static void smb_cleanup_wrapper(void) { smb_cleanup(); }
+static void gdash_cleanup_wrapper(void) { gd_cleanup(); }
