@@ -30,50 +30,78 @@ uint32_t row_px(size_t row) {
     return (uint32_t)(row * font_cell_h);
 }
 
-void draw_string_px(const char* s, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg) {
+void draw_string_px(const char* s, int x, int y, uint32_t fg, uint32_t bg) {
     for (size_t i = 0; s[i] != '\0'; i++) {
-        draw_char(s[i], x + i * font_cell_w, y, fg, bg);
+        draw_char(s[i], x + (int)(i * font_cell_w), y, fg, bg);
     }
 }
 
-void draw_char(char c, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg) {
+/* draw_char / draw_pixel / draw_rect take signed coordinates and clip on all
+ * four edges. The previous uint32_t versions only tested the right/bottom
+ * edge, so a negative x or y wrapped to a huge value, slipped past the
+ * `x + px < screen_width` test and wrote outside the framebuffer. */
+void draw_char(char c, int x, int y, uint32_t fg, uint32_t bg) {
     if (c < 32 || c > 126) return;
-    uint32_t font_idx = c - 32;
+
+    uint32_t font_idx = (uint32_t)(c - 32);
     uint32_t stride = screen_pitch / 4;
-    uint32_t scale = font_scale;
+    int scale = (int)font_scale;
+    if (scale < 1) scale = 1;
+
+    int sw = (int)screen_width;
+    int sh = (int)screen_height;
+    int cell = 8 * scale;
+
+    /* Reject cells entirely off screen before touching the framebuffer. */
+    if (x >= sw || y >= sh || x + cell <= 0 || y + cell <= 0) return;
 
     for (int row = 0; row < 8; row++) {
         uint8_t font_byte = font8x8[font_idx][row];
-        for (int col = 0; col < 8; col++) {
-            uint32_t color = ((font_byte >> (7 - col)) & 1) ? fg : bg;
-            for (uint32_t sy = 0; sy < scale; sy++) {
-                uint32_t py = y + (uint32_t)row * scale + sy;
-                if (py >= screen_height) continue;
-                uint32_t* row_ptr = &lfbptr[py * stride + x];
-                for (uint32_t sx = 0; sx < scale; sx++) {
-                    uint32_t px = (uint32_t)col * scale + sx;
-                    if (x + px < screen_width) {
-                        row_ptr[px] = color;
-                    }
+        int py0 = y + row * scale;
+        if (py0 < 0 || py0 >= sh) continue;
+        int rows = scale;
+        if (py0 + rows > sh) rows = sh - py0;
+        for (int sy = 0; sy < rows; sy++) {
+            uint32_t* row_ptr = &lfbptr[(uint32_t)(py0 + sy) * stride];
+            for (int col = 0; col < 8; col++) {
+                uint32_t color = ((font_byte >> (7 - col)) & 1) ? fg : bg;
+                int px = x + col * scale;
+                if (px < 0 || px >= sw) continue;
+                int cols = scale;
+                if (px + cols > sw) cols = sw - px;
+                for (int sx = 0; sx < cols; sx++) {
+                    row_ptr[px + sx] = color;
                 }
             }
         }
     }
 }
 
-void draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
-    if (x < screen_width && y < screen_height) {
-        uint32_t stride = screen_pitch / 4;
-        lfbptr[y * stride + x] = color;
-    }
+void draw_pixel(int x, int y, uint32_t color) {
+    if (x < 0 || y < 0) return;
+    if ((uint32_t)x >= screen_width || (uint32_t)y >= screen_height) return;
+    uint32_t stride = screen_pitch / 4;
+    lfbptr[(uint32_t)y * stride + (uint32_t)x] = color;
 }
 
-void draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
+void draw_rect(int x, int y, int w, int h, uint32_t color) {
+    if (w <= 0 || h <= 0) return;
+
+    int sw = (int)screen_width;
+    int sh = (int)screen_height;
+
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    int x1 = x + w; if (x1 > sw) x1 = sw;
+    int y1 = y + h; if (y1 > sh) y1 = sh;
+    if (x0 >= x1 || y0 >= y1) return;
+
     uint32_t stride = screen_pitch / 4;
-    for (uint32_t i = 0; i < h; i++) {
-        uint32_t* dest = &lfbptr[(y + i) * stride + x];
-        for (uint32_t j = 0; j < w; j++) {
-            dest[j] = color;
+    int run = x1 - x0;
+    for (int py = y0; py < y1; py++) {
+        uint32_t* dest = &lfbptr[(uint32_t)py * stride + (uint32_t)x0];
+        for (int px = 0; px < run; px++) {
+            dest[px] = color;
         }
     }
 }
@@ -300,7 +328,7 @@ void terminal_draw_scrollback(void) {
     if (start_line < 0) start_line = 0;
 
     int row = content_first_row;
-    for (int i = start_line; i < scrollback.count && row < term_max_row; i++) {
+    for (int i = start_line; i < scrollback.count && row < (int)term_max_row; i++) {
         int idx = (scrollback.top + i) % SCROLLBACK_LINES;
         for (int c = 0; c < SCROLLBACK_COLS && scrollback.lines[idx][c] != '\0'; c++) {
             if (c >= (int)(panes[active_pane].col_end - panes[active_pane].col_start)) break;

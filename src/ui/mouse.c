@@ -115,25 +115,49 @@ void mouse_update_cursor(void) {
 }
 
 void mouse_draw_cursor_only(void) {
+    /* The old implementation indexed font8x8[0x5F][dy] with dy up to 15 while
+     * the font is 8 rows tall, reading past the end of the array. It now
+     * draws the same 16x16 arrow as mouse_draw_cursor(), without saving the
+     * pixels underneath. */
     if (!mouse_enabled) return;
     int cx = mouse_cursor_x;
     int cy = mouse_cursor_y;
-    if (cx < 0 || cy < 0 || (uint32_t)cx >= screen_width || (uint32_t)cy >= screen_height) return;
+    if (cx < 0 || cy < 0) return;
+    if ((uint32_t)cx >= screen_width || (uint32_t)cy >= screen_height) return;
 
     uint32_t stride = screen_pitch / 4;
     uint32_t color = 0xFFFFFFFF;
+    uint32_t border_color = 0xFF000000;
+
+    static const uint16_t cursor_shape[16] = {
+        0b1000000000000000, 0b1100000000000000, 0b1110000000000000,
+        0b1111000000000000, 0b1111100000000000, 0b1111110000000000,
+        0b1111111000000000, 0b1111111100000000, 0b1111111110000000,
+        0b1111111111000000, 0b1111111000000000, 0b1110111100000000,
+        0b1100111100000000, 0b1000011110000000, 0b0000011110000000,
+        0b0000001100000000
+    };
+    static const uint16_t cursor_mask[16] = {
+        0b1100000000000000, 0b1110000000000000, 0b1111000000000000,
+        0b1111100000000000, 0b1111110000000000, 0b1111111000000000,
+        0b1111111100000000, 0b1111111100000000, 0b1111111110000000,
+        0b1111111111000000, 0b1111111111100000, 0b1111111100000000,
+        0b1111111110000000, 0b1110011111000000, 0b1000011111000000,
+        0b0000011110000000
+    };
+
     for (int dy = 0; dy < 16; dy++) {
+        int py = cy + dy;
+        if (py < 0 || (uint32_t)py >= screen_height) continue;
+        uint32_t* row_ptr = &lfbptr[py * stride];
         for (int dx = 0; dx < 16; dx++) {
             int px = cx + dx;
-            int py = cy + dy;
-            if (px < 0 || py < 0 || (uint32_t)px >= screen_width || (uint32_t)py >= screen_height) continue;
-
-            uint8_t row = font8x8[0x5F][dy];
+            if (px < 0 || (uint32_t)px >= screen_width) continue;
             int bit = 15 - dx;
-            if (bit < 0 || bit > 7) continue;
-
-            if ((row >> bit) & 1) {
-                lfbptr[py * stride + px] = color;
+            if ((cursor_shape[dy] >> bit) & 1) {
+                row_ptr[px] = color;
+            } else if ((cursor_mask[dy] >> bit) & 1) {
+                row_ptr[px] = border_color;
             }
         }
     }

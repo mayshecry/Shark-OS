@@ -8,7 +8,7 @@ CFLAGS = -m32 -std=gnu99 -ffreestanding -Os -Wall -Wextra -fno-pie -fno-stack-pr
          -fomit-frame-pointer -fmerge-all-constants -fno-unwind-tables -fno-exceptions \
          -Iinclude
 ASFLAGS = --32
-LDFLAGS = -m32 -ffreestanding -Os -nostdlib -lgcc -no-pie -Wl,-m,elf_i386 -Wl,-gc-sections -Wl,--strip-all
+LDFLAGS = -m32 -ffreestanding -Os -nostdlib -no-pie -Wl,-m,elf_i386 -Wl,-gc-sections -Wl,--strip-all
 
 DIRS = arch drivers fs ui shell lib sharkscript doom flappybird smb pong geometrydash desktop net
 
@@ -83,6 +83,9 @@ desktop/icons.o: src/desktop/icons.c include/kernel.h include/desktop.h include/
 desktop/png.o: src/desktop/png.c include/kernel.h | desktop
 	$(CC) -c src/desktop/png.c -o desktop/png.o $(CFLAGS)
 
+desktop/win98_widgets.o: src/desktop/win98_widgets.c include/kernel.h include/win98_theme.h | desktop
+	$(CC) -c src/desktop/win98_widgets.c -o desktop/win98_widgets.o $(CFLAGS)
+
 shell/commands.o: src/shell/commands.c include/kernel.h include/sharkscript.h | shell
 	$(CC) -c src/shell/commands.c -o shell/commands.o $(CFLAGS)
 
@@ -154,11 +157,11 @@ sharkos.bin: boot.o arch/io.o arch/interrupts.o arch/cpu.o drivers/keyboard.o dr
              shell/commands.o shell/spkg.o shell/main.o shell/lite.o \
              lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o \
              plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o \
-             desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/png.o net/net.o linker.ld
+             desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/png.o net/net.o linker.ld
 	$(CC) -T linker.ld -o sharkos.bin $(LDFLAGS) boot.o arch/io.o arch/interrupts.o arch/cpu.o \
 		drivers/keyboard.o drivers/pci.o drivers/mouse.o drivers/rtc.o fs/fs.o ui/terminal.o ui/ui.o \
 		ui/fastfetch.o ui/mouse.o shell/commands.o shell/spkg.o shell/main.o shell/lite.o lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o \
-		desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/png.o net/net.o
+		desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/png.o net/net.o -lgcc
 
 sharkos.iso: sharkos.bin grub.cfg
 	mkdir -p isodir/boot/grub

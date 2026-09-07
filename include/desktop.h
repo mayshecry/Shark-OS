@@ -4,29 +4,28 @@
 
 #include "kernel.h"
 
+#include "win98_theme.h"
+
 #define MAX_WINDOWS 16
 #define WINDOW_TITLE_MAX 32
-#define DESKTOP_ICON_SIZE 64
-#define DESKTOP_ICON_GAP 16
-#define DESKTOP_ICONS_PER_ROW 6
-#define TASKBAR_HEIGHT 32
-#define TASKBAR_BG 0xFF1A1A2E
-#define TASKBAR_BORDER 0xFF00FFFF
-#define TASKBAR_TEXT 0xFFFFFF00
-#define START_BUTTON_W 80
-#define WINDOW_BORDER_COLOR 0xFF00FFFF
-#define WINDOW_TITLE_BG 0xFF0F0F2A
-#define WINDOW_BG 0xFF1A1A2E
-#define WINDOW_SHADOW_ALPHA 0x40
-#define WINDOW_MIN_W 160
-#define WINDOW_MIN_H 80
-#define STARTMENU_W 220
-#define STARTMENU_H 300
-#define STARTMENU_BG 0xFF1A1A2E
-#define STARTMENU_BORDER 0xFF00FFFF
-#define STARTMENU_HOVER 0xFF2A2A4E
-#define DESKTOP_BG_TOP 0xFF0A0A2A
-#define DESKTOP_BG_BOT 0xFF050520
+
+/* Desktop icons are 32x32 Win98-style, laid out top-to-bottom-then-next-column
+ * like Explorer. See W98_ICON_* in win98_theme.h. */
+#define DESKTOP_ICON_SIZE W98_DESKTOP_ICON
+
+#define TASKBAR_HEIGHT      W98_TASKBAR_H
+#define START_BUTTON_W      W98_STARTBTN_W
+
+#define WINDOW_BORDER_W     W98_BORDER_W
+#define WINDOW_TITLEBAR_H   W98_TITLEBAR_H
+#define WINDOW_MIN_W        160
+#define WINDOW_MIN_H        80
+
+#define STARTMENU_W         168
+#define STARTMENU_MAX       16
+
+#define DESKTOP_BG_TOP      W98_DESKTOP
+#define DESKTOP_BG_BOT      W98_DESKTOP
 
 typedef enum {
     WINDOW_TYPE_TERMINAL,
@@ -84,10 +83,10 @@ struct window {
     int drag_off_x;
     int drag_off_y;
     int resize_edge;
-    uint32_t* fb_backup;
-    int backup_w;
-    int backup_h;
     int z_order;
+    /* Which caption button (if any) is currently held down, so it can be
+     * painted in its pressed state. W98_GLYPHKIND_* + 1, 0 = none. */
+    int pressed_button;
     void (*draw_func)(window_t* w);
     void (*keyboard_func)(window_t* w, char c);
     void (*mouse_func)(window_t* w, int mx, int my, int buttons);
@@ -101,7 +100,7 @@ typedef struct {
     window_type_t type;
     int icon_x;
     int icon_y;
-    bool hovered;
+    bool selected;
 } desktop_icon_t;
 
 #define MAX_DESKTOP_ICONS 12
@@ -132,6 +131,10 @@ typedef struct {
     int wallpaper_h;
     bool alt_tab_active;
     int alt_tab_index;
+    int wallpaper_mode;          /* w98_wall_mode_t */
+    int selected_icon;           /* -1 = none */
+    uint32_t last_click_tick;    /* double-click detection */
+    int last_click_icon;
 } desktop_state_t;
 
 extern desktop_state_t desktop;
@@ -158,6 +161,8 @@ void desktop_handle_keyboard(char c);
 void desktop_update_taskbar(void);
 int desktop_get_taskbar_hover(int mx, int my);
 void desktop_set_wallpaper_color(uint32_t top, uint32_t bottom);
+void desktop_set_wallpaper_mode(int mode);
+void desktop_icons_clear_selection(void);
 
 
 int window_create(window_type_t type, const char* title, int x, int y, int w, int h);
@@ -171,15 +176,33 @@ void window_resize(int idx, int w, int h);
 window_t* window_get_focused(void);
 void window_draw_all(void);
 void window_draw_frame(window_t* w);
+void window_update_client_rect(window_t* w);
 void window_begin_drag(int mx, int my);
 void window_begin_resize(int mx, int my);
 void window_drag_update(int mx, int my);
 void window_resize_update(int mx, int my);
 void window_end_drag(void);
 void window_redraw_clients(void);
-void window_save_background(window_t* w);
-void window_restore_background(window_t* w);
 void window_close_by_ptr(window_t* w);
+void window_focus_top_visible(void);
+
+/* Where in a window the pointer is. Drives both painting and input. */
+typedef enum {
+    WINDOW_HIT_NONE = 0,
+    WINDOW_HIT_TITLEBAR,
+    WINDOW_HIT_BTN_MIN,
+    WINDOW_HIT_BTN_MAX,
+    WINDOW_HIT_BTN_CLOSE,
+    WINDOW_HIT_CLIENT,
+    WINDOW_HIT_RESIZE     /* see window_t.resize_edge for which edge */
+} window_hit_t;
+
+window_hit_t window_hit_test(window_t* w, int mx, int my, int* resize_edge);
+int window_caption_pressed(void);
+
+/* Caption-button geometry, shared by the painter and the hit tester. */
+void window_caption_button_rect(window_t* w, int which, int* rx, int* ry,
+                                int* rw, int* rh);
 
 
 int desktop_icon_add(const char* label, window_type_t type);
@@ -191,6 +214,13 @@ void desktop_icon_redraw(int idx);
 void desktop_layout_icons(void);
 void desktop_icons_load(void);
 uint32_t* desktop_icon_get_pixels(int idx);
+/* Icon pixels for a window type, whether or not a desktop icon exists for it.
+ * Used for titlebar icons. Returns NULL when there is no art. */
+uint32_t* desktop_icon_pixels_for_type(window_type_t type);
+const uint32_t* desktop_icon_get_start(void);
+const uint32_t* desktop_icon_get_shutdown(void);
+const uint32_t* desktop_icon_get_folder(void);
+const uint32_t* desktop_icon_get_file(void);
 
 
 void start_menu_toggle(void);

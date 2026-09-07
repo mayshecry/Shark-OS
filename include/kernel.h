@@ -284,10 +284,11 @@ struct fs_node* create_node(const char* name, node_type_t type, struct fs_node* 
 void fs_initialize(void);
 void execute_command(char* cmd);
 
-void draw_char(char c, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg);
-void draw_pixel(uint32_t x, uint32_t y, uint32_t color);
-void draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
-void draw_string_px(const char* s, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg);
+/* Signed, clipped on all four edges. See the note in src/ui/terminal.c. */
+void draw_char(char c, int x, int y, uint32_t fg, uint32_t bg);
+void draw_pixel(int x, int y, uint32_t color);
+void draw_rect(int x, int y, int w, int h, uint32_t color);
+void draw_string_px(const char* s, int x, int y, uint32_t fg, uint32_t bg);
 uint32_t col_px(size_t col);
 uint32_t row_px(size_t row);
 void terminal_putentryat(char c, uint8_t color, size_t x, size_t y);

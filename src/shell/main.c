@@ -232,12 +232,31 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
 
     asm volatile("sti");
 
+    /* Present frames atomically.
+     *
+     * Until here lfbptr pointed at the hardware framebuffer, so every
+     * desktop_render() replayed the whole composite straight into VRAM:
+     * wallpaper first (which erases all windows on screen), then icons,
+     * windows and taskbar. Each mouse move sets desktop.dirty, so moving
+     * the pointer made that partial repaint visible - the flash you saw.
+     *
+     * From now on lfbptr is an offscreen back buffer in system RAM; the
+     * hardware address stays in hw_lfbptr and flush_screen_to_hw() copies
+     * the finished frame across once. Pixel writes also hit RAM instead of
+     * MMIO, which makes the whole desktop an order of magnitude faster. */
     hw_lfbptr = lfbptr;
-
-    desktop_render();
-    if (mouse_enabled) {
-        mouse_draw_cursor();
+    {
+        size_t fb_bytes = (size_t)(screen_pitch * screen_height);
+        uint32_t* shadow = (uint32_t*)kmalloc(fb_bytes);
+        if (shadow) {
+            memcpy(shadow, lfbptr, fb_bytes);   /* keep boot screen content */
+            lfbptr = shadow;
+        }
     }
+
+    /* desktop_render() now composes the pointer itself and flushes once, so
+     * drawing the cursor a second time here only wasted a pass. */
+    desktop_render();
 
     bool full_redraw = true;
 
@@ -270,9 +289,6 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         if (full_redraw || desktop.dirty) {
             if (desktop.dirty) {
                 desktop_render();
-            }
-            if (mouse_enabled) {
-                mouse_draw_cursor();
             }
             full_redraw = false;
         }
