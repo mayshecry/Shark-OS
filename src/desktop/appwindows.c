@@ -39,6 +39,9 @@ static char terminal_buffer[256] = "";
 static int terminal_buf_len = 0;
 static char terminal_output[4096] = "";
 static int terminal_output_len = 0;
+static int terminal_blink = 0;
+static int terminal_cached_output_len = -1;
+static int terminal_cached_buf_len = -1;
 
 void app_window_draw_terminal(window_t* w) {
     int cx = w->rect.client_x;
@@ -46,13 +49,17 @@ void app_window_draw_terminal(window_t* w) {
     int cw = w->rect.client_w;
     int ch = w->rect.client_h;
 
-    /* Black console inside a sunken well, on a button-face body. */
+    terminal_blink++;
+    if (terminal_blink >= 60) terminal_blink = 0;
+
     w98_fill(cx, cy, cw, ch, W98_BTNFACE);
     w98_surface(cx + 2, cy + 2, cw - 4, ch - 4, W98_BEVEL_SUNKEN,
                 W98_BTNDKSHADOW);
 
     int tx = cx + 6, ty = cy + 6;
     int tw = cw - 12, th = ch - 12;
+
+    w98_fill(tx, ty, tw, th, 0xFF000000);
 
     int max_chars_per_line = (tw - 8) / 6;
     if (max_chars_per_line > 90) max_chars_per_line = 90;
@@ -62,46 +69,67 @@ void app_window_draw_terminal(window_t* w) {
     w98_rect_t clip;
     clip.x = tx + 2; clip.y = ty + 2; clip.w = tw - 4; clip.h = th - 4;
 
-    int current_line = 0;
-    if (terminal_output_len > 0) {
-        for (int i = 0; i < terminal_output_len && current_line < max_lines;
-             i++) {
-            int start = i;
-            int len = 0;
-            while (i < terminal_output_len && terminal_output[i] != '\n' &&
-                   len < max_chars_per_line) {
+    if (terminal_cached_output_len != terminal_output_len || terminal_cached_buf_len != terminal_buf_len) {
+        terminal_cached_output_len = terminal_output_len;
+        terminal_cached_buf_len = terminal_buf_len;
+
+        w98_fill(tx, ty, tw, th, 0xFF000000);
+
+        int current_line = 0;
+        if (terminal_output_len > 0) {
+            for (int i = 0; i < terminal_output_len && current_line < max_lines;
+                 i++) {
+                int start = i;
+                int len = 0;
+                while (i < terminal_output_len && terminal_output[i] != '\n' &&
+                       len < max_chars_per_line) {
+                    i++;
+                    len++;
+                }
+                char line_buf[91];
+                for (int j = 0; j < len && j < 90; j++) {
+                    line_buf[j] = terminal_output[start + j];
+                }
+                line_buf[len] = '\0';
+                w98_text(line_buf, tx + 4, ty + 4 + current_line * 10,
+                         0xFFAAAAAA, 0xFF000000, 1, &clip);
                 i++;
-                len++;
+                current_line++;
             }
-            char line_buf[91];
-            for (int j = 0; j < len && j < 90; j++) {
-                line_buf[j] = terminal_output[start + j];
+        }
+
+        int prompt_y = ty + 4 + current_line * 10;
+        w98_text("$ ", tx + 4, prompt_y, 0xFF55FF55, 0xFF000000, 1, &clip);
+
+        char temp[256];
+        int i;
+        for (i = 0; i < terminal_buf_len && i < max_chars_per_line - 2; i++) {
+            temp[i] = terminal_buffer[i];
+        }
+        temp[i] = '\0';
+        w98_text(temp, tx + 4 + 12, prompt_y, 0xFFFFFF55, 0xFF000000, 1,
+                 &clip);
+    }
+
+    if (terminal_blink < 30) {
+        int current_line = 0;
+        if (terminal_output_len > 0) {
+            for (int i = 0; i < terminal_output_len && current_line < max_lines; i++) {
+                int len = 0;
+                while (i < terminal_output_len && terminal_output[i] != '\n' && len < max_chars_per_line) {
+                    i++;
+                    len++;
+                }
+                i++;
+                current_line++;
             }
-            line_buf[len] = '\0';
-            w98_text(line_buf, tx + 4, ty + 4 + current_line * 10,
-                     0xFFAAAAAA, W98_BTNDKSHADOW, 1, &clip);
-            i++;
-            current_line++;
+        }
+        int prompt_y = ty + 4 + current_line * 10;
+        int i = terminal_buf_len;
+        if (i < max_chars_per_line - 2) {
+            w98_fill(tx + 4 + 12 + i * 6, prompt_y, 6, 8, 0xFF55FF55);
         }
     }
-
-    int prompt_y = ty + 4 + current_line * 10;
-    w98_text("$ ", tx + 4, prompt_y, 0xFF55FF55, W98_BTNDKSHADOW, 1, &clip);
-
-    char temp[256];
-    int i;
-    for (i = 0; i < terminal_buf_len && i < max_chars_per_line - 2; i++) {
-        temp[i] = terminal_buffer[i];
-    }
-    temp[i] = '\0';
-    w98_text(temp, tx + 4 + 12, prompt_y, 0xFFFFFF55, W98_BTNDKSHADOW, 1,
-             &clip);
-
-    static int blink = 0;
-    if (blink < 30) {
-        w98_fill(tx + 4 + 12 + i * 6, prompt_y, 6, 8, 0xFF55FF55);
-    }
-    if (blink++ >= 60) blink = 0;
 }
 
 /* ------------------------------------------------------------------- games */
@@ -739,7 +767,7 @@ void app_window_draw_network(window_t* w) {
 /* ---------------------------------------------------------- key forwarding */
 
 void app_window_keyboard_terminal(window_t* w, char c) {
-    if (c == 27) return; /* ESC - let the desktop handle it */
+    if (c == 27) return;
     if (c == '\n') {
         if (terminal_buf_len > 0) {
             terminal_buffer[terminal_buf_len] = '\0';

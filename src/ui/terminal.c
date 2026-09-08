@@ -173,18 +173,40 @@ void terminal_write_char_internal(char c) {
     }
 }
 
+void terminal_write_direct(const char* data) {
+    for (size_t i = 0; data[i] != '\0'; i++) {
+        char c = data[i];
+        if (c == '\n') {
+            size_t pane_start = panes[active_pane].col_start;
+            terminal_column = pane_start;
+            if (++terminal_row >= term_max_row) {
+                terminal_scroll();
+            }
+            continue;
+        }
+        terminal_putentryat(c, terminal_color, terminal_column, terminal_row);
+        size_t pane_end = panes[active_pane].col_end;
+        if (++terminal_column >= pane_end) {
+            terminal_column = panes[active_pane].col_start;
+            if (++terminal_row >= term_max_row) {
+                terminal_scroll();
+            }
+        }
+    }
+}
+
 void draw_cursor(void) {
     uint32_t x = col_px(terminal_column);
     uint32_t y = row_px(terminal_row);
     uint32_t stride = screen_pitch / 4;
-    uint32_t scale = font_scale;
+
     for (uint32_t sy = 0; sy < font_cell_h; sy++) {
         uint32_t py = y + sy;
         if (py >= screen_height) continue;
         uint32_t* row_ptr = &lfbptr[py * stride + x];
-        for (uint32_t sx = 0; sx < scale * 2; sx++) {
+        for (uint32_t sx = 0; sx < font_cell_w; sx++) {
             if (x + sx < screen_width) {
-                row_ptr[sx] = UI_ACCENT;
+                row_ptr[sx] = 0xFF00FF66;
             }
         }
     }

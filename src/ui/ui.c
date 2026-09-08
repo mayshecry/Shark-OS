@@ -150,13 +150,16 @@ void ui_draw_footer(void) {
     uint32_t dt_x = 4;
     uint32_t dt_y = footer_y + 2;
 
-    char info_buf[128];
-    int ip = 0;
-    const char* undoprefix = "Undo-O:MORE -- Line:1001 Col:001";
-    while (*undoprefix) info_buf[ip++] = *undoprefix++;
-    info_buf[ip] = '\0';
+    const char* ring0_status = "RING 0 ";
+    draw_string_px(ring0_status, dt_x, dt_y, 0xFF00FF88, UI_BG);
+    dt_x += strlen(ring0_status) * font_cell_w;
 
-    draw_string_px(info_buf, dt_x, dt_y, UI_DIM, UI_BG);
+    const char* sep = "| ";
+    draw_string_px(sep, dt_x, dt_y, UI_DIM, UI_BG);
+    dt_x += strlen(sep) * font_cell_w;
+
+    const char* cpl_label = "CPL:0 Privileged Mode ";
+    draw_string_px(cpl_label, dt_x, dt_y, UI_LABEL, UI_BG);
 
     uint32_t time_x = footer_w - strlen("99:99:99") * font_cell_w - 4;
     char timebuf[16];
@@ -194,6 +197,14 @@ void ui_draw_chrome(void) {
     const char* os_name = "SharkOS v2.2";
     uint32_t name_x = ((uint32_t)screen_width - strlen(os_name) * font_cell_w) / 2;
     draw_string_px(os_name, name_x, 2, UI_TITLE, UI_BG);
+
+    const char* ring0_badge = " RING 0 ";
+    uint32_t badge_w = strlen(ring0_badge) * font_cell_w;
+    uint32_t badge_x = (uint32_t)screen_width - badge_w - 4;
+    uint32_t badge_y = 2;
+
+    draw_rect(badge_x - 2, badge_y - 1, badge_w + 4, font_cell_h + 2, 0xFF006688);
+    draw_string_px(ring0_badge, badge_x, badge_y, 0xFFFFFFFF, 0xFF006688);
 }
 
 static void faq_draw(void) {

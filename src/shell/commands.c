@@ -23,9 +23,11 @@ void print_prompt() {
         terminal_row = content_first_row;
     }
 
-    uint8_t prompt_color = vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
-    terminal_set_color(prompt_color);
-    terminal_writestring("Z;");
+    uint8_t ring0_bg = vga_entry_color(VGA_COLOR_BLACK, VGA_COLOR_LIGHT_CYAN);
+    uint8_t sep_color = vga_entry_color(VGA_COLOR_DARK_GREY, VGA_COLOR_BLACK);
+    uint8_t user_color = vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
+    uint8_t path_color = vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);
+    uint8_t prompt_color = vga_entry_color(VGA_COLOR_LIGHT_BROWN, VGA_COLOR_BLACK);
 
     char path_buf[128];
     char rev[128];
@@ -43,8 +45,23 @@ void print_prompt() {
     if (j > 0 && path_buf[j-1] != '/') path_buf[j++] = '/';
     path_buf[j] = '\0';
 
-    terminal_writestring(path_buf);
-    terminal_writestring(">");
+    terminal_set_color(ring0_bg);
+    terminal_write_direct(" RING0 ");
+
+    terminal_set_color(sep_color);
+    terminal_write_direct("│");
+
+    terminal_set_color(user_color);
+    terminal_write_direct(" root@shark ");
+
+    terminal_set_color(sep_color);
+    terminal_write_direct("│");
+
+    terminal_set_color(path_color);
+    terminal_write_direct(path_buf);
+
+    terminal_set_color(prompt_color);
+    terminal_write_direct(" $ ");
 
     terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
     panes[pane_idx].prompt_end_col = terminal_column;
@@ -245,6 +262,10 @@ static void cmd_help(const char* args) {
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     terminal_writestring("whoami, sysinfo, kernelinfo, colors, lspci, ps, kill, exec\n");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    terminal_writestring("RING 0      - ");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    terminal_writestring("ring0, priv, inb, outb\n");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("APPS        - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     terminal_writestring("clear, colors, credits, help, whatis, fortune, cowsay, sl, banner, doom\n");
@@ -259,7 +280,7 @@ static void cmd_help(const char* args) {
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_BROWN, VGA_COLOR_BLACK));
     terminal_writestring("Type 'help <category>' for details\n");
     terminal_set_color(vga_entry_color(VGA_COLOR_DARK_GREY, VGA_COLOR_BLACK));
-    terminal_writestring("Categories: Filesystem, System, Apps, Power, Keys\n\n");
+    terminal_writestring("Categories: Filesystem, System, Ring 0, Apps, Power, Keys\n\n");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
 }
 
@@ -1567,6 +1588,180 @@ void execute_command(char* cmd) {
         }
     } else if (strcmp(cmd_name, "id") == 0) {
         terminal_writestring("uid=0(root) gid=0(root) groups=0(root)\n");
+    } else if (strcmp(cmd_name, "ring0") == 0) {
+        uint32_t cs_val;
+        asm volatile("mov %%cs, %0" : "=r"(cs_val));
+        uint32_t cpl = cs_val & 0x03;
+
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+        terminal_writestring("\n");
+        terminal_writestring("  ╔══════════════════════════════════════════════════════════════╗\n");
+        terminal_writestring("  ║                      RING 0 STATUS                          ║\n");
+        terminal_writestring("  ╠══════════════════════════════════════════════════════════════╣\n");
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        terminal_writestring("  ║  Privilege Level:     RING 0 (Kernel Mode)                  ║\n");
+        terminal_writestring("  ║  CS Segment:          0x");
+        char hex_buf[16];
+        hex_to_string(cs_val, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring("                                ║\n");
+        terminal_writestring("  ║  Current CPL:         ");
+        int_to_string(cpl, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring(" (Maximum Privilege)                  ║\n");
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_BROWN, VGA_COLOR_BLACK));
+        terminal_writestring("  ║  RPL of CS:           ");
+        int_to_string(cpl, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring(" (Requested Privilege Level)          ║\n");
+        terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
+        terminal_writestring("  ║                                                              ║\n");
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+        terminal_writestring("  ║  All terminal operations execute at Ring 0:                  ║\n");
+        terminal_writestring("  ║    - Direct hardware access (framebuffer, keyboard)          ║\n");
+        terminal_writestring("  ║    - Full memory access (no virtual memory isolation)        ║\n");
+        terminal_writestring("  ║    - Privileged instruction execution (cli/sti/hlt/in/out)   ║\n");
+        terminal_writestring("  ║    - Interrupt descriptor table manipulation                 ║\n");
+        terminal_writestring("  ║    - Direct filesystem and device driver access              ║\n");
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        terminal_writestring("  ║                                                              ║\n");
+        terminal_writestring("  ║  WARNING: No memory protection - any command can             ║\n");
+        terminal_writestring("  ║  access or modify any part of the system!                    ║\n");
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+        terminal_writestring("  ╚══════════════════════════════════════════════════════════════╝\n");
+        terminal_set_color(old_color);
+    } else if (strcmp(cmd_name, "priv") == 0) {
+        uint32_t cr0_val, cr3_val;
+        asm volatile("mov %%cr0, %0" : "=r"(cr0_val));
+        asm volatile("mov %%cr3, %0" : "=r"(cr3_val));
+
+        uint16_t cs_val, ds_val, ss_val;
+        asm volatile("mov %%cs, %0" : "=r"(cs_val));
+        asm volatile("mov %%ds, %0" : "=r"(ds_val));
+        asm volatile("mov %%ss, %0" : "=r"(ss_val));
+
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+        terminal_writestring("\n");
+        terminal_writestring("  ╔══════════════════════════════════════════════════════════════╗\n");
+        terminal_writestring("  ║                   RING 0 PRIVILEGE DUMP                     ║\n");
+        terminal_writestring("  ╠══════════════════════════════════════════════════════════════╣\n");
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+
+        terminal_writestring("  ║  Control Registers (Ring 0 only):                           ║\n");
+        terminal_writestring("  ║    CR0: 0x");
+        char hex_buf[16];
+        hex_to_string(cr0_val, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring("  (PG=");
+        terminal_writestring((cr0_val >> 31) & 1 ? "1" : "0");
+        terminal_writestring(" PE=");
+        terminal_writestring(cr0_val & 1 ? "1" : "0");
+        terminal_writestring(")                      ║\n");
+
+        terminal_writestring("  ║    CR3: 0x");
+        hex_to_string(cr3_val, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring("  (Page Directory Base)                ║\n");
+
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_BROWN, VGA_COLOR_BLACK));
+        terminal_writestring("  ║                                                              ║\n");
+        terminal_writestring("  ║  Segment Registers:                                          ║\n");
+        terminal_writestring("  ║    CS: 0x");
+        hex_to_string(cs_val, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring("  (CPL=");
+        int_to_string(cs_val & 0x03, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring(" RPL=");
+        int_to_string(cs_val & 0x03, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring(")                        ║\n");
+
+        terminal_writestring("  ║    DS: 0x");
+        hex_to_string(ds_val, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring("  (Data Segment)                           ║\n");
+
+        terminal_writestring("  ║    SS: 0x");
+        hex_to_string(ss_val, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring("  (Stack Segment)                          ║\n");
+
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        terminal_writestring("  ║                                                              ║\n");
+        terminal_writestring("  ║  These registers are ONLY readable from Ring 0!              ║\n");
+        terminal_writestring("  ║  Executing this from Ring 3 would cause a #GP fault.         ║\n");
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+        terminal_writestring("  ╚══════════════════════════════════════════════════════════════╝\n");
+        terminal_set_color(old_color);
+    } else if (strcmp(cmd_name, "inb") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: inb <port_hex>\n");
+            terminal_writestring("  Read a byte from a hardware port (Ring 0 only)\n");
+            terminal_writestring("  Example: inb 0x60  (keyboard data port)\n");
+        } else {
+            uint32_t port = 0;
+            const char* p = args;
+            if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+            while (*p) {
+                port *= 16;
+                if (*p >= '0' && *p <= '9') port += *p - '0';
+                else if (*p >= 'a' && *p <= 'f') port += *p - 'a' + 10;
+                else if (*p >= 'A' && *p <= 'F') port += *p - 'A' + 10;
+                p++;
+            }
+            uint8_t val = inb((uint16_t)port);
+            terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+            terminal_writestring("inb(0x");
+            char hex_buf[16];
+            hex_to_string(port, hex_buf);
+            terminal_writestring(hex_buf);
+            terminal_writestring(") = 0x");
+            hex_to_string(val, hex_buf);
+            terminal_writestring(hex_buf);
+            terminal_writestring(" (");
+            int_to_string(val, hex_buf);
+            terminal_writestring(hex_buf);
+            terminal_writestring(")\n");
+            terminal_set_color(old_color);
+        }
+    } else if (strcmp(cmd_name, "outb") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: outb <port_hex> <value_hex>\n");
+            terminal_writestring("  Write a byte to a hardware port (Ring 0 only)\n");
+            terminal_writestring("  Example: outb 0x61 0xB6  (keyboard controller)\n");
+        } else {
+            uint32_t port = 0, val = 0;
+            const char* p = args;
+            if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+            while (*p && *p != ' ') {
+                port *= 16;
+                if (*p >= '0' && *p <= '9') port += *p - '0';
+                else if (*p >= 'a' && *p <= 'f') port += *p - 'a' + 10;
+                else if (*p >= 'A' && *p <= 'F') port += *p - 'A' + 10;
+                p++;
+            }
+            while (*p == ' ') p++;
+            if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+            while (*p) {
+                val *= 16;
+                if (*p >= '0' && *p <= '9') val += *p - '0';
+                else if (*p >= 'a' && *p <= 'f') val += *p - 'a' + 10;
+                else if (*p >= 'A' && *p <= 'F') val += *p - 'A' + 10;
+                p++;
+            }
+            outb((uint16_t)port, (uint8_t)val);
+            terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+            terminal_writestring("outb(0x");
+            char hex_buf[16];
+            hex_to_string(port, hex_buf);
+            terminal_writestring(hex_buf);
+            terminal_writestring(", 0x");
+            hex_to_string(val, hex_buf);
+            terminal_writestring(hex_buf);
+            terminal_writestring(") - Written to hardware port (Ring 0)\n");
+            terminal_set_color(old_color);
+        }
     } else if (strcmp(cmd_name, "umask") == 0) {
         if (strlen(args) == 0) {
             terminal_writestring("0002\n");
