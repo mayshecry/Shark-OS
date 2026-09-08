@@ -1,4 +1,4 @@
-# SharkOS 98
+# SharkOS - The Original Shark running in Ring Zero
 
 A hobby 32-bit x86 operating system built from scratch in freestanding C, now with a
 Windows 98-style desktop environment: a real window manager with dragging, resizing,
@@ -13,12 +13,12 @@ Version 2.2 "Sharkslayer" — kernel `SHKRNL`, shell `nemo-shell`.
 System Info and Notepad open over the classic teal desktop (dithered wallpaper, the
 factory default):
 
-![SharkOS 98 desktop with System Info and Notepad](media/sharkos98-desktop.png)
+![SharkOS 98 desktop with System Info and Notepad](media/image-1.png)
 
 ### Bundled wallpaper
 The Settings app can switch the desktop to the bundled image wallpaper:
 
-![SharkOS 98 with the bundled wallpaper](media/sharkos98-wallpaper.png)
+![SharkOS 98 with the bundled wallpaper](media/image-2.png)
 
 ### More media
 - [Boot video on real hardware](media/hwdboot.mp4)
