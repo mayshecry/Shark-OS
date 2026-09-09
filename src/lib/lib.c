@@ -55,17 +55,69 @@ char* strstr(const char* haystack, const char* needle) {
     return NULL;
 }
 
+/* memcpy/memset are the hottest routines in the kernel: every frame the
+ * desktop composites ~3 MB (1024x768x32) into the back buffer and then
+ * copies it to video memory. The old byte loops moved one byte per
+ * iteration; `rep movsl`/`rep stosl` move 4 bytes per iteration and are
+ * microcoded fast paths on every x86 since the 486, which matters on the
+ * low-end machines this kernel is meant to run on. */
 void* memcpy(void* dest, const void* src, size_t n) {
-    uint8_t* d = (uint8_t*)dest;
-    const uint8_t* s = (const uint8_t*)src;
-    for (size_t i = 0; i < n; i++) d[i] = s[i];
-    return dest;
+    void* ret = dest;
+    if (n >= 8) {
+        /* Align the destination to 4 bytes first. */
+        size_t head = (4 - ((uintptr_t)dest & 3)) & 3;
+        if (head) {
+            n -= head;
+            asm volatile("rep movsb"
+                         : "+D"(dest), "+S"(src), "+c"(head)
+                         : : "memory");
+        }
+        size_t words = n >> 2;
+        asm volatile("rep movsl"
+                     : "+D"(dest), "+S"(src), "+c"(words)
+                     : : "memory");
+        n &= 3;
+    }
+    if (n) {
+        asm volatile("rep movsb"
+                     : "+D"(dest), "+S"(src), "+c"(n)
+                     : : "memory");
+    }
+    return ret;
 }
 
 void* memset(void* s, int c, size_t n) {
-    uint8_t* p = (uint8_t*)s;
-    for (size_t i = 0; i < n; i++) p[i] = (uint8_t)c;
-    return s;
+    void* ret = s;
+    uint32_t v = (uint32_t)(uint8_t)c;
+    v |= v << 8;
+    v |= v << 16;
+    if (n >= 8) {
+        size_t head = (4 - ((uintptr_t)s & 3)) & 3;
+        if (head) {
+            n -= head;
+            asm volatile("rep stosb"
+                         : "+D"(s), "+c"(head)
+                         : "a"(v) : "memory");
+        }
+        size_t words = n >> 2;
+        asm volatile("rep stosl"
+                     : "+D"(s), "+c"(words)
+                     : "a"(v) : "memory");
+        n &= 3;
+    }
+    if (n) {
+        asm volatile("rep stosb"
+                     : "+D"(s), "+c"(n)
+                     : "a"(v) : "memory");
+    }
+    return ret;
+}
+
+/* Fill `count` 32-bit pixels. */
+void fill32(uint32_t* dst, uint32_t value, size_t count) {
+    asm volatile("rep stosl"
+                 : "+D"(dst), "+c"(count)
+                 : "a"(value) : "memory");
 }
 
 size_t strlen(const char* str) {
@@ -129,8 +181,21 @@ extern uint64_t screen_pitch;
 extern uint32_t* hw_lfbptr;
 
 void flush_screen_to_hw(void) {
-    if (!hw_lfbptr || !lfbptr) return;
+    if (!hw_lfbptr || !lfbptr || hw_lfbptr == lfbptr) return;
     uint32_t fb_size = screen_pitch * screen_height;
     memcpy(hw_lfbptr, lfbptr, fb_size);
+}
+
+/* Copy only the rows [y0, y1) of the back buffer to video memory. Used by
+ * the cursor-only fast path so moving the mouse does not push 3 MB through
+ * the (often uncached, slow) framebuffer aperture every time. */
+void flush_rows_to_hw(int y0, int y1) {
+    if (!hw_lfbptr || !lfbptr || hw_lfbptr == lfbptr) return;
+    if (y0 < 0) y0 = 0;
+    if (y1 > (int)screen_height) y1 = (int)screen_height;
+    if (y0 >= y1) return;
+    uint32_t stride = screen_pitch / 4;
+    memcpy(&hw_lfbptr[(uint32_t)y0 * stride], &lfbptr[(uint32_t)y0 * stride],
+           (size_t)(y1 - y0) * screen_pitch);
 }
 

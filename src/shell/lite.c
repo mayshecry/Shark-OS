@@ -1,5 +1,6 @@
 #include "kernel.h"
 #include "plugin_manager.h"
+#include "net.h"
 
 extern void ui_draw_chrome(void);
 extern void ui_fill_content_bg(void);
@@ -22,6 +23,11 @@ void lite_kmain(void) {
     fs_initialize();
     terminal_initialize();
     terminal_clear();
+
+    /* Same network bring-up as the desktop: DHCP runs in the background and
+     * prints one line when the lease arrives. */
+    net_init();
+    net_stack_init();
     
     
     plugin_manager_init();
@@ -66,7 +72,12 @@ void lite_kmain(void) {
     redraw_all_panes();
     print_prompt();
 
+    uint32_t last_net_tick = uptime_ticks;
     while (1) {
+        if (uptime_ticks - last_net_tick >= 10) {
+            last_net_tick = uptime_ticks;
+            net_poll();                 /* RX + DHCP state machine */
+        }
         char c = keyboard_getchar();
         if (c == 0) { yield(); continue; }
 

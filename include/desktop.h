@@ -41,6 +41,8 @@ typedef enum {
     WINDOW_TYPE_NOTEPAD,
     WINDOW_TYPE_FILEMANAGER,
     WINDOW_TYPE_NETWORK,
+    WINDOW_TYPE_TASKMANAGER,
+    WINDOW_TYPE_BROWSER,
     WINDOW_TYPE_MAX
 } window_type_t;
 
@@ -103,7 +105,7 @@ typedef struct {
     bool selected;
 } desktop_icon_t;
 
-#define MAX_DESKTOP_ICONS 12
+#define MAX_DESKTOP_ICONS 16
 
 typedef struct {
     bool active;
@@ -156,6 +158,8 @@ void desktop_draw_icons(void);
 void desktop_draw_taskbar(void);
 void desktop_draw_start_menu(void);
 void desktop_render(void);
+void desktop_render_cursor_only(int old_x, int old_y);
+bool desktop_pointer_needs_repaint(int mx, int my);
 void desktop_handle_mouse(int mx, int my, int buttons);
 void desktop_handle_keyboard(char c);
 void desktop_update_taskbar(void);
@@ -246,6 +250,16 @@ void app_window_draw_about(window_t* w);
 void app_window_draw_notepad(window_t* w);
 void app_window_draw_filemanager(window_t* w);
 void app_window_draw_network(window_t* w);
+void app_window_mouse_network(window_t* w, int mx, int my, int buttons);
+void app_window_draw_taskmanager(window_t* w);
+void app_window_mouse_taskmanager(window_t* w, int mx, int my, int buttons);
+void app_window_keyboard_taskmanager(window_t* w, char c);
+void app_window_draw_browser(window_t* w);
+void app_window_mouse_browser(window_t* w, int mx, int my, int buttons);
+void app_window_keyboard_browser(window_t* w, char c);
+void browser_close(void);
+void browser_tick(void);
+void browser_open_url(const char* url);
 
 
 void app_window_keyboard_terminal(window_t* w, char c);

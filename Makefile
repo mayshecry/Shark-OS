@@ -10,7 +10,7 @@ CFLAGS = -m32 -std=gnu99 -ffreestanding -Os -Wall -Wextra -fno-pie -fno-stack-pr
 ASFLAGS = --32
 LDFLAGS = -m32 -ffreestanding -Os -nostdlib -no-pie -Wl,-m,elf_i386 -Wl,-gc-sections -Wl,--strip-all
 
-DIRS = arch drivers fs ui shell lib sharkscript doom flappybird smb pong geometrydash desktop net
+DIRS = arch drivers fs ui shell lib sharkscript doom flappybird smb pong geometrydash desktop net browser
 
 all: sharkos.iso
 
@@ -38,8 +38,14 @@ drivers/keyboard.o: src/drivers/keyboard.c include/kernel.h | drivers
 drivers/pci.o: src/drivers/pci.c include/kernel.h | drivers
 	$(CC) -c src/drivers/pci.c -o drivers/pci.o $(CFLAGS)
 
-net/net.o: src/net/net.c include/kernel.h include/net.h | net
+net/net.o: src/net/net.c include/kernel.h include/net.h include/tls.h | net
 	$(CC) -c src/net/net.c -o net/net.o $(CFLAGS)
+
+net/crypto.o: src/net/crypto.c include/tls.h | net
+	$(CC) -c src/net/crypto.c -o net/crypto.o $(CFLAGS)
+
+net/tls.o: src/net/tls.c include/tls.h | net
+	$(CC) -c src/net/tls.c -o net/tls.o $(CFLAGS)
 
 drivers/mouse.o: src/drivers/mouse.c include/kernel.h | drivers
 	$(CC) -c src/drivers/mouse.c -o drivers/mouse.o $(CFLAGS)
@@ -83,6 +89,32 @@ desktop/icons.o: src/desktop/icons.c include/kernel.h include/desktop.h include/
 desktop/png.o: src/desktop/png.c include/kernel.h | desktop
 	$(CC) -c src/desktop/png.c -o desktop/png.o $(CFLAGS)
 
+desktop/gif.o: src/desktop/gif.c include/kernel.h | desktop
+	$(CC) -c src/desktop/gif.c -o desktop/gif.o $(CFLAGS)
+
+desktop/jpeg.o: src/desktop/jpeg.c include/kernel.h | desktop
+	$(CC) -c src/desktop/jpeg.c -o desktop/jpeg.o $(CFLAGS)
+
+BROWSER_HDRS = include/browser.h include/browser_internal.h include/font.h include/kernel.h include/desktop.h include/win98_theme.h include/net.h
+
+browser/font.o: src/browser/font.c $(BROWSER_HDRS) include/font_data.h | browser
+	$(CC) -c src/browser/font.c -o browser/font.o $(CFLAGS)
+
+browser/html.o: src/browser/html.c $(BROWSER_HDRS) | browser
+	$(CC) -c src/browser/html.c -o browser/html.o $(CFLAGS)
+
+browser/css.o: src/browser/css.c $(BROWSER_HDRS) | browser
+	$(CC) -c src/browser/css.c -o browser/css.o $(CFLAGS)
+
+browser/layout.o: src/browser/layout.c $(BROWSER_HDRS) | browser
+	$(CC) -c src/browser/layout.c -o browser/layout.o $(CFLAGS)
+
+browser/js.o: src/browser/js.c $(BROWSER_HDRS) | browser
+	$(CC) -c src/browser/js.c -o browser/js.o $(CFLAGS)
+
+browser/browser.o: src/browser/browser.c $(BROWSER_HDRS) | browser
+	$(CC) -c src/browser/browser.c -o browser/browser.o $(CFLAGS)
+
 desktop/win98_widgets.o: src/desktop/win98_widgets.c include/kernel.h include/win98_theme.h | desktop
 	$(CC) -c src/desktop/win98_widgets.c -o desktop/win98_widgets.o $(CFLAGS)
 
@@ -92,10 +124,10 @@ shell/commands.o: src/shell/commands.c include/kernel.h include/sharkscript.h | 
 shell/spkg.o: src/shell/spkg.c include/kernel.h include/plugin_manager.h | shell
 	$(CC) -c src/shell/spkg.c -o shell/spkg.o $(CFLAGS)
 
-shell/main.o: src/shell/main.c include/kernel.h include/plugin_manager.h include/geometrydash.h | shell
+shell/main.o: src/shell/main.c include/kernel.h include/plugin_manager.h include/geometrydash.h include/net.h | shell
 	$(CC) -c src/shell/main.c -o shell/main.o $(CFLAGS)
 
-shell/lite.o: src/shell/lite.c include/kernel.h | shell
+shell/lite.o: src/shell/lite.c include/kernel.h include/net.h | shell
 	$(CC) -c src/shell/lite.c -o shell/lite.o $(CFLAGS)
 
 lib/lib.o: src/lib/lib.c include/kernel.h | lib
@@ -157,11 +189,13 @@ sharkos.bin: boot.o arch/io.o arch/interrupts.o arch/cpu.o drivers/keyboard.o dr
              shell/commands.o shell/spkg.o shell/main.o shell/lite.o \
              lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o \
              plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o \
-             desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/png.o net/net.o linker.ld
+             desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/png.o desktop/gif.o desktop/jpeg.o net/net.o net/crypto.o net/tls.o \
+             browser/html.o browser/css.o browser/layout.o browser/js.o browser/browser.o browser/font.o linker.ld
 	$(CC) -T linker.ld -o sharkos.bin $(LDFLAGS) boot.o arch/io.o arch/interrupts.o arch/cpu.o \
 		drivers/keyboard.o drivers/pci.o drivers/mouse.o drivers/rtc.o fs/fs.o ui/terminal.o ui/ui.o \
 		ui/fastfetch.o ui/mouse.o shell/commands.o shell/spkg.o shell/main.o shell/lite.o lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o \
-		desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/png.o net/net.o -lgcc
+		desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/png.o desktop/gif.o desktop/jpeg.o net/net.o net/crypto.o net/tls.o \
+		browser/html.o browser/css.o browser/layout.o browser/js.o browser/browser.o browser/font.o -lgcc
 
 sharkos.iso: sharkos.bin grub.cfg
 	mkdir -p isodir/boot/grub
@@ -180,7 +214,7 @@ sharkos.iso: sharkos.bin grub.cfg
 	grub-mkrescue -o sharkos.iso isodir
 
 clean:
-	rm -rf isodir arch drivers fs ui shell lib sharkscript doom flappybird pong smb geometrydash desktop net
+	rm -rf isodir arch drivers fs ui shell lib sharkscript doom flappybird pong smb geometrydash desktop net browser
 	rm -f *.o sharkos.bin sharkos.iso sharkscript plugins/*.o plugins/flappybird/*.o plugins/pong/*.o plugins/smb/*.o plugins/geometrydash/*.o
 
 .PHONY: all clean $(DIRS)

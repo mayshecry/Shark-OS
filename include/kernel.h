@@ -183,10 +183,32 @@ extern char command_history[MAX_HISTORY][80];
 extern int history_count;
 extern int history_index;
 extern volatile uint32_t uptime_ticks;
+/* The PIT is programmed for 1000 Hz in kmain()/lite_kmain(); uptime_ticks
+ * counts milliseconds. (Several callers used to assume 100 Hz.) */
+#define TICKS_PER_SEC 1000u
+
+/* Coarse CPU load: share of each second the main loop spent doing work
+ * (compositing, game ticks, shell commands) rather than halted. Maintained
+ * by kmain()'s loop, displayed by the Task Manager. */
+#define SYS_CPU_HISTORY 64
+extern uint32_t sys_cpu_percent;
+extern uint32_t sys_cpu_history[SYS_CPU_HISTORY];
+extern int sys_cpu_history_pos;
+extern uint32_t sys_frames_rendered;
+extern uint32_t sys_frames_per_sec;
 
 
 extern char* terminal_capture_buffer;
 extern int terminal_capture_len;
+/* Capacity of terminal_capture_buffer (incl. NUL) and the "clear was
+ * requested while capturing" flag, both maintained by src/ui/terminal.c. */
+extern int terminal_capture_cap;
+extern bool terminal_capture_cleared;
+void terminal_capture_begin(char* buf, int cap);
+void terminal_capture_end(void);
+/* Set while a shell command is being executed for the desktop Terminal
+ * window, so blocking/full-screen commands can refuse to run. */
+extern bool terminal_in_desktop_window;
 
 #define terminal_row     (panes[active_pane].row)
 #define terminal_column  (panes[active_pane].col)
@@ -299,6 +321,7 @@ void terminal_putchar_editor(char c);
 void terminal_putchar(char c);
 void draw_cursor(void);
 void terminal_writestring(const char* data);
+void terminal_write_direct(const char* data);
 void terminal_scroll(void);
 void terminal_clear(void);
 void terminal_initialize(void);
@@ -336,6 +359,8 @@ void isr_handler(struct registers* r);
 void syscall_handler(struct registers* r);
 
 void flush_screen_to_hw(void);
+void flush_rows_to_hw(int y0, int y1);
+void fill32(uint32_t* dst, uint32_t value, size_t count);
 
 
 void rtc_init(void);

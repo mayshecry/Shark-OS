@@ -87,6 +87,14 @@ void start_menu_open(void) {
     types[start_menu_count] = WINDOW_TYPE_NETWORK;
     start_menu_count++;
 
+    names[start_menu_count] = "Browser";
+    types[start_menu_count] = WINDOW_TYPE_BROWSER;
+    start_menu_count++;
+
+    names[start_menu_count] = "Task Manager";
+    types[start_menu_count] = WINDOW_TYPE_TASKMANAGER;
+    start_menu_count++;
+
     int plugin_count = 0;
     plugin_t* plugins = plugin_get_list(&plugin_count);
     for (int i = 0; i < plugin_count && start_menu_count < STARTMENU_MAX - 2;

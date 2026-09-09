@@ -3,6 +3,7 @@
 #include "plugin_manager.h"
 #include "doom.h"
 #include "net.h"
+#include "desktop.h"
 #include <stdint.h>
 
 static int simple_atoi(const char* s) {
@@ -225,6 +226,12 @@ static void cmd_edit(const char* args) {
         terminal_writestring("Usage: edit <filename>");
         return;
     }
+    if (current_kernel_mode == KERNEL_MODE_DESKTOP) {
+        /* The line editor takes over the CLI pane; in the desktop that
+         * would switch kernel mode underneath the window manager. */
+        terminal_writestring("edit: not available inside the desktop Terminal - use Notepad.\n");
+        return;
+    }
     editor_target_file = find_node(current_dir, args);
     if (!editor_target_file) {
         terminal_writestring("File not found. Creating new file...\n");
@@ -260,7 +267,7 @@ static void cmd_help(const char* args) {
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("SYSTEM      - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    terminal_writestring("whoami, sysinfo, kernelinfo, colors, lspci, ps, kill, exec\n");
+    terminal_writestring("whoami, sysinfo, kernelinfo, colors, lspci, ps, taskmanager, kill, exec\n");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("RING 0      - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
@@ -268,7 +275,7 @@ static void cmd_help(const char* args) {
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("APPS        - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    terminal_writestring("clear, colors, credits, help, whatis, fortune, cowsay, sl, banner, doom\n");
+    terminal_writestring("clear, colors, credits, help, whatis, fortune, cowsay, sl, banner, doom, browser [url]\n");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("POWER       - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
@@ -319,7 +326,7 @@ static void cmd_sysinfo(const char* args) {
     int_to_string(screen_height, buf); terminal_writestring(buf);
     terminal_writestring("\n");
 
-    uint32_t up_secs = uptime_ticks / 100;
+    uint32_t up_secs = uptime_ticks / TICKS_PER_SEC;
     uint32_t hours = up_secs / 3600;
     uint32_t mins = (up_secs % 3600) / 60;
     uint32_t secs = up_secs % 60;
@@ -368,6 +375,92 @@ static void cmd_ps(const char* args) {
     spin_unlock(&task_list_lock);
 }
 
+static void cmd_browser(const char* args) {
+    while (args && *args == ' ') args++;
+    if (current_kernel_mode != KERNEL_MODE_DESKTOP) {
+        terminal_writestring("The browser needs the desktop. Boot the default (desktop) entry and run 'browser' there,\n"
+                             "or use 'wget <url>' to fetch a page as text.\n");
+        return;
+    }
+    browser_open_url(args && *args ? args : NULL);
+    terminal_writestring("Shark Navigator opened");
+    if (args && *args) { terminal_writestring(": "); terminal_writestring(args); }
+    terminal_writestring("\n");
+}
+
+static void cmd_taskmanager(const char* args) {
+    (void)args;
+    if (current_kernel_mode == KERNEL_MODE_DESKTOP) {
+        /* Same as Start > Task Manager: open (or raise) the window. */
+        for (int i = 0; i < desktop.window_count; i++) {
+            if (desktop.windows[i].type == WINDOW_TYPE_TASKMANAGER) {
+                if (desktop.windows[i].state == WINDOW_STATE_MINIMIZED) window_restore(i);
+                else window_focus(i);
+                desktop.dirty = true;
+                terminal_writestring("Task Manager brought to front.\n");
+                return;
+            }
+        }
+        desktop_icon_launch_offset(WINDOW_TYPE_TASKMANAGER, "Task Manager");
+        terminal_writestring("Task Manager opened.\n");
+        return;
+    }
+
+    /* Text-mode snapshot for the Lite shell / console. */
+    char buf[32];
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    terminal_writestring("\nSharkOS Task Manager\n");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    terminal_writestring("--------------------------------------\n");
+
+    uint32_t up = uptime_ticks / TICKS_PER_SEC;
+    terminal_writestring("Uptime     : ");
+    int_to_string(up / 3600, buf); terminal_writestring(buf); terminal_writestring("h ");
+    int_to_string((up / 60) % 60, buf); terminal_writestring(buf); terminal_writestring("m ");
+    int_to_string(up % 60, buf); terminal_writestring(buf); terminal_writestring("s\n");
+
+    terminal_writestring("CPU load   : ");
+    int_to_string(sys_cpu_percent, buf); terminal_writestring(buf);
+    terminal_writestring("% (main loop busy share, last second)\n");
+
+    uint32_t total_kb = (uint32_t)(total_system_memory / 1024u);
+    uint32_t used_kb = (uint32_t)((free_memory_start - 0x100000u) / 1024u);
+    terminal_writestring("Memory     : ");
+    int_to_string(used_kb, buf); terminal_writestring(buf); terminal_writestring(" KB used / ");
+    int_to_string(total_kb, buf); terminal_writestring(buf); terminal_writestring(" KB total\n");
+
+    terminal_writestring("Windows    : ");
+    int_to_string((uint32_t)desktop.window_count, buf); terminal_writestring(buf);
+    terminal_writestring("\n");
+    for (int i = 0; i < desktop.window_count; i++) {
+        terminal_writestring("   [");
+        int_to_string((uint32_t)i, buf); terminal_writestring(buf);
+        terminal_writestring("] ");
+        terminal_writestring(desktop.windows[i].title);
+        terminal_writestring(desktop.windows[i].state == WINDOW_STATE_MINIMIZED
+                             ? "  (minimized)\n" : "\n");
+    }
+
+    terminal_writestring("\nPID   NAME              STATE     CPU  SYSCALLS\n");
+    spin_lock(&task_list_lock);
+    for (task_t* t = task_list; t; t = t->next) {
+        int_to_string((uint32_t)t->id, buf); terminal_writestring(buf);
+        for (int k = (int)strlen(buf); k < 6; k++) terminal_writestring(" ");
+        terminal_writestring(t->name);
+        for (int k = (int)strlen(t->name); k < 18; k++) terminal_writestring(" ");
+        const char* st = t->state == TASK_RUNNING ? "RUNNING   " :
+                         t->state == TASK_READY ? "READY     " :
+                         t->state == TASK_SLEEPING ? "SLEEPING  " : "ZOMBIE    ";
+        terminal_writestring(st);
+        int_to_string(t->cpu_usage, buf); terminal_writestring(buf);
+        for (int k = (int)strlen(buf); k < 5; k++) terminal_writestring(" ");
+        int_to_string(t->syscall_count, buf); terminal_writestring(buf);
+        terminal_writestring("\n");
+    }
+    spin_unlock(&task_list_lock);
+    terminal_writestring("\nIn the desktop, 'taskmanager' (or Ctrl+Esc) opens the window.\n");
+}
+
 static void cmd_htop(const char* args) {
     (void)args;
     spin_lock(&task_list_lock);
@@ -382,7 +475,7 @@ static void cmd_htop(const char* args) {
     terminal_writestring("\033[0;37m");
     terminal_writestring("────────────────────────────────────────\n");
 
-    uint32_t up_secs = uptime_ticks / 100;
+    uint32_t up_secs = uptime_ticks / TICKS_PER_SEC;
     uint32_t hours = up_secs / 3600;
     uint32_t mins = (up_secs % 3600) / 60;
     uint32_t secs = up_secs % 60;
@@ -440,7 +533,7 @@ static void cmd_htop(const char* args) {
 
 static void cmd_uptime(const char* args) {
     (void)args;
-    uint32_t total_secs = uptime_ticks / 100;
+    uint32_t total_secs = uptime_ticks / TICKS_PER_SEC;
     uint32_t hours = total_secs / 3600;
     uint32_t mins = (total_secs % 3600) / 60;
     uint32_t secs = total_secs % 60;
@@ -486,7 +579,7 @@ static void cmd_neofetch(const char* args) {
     
     char buf[64];
     uint32_t total_mb = (uint32_t)(total_system_memory >> 20);
-    uint32_t up_secs = uptime_ticks / 100;
+    uint32_t up_secs = uptime_ticks / TICKS_PER_SEC;
     uint32_t hours = up_secs / 3600;
     uint32_t mins = (up_secs % 3600) / 60;
     uint32_t secs = up_secs % 60;
@@ -542,7 +635,7 @@ static void cmd_ping(const char* args) {
 }
 static void cmd_wget(const char* args) {
     if (strlen(args) == 0) {
-        terminal_writestring("Usage: wget <url>\n");
+        terminal_writestring("Usage: wget <url>   (http:// or https://)\n");
         return;
     }
     net_cmd_wget(args);
@@ -576,6 +669,11 @@ static const cmd_entry_t cmd_table[] = {
     {"hostname", cmd_hostname},
     {"ps", cmd_ps},
     {"htop", cmd_htop},
+    {"taskmanager", cmd_taskmanager},
+    {"taskmgr", cmd_taskmanager},
+    {"browser", cmd_browser},
+    {"iexplore", cmd_browser},
+    {"www", cmd_browser},
     {"uptime", cmd_uptime},
     {"neofetch", cmd_neofetch},
     {"poweroff", cmd_poweroff},
@@ -737,7 +835,7 @@ void execute_command(char* cmd) {
         uint32_t total_kb = (uint32_t)total_system_memory;
         uint32_t free_kb = (uint32_t)(total_system_memory * 3 / 4);
         uint32_t avail_kb = (uint32_t)(total_system_memory * 7 / 8);
-        uint32_t up_secs = uptime_ticks / 100;
+        uint32_t up_secs = uptime_ticks / TICKS_PER_SEC;
         uint32_t hours = up_secs / 3600;
         uint32_t mins = (up_secs % 3600) / 60;
         uint32_t secs = up_secs % 60;
@@ -1254,7 +1352,10 @@ void execute_command(char* cmd) {
         } else {
             struct fs_node* target = find_node(current_dir, args);
             if (target && target->type == FS_FILE) {
-                char lines[64][128];
+                /* 8 KB of line storage; static so execute_command()'s frame
+                 * stays small (it used to be 8.7 KB, larger than the whole
+                 * original kernel stack). */
+                static char lines[64][128];
                 int line_count = 0;
                 char line_buf[128];
                 int line_idx = 0;
@@ -1579,10 +1680,10 @@ void execute_command(char* cmd) {
             uint32_t elapsed = end - start;
             terminal_writestring("Time: ");
             char buf[16];
-            int_to_string(elapsed / 100, buf);
+            int_to_string(elapsed / TICKS_PER_SEC, buf);
             terminal_writestring(buf);
             terminal_writestring(".");
-            int_to_string(elapsed % 100, buf);
+            int_to_string((elapsed % TICKS_PER_SEC) / 10, buf);
             terminal_writestring(buf);
             terminal_writestring("s\n");
         }
@@ -1828,7 +1929,7 @@ void execute_command(char* cmd) {
         terminal_writestring("USER     TTY      FROM             LOGIN@   IDLE   WHAT\n");
         terminal_writestring(current_user);
         terminal_writestring("     tty1     console          boot     ");
-        uint32_t mins = (uptime_ticks / 100) / 60;
+        uint32_t mins = (uptime_ticks / TICKS_PER_SEC) / 60;
         char mbuf[16]; int_to_string(mins, mbuf); terminal_writestring(mbuf);
         terminal_writestring("     shark\n");
     } else if (strcmp(cmd_name, "dmesg") == 0) {

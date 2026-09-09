@@ -27,7 +27,8 @@ task_t* create_task(const char* name) {
 }
 
 void yield(void) {
-    asm volatile("hlt");
+    /* Interrupts must be enabled or hlt never returns. */
+    asm volatile("sti; hlt");
 }
 
 struct multiboot_info {
@@ -214,7 +215,12 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     plugin_register_builtin("gdash", geometrydash_plugin_init, geometrydash_plugin_cleanup, geometrydash_plugin_command);
     boot_screen_update("Detecting hardware...", 70);
 
+    /* Probe the NIC and start the DHCP client. The client itself is
+     * non-blocking (it is driven from net_poll() in the main loop), so a
+     * missing cable or absent DHCP server never delays the desktop. */
     net_init();
+    boot_screen_update(net_has_nic() ? "Configuring network (DHCP)..."
+                                     : "No network adapter found", 75);
     net_stack_init();
     struct fs_node* user_dir = find_node(root, "User");
     if (user_dir) strcpy(user_dir->name, current_user);
@@ -258,16 +264,31 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
      * drawing the cursor a second time here only wasted a pass. */
     desktop_render();
 
-    bool full_redraw = true;
+    uint32_t last_clock_tick = uptime_ticks;
+    uint32_t last_blink_tick = uptime_ticks;
+    uint32_t last_game_tick = uptime_ticks;
+    uint32_t last_net_tick = uptime_ticks;
+    int last_net_state = -1;
+    uint32_t busy_ms = 0;
+    uint32_t frames_this_sec = 0;
+    int last_rtc_minute = (int)rtc_minutes;
 
     while (1) {
+        /* Sleep until the next interrupt (timer, keyboard, mouse, NIC).
+         * The old loop spun at 100% CPU; on a laptop or a fanless box that
+         * is heat and battery for nothing. */
         yield();
+        uint32_t work_start = uptime_ticks;
+
+        bool pointer_moved = false;
+        int old_mx = desktop_mouse_x;
+        int old_my = desktop_mouse_y;
 
         if (mouse_enabled) {
             int mx = mouse_cursor_x;
             int my = mouse_cursor_y;
             int buttons = mouse_state.buttons;
-            
+
             /* Process mouse clicks and releases */
             if (buttons != 0 || (buttons == 0 && desktop_mouse_down)) {
                 desktop_handle_mouse(mx, my, buttons);
@@ -275,28 +296,101 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             if (mx != desktop_mouse_x || my != desktop_mouse_y) {
                 desktop_mouse_x = mx;
                 desktop_mouse_y = my;
-                desktop.dirty = true;  /* Force re-render to clear old cursor */
+                pointer_moved = true;
+                if (desktop_pointer_needs_repaint(mx, my)) {
+                    desktop.dirty = true;
+                }
             }
         }
 
-        char c = keyboard_getchar();
-        if (c != 0) {
+        /* Drain the whole keyboard queue each pass so typing never lags a
+         * frame behind. */
+        for (int k = 0; k < 16; k++) {
+            char c = keyboard_getchar();
+            if (c == 0) break;
             desktop_handle_keyboard(c);
         }
 
-        net_poll();
-        
-        if (full_redraw || desktop.dirty) {
-            if (desktop.dirty) {
-                desktop_render();
+        /* Network polling does not need to run 1000x per second. */
+        if (uptime_ticks - last_net_tick >= 10) {
+            last_net_tick = uptime_ticks;
+            net_poll();
+            /* The DHCP client runs inside net_poll(); when its state changes
+             * (offer, bound, link lost) refresh the tray icon and any open
+             * Network window so the user sees it without clicking. */
+            int ns = net_dhcp_state() * 2 + net_has_link;
+            if (ns != last_net_state) {
+                last_net_state = ns;
+                for (int i = 0; i < desktop.window_count; i++) {
+                    if (desktop.windows[i].type == WINDOW_TYPE_NETWORK) {
+                        desktop.windows[i].needs_redraw = true;
+                    }
+                }
+                desktop.dirty = true;
             }
-            full_redraw = false;
         }
-        
-        /* Game tick for focused game window */
+
+        /* Taskbar clock: re-read the RTC once a second, repaint only when
+         * the minute changes. */
+        if (uptime_ticks - last_clock_tick >= 1000) {
+            last_clock_tick = uptime_ticks;
+            rtc_read_time();
+            if ((int)rtc_minutes != last_rtc_minute) {
+                last_rtc_minute = (int)rtc_minutes;
+                desktop.dirty = true;
+            }
+
+            /* Per-second load sample for the Task Manager. */
+            sys_cpu_percent = busy_ms > 1000 ? 100 : busy_ms / 10;
+            sys_cpu_history[sys_cpu_history_pos] = sys_cpu_percent;
+            sys_cpu_history_pos = (sys_cpu_history_pos + 1) % SYS_CPU_HISTORY;
+            sys_frames_per_sec = frames_this_sec;
+            busy_ms = 0;
+            frames_this_sec = 0;
+
+            /* A visible Task Manager refreshes its numbers once a second. */
+            for (int i = 0; i < desktop.window_count; i++) {
+                window_t* tw = &desktop.windows[i];
+                if (tw->type == WINDOW_TYPE_TASKMANAGER && tw->visible &&
+                    tw->state != WINDOW_STATE_MINIMIZED) {
+                    tw->needs_redraw = true;
+                    desktop.dirty = true;
+                }
+            }
+        }
+
+        /* Cursor blink for the focused text app (Terminal/Notepad): a
+         * repaint every ~500 ms only while such a window has focus. */
         window_t* focused = window_get_focused();
-        if (focused && focused->game_tick) {
-            focused->game_tick();
+        if (focused && !focused->game_tick &&
+            (focused->type == WINDOW_TYPE_TERMINAL || focused->type == WINDOW_TYPE_NOTEPAD) &&
+            uptime_ticks - last_blink_tick >= 500) {
+            last_blink_tick = uptime_ticks;
+            focused->needs_redraw = true;
+            desktop.dirty = true;
         }
+
+        /* Game tick for the focused game window, capped at ~60 Hz. The
+         * games draw into the back buffer, so the frame has to be presented
+         * afterwards - previously it only became visible on the next
+         * unrelated repaint (i.e. when the mouse moved). */
+        if (focused && focused->game_tick && uptime_ticks - last_game_tick >= 16) {
+            last_game_tick = uptime_ticks;
+            focused->game_tick();
+            desktop.dirty = true;
+        }
+
+        /* Browser: button releases, link hover, JS timers, caret blink. */
+        browser_tick();
+
+        if (desktop.dirty) {
+            desktop_render();
+            frames_this_sec++;
+            sys_frames_rendered++;
+        } else if (pointer_moved) {
+            desktop_render_cursor_only(old_mx, old_my);
+        }
+
+        busy_ms += uptime_ticks - work_start;
     }
 }

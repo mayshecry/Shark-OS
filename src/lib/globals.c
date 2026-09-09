@@ -223,3 +223,10 @@ volatile uint32_t uptime_ticks = 0;
 /* Terminal output capture for desktop terminal window */
 char* terminal_capture_buffer = NULL;
 int terminal_capture_len = 0;
+bool terminal_in_desktop_window = false;
+
+uint32_t sys_cpu_percent = 0;
+uint32_t sys_cpu_history[SYS_CPU_HISTORY];
+int sys_cpu_history_pos = 0;
+uint32_t sys_frames_rendered = 0;
+uint32_t sys_frames_per_sec = 0;

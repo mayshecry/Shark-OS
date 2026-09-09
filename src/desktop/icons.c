@@ -32,6 +32,8 @@ uint32_t* desktop_icon_pixels_for_type(window_type_t type) {
     case WINDOW_TYPE_NOTEPAD:     return (uint32_t*)icon_data_notepad;
     case WINDOW_TYPE_FILEMANAGER: return (uint32_t*)icon_data_filemanager;
     case WINDOW_TYPE_NETWORK:     return (uint32_t*)icon_data_network;
+    case WINDOW_TYPE_TASKMANAGER: return (uint32_t*)icon_data_taskmanager;
+    case WINDOW_TYPE_BROWSER:     return (uint32_t*)icon_data_browser;
     case WINDOW_TYPE_FAQ:
     case WINDOW_TYPE_FASTFETCH:
     case WINDOW_TYPE_ABOUT:

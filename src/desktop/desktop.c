@@ -11,6 +11,7 @@
 
 #include "kernel.h"
 #include "desktop.h"
+#include "net.h"
 #include "win98_theme.h"
 #include "plugin_manager.h"
 #include "doom.h"
@@ -29,8 +30,8 @@ static int wallpaper_cache_w = 0;
 static int wallpaper_cache_h = 0;
 static bool wallpaper_dirty = true;
 
-/* Double-click: 400ms. uptime_ticks runs at 100 Hz. */
-#define DOUBLE_CLICK_TICKS 40
+/* Double-click: 400ms. uptime_ticks runs at 1000 Hz. */
+#define DOUBLE_CLICK_TICKS 400
 
 void desktop_set_wallpaper_color(uint32_t top, uint32_t bottom) {
     wallpaper_top = top;
@@ -126,6 +127,21 @@ void desktop_icon_launch_offset(window_type_t type, const char* title) {
                    type == WINDOW_TYPE_GDASH);
     if (is_game) {
         win_w = 640; win_h = 480;
+    } else if (type == WINDOW_TYPE_TASKMANAGER) {
+        win_w = 420; win_h = 360;
+    } else if (type == WINDOW_TYPE_FAQ) {
+        win_w = 480; win_h = 420;
+    } else if (type == WINDOW_TYPE_BROWSER) {
+        /* One browser at a time: the engine has a single document. */
+        for (int i = 0; i < desktop.window_count; i++) {
+            if (desktop.windows[i].type == WINDOW_TYPE_BROWSER) {
+                if (desktop.windows[i].state == WINDOW_STATE_MINIMIZED) window_restore(i);
+                else window_focus(i);
+                desktop.dirty = true;
+                return;
+            }
+        }
+        win_w = 660; win_h = 500;
     }
     if (win_x + win_w > (int)screen_width) {
         win_x = screen_width - win_w - 20;
@@ -443,15 +459,47 @@ void desktop_draw_taskbar(void) {
     int tray_x = bar_w - tray_w - 3;
     int tray_y = bar_y + 3;
 
+    /* Room for the network indicator inside the tray, left of the clock. */
+    int net_icon_w = 0;
+    int has_nic = net_driver_name[0] && net_driver_name[0] != 'n';
+    if (has_nic) net_icon_w = 20;
+    tray_w += net_icon_w;
+    tray_x -= net_icon_w;
+
     w98_fill(tray_x, tray_y, tray_w, W98_TRAY_H, W98_BTNFACE);
     w98_bevel(tray_x, tray_y, tray_w, W98_TRAY_H, W98_BEVEL_SUNKEN);
-    w98_text(time_str, tray_x + 7, tray_y + 6, W98_BTNTEXT, W98_BTNFACE, 1,
-             NULL);
+
+    if (has_nic) {
+        /* Win98 "two monitors" network icon: 16x12. Screens light up
+         * blue when bound, grey while DHCP is still working, and a red
+         * cross covers them when the link is down. */
+        int ix = tray_x + 5, iy = tray_y + 5;
+        int st = net_dhcp_state();
+        uint32_t screen = net_has_link ? (st == 3 ? 0xFF1084D0u : 0xFF808080u) : 0xFF404040u;
+        for (int k = 0; k < 2; k++) {
+            int ox = ix + k * 7, oy = iy + (k ? 3 : 0);
+            w98_fill(ox, oy, 8, 7, W98_BTNDKSHADOW);          /* bezel */
+            w98_fill(ox + 1, oy + 1, 6, 5, screen);
+            w98_fill(ox + 3, oy + 7, 2, 1, W98_BTNDKSHADOW);  /* stand */
+            w98_fill(ox + 2, oy + 8, 4, 1, W98_BTNDKSHADOW);
+        }
+        if (!net_has_link) {
+            for (int k = 0; k < 6; k++) {
+                draw_pixel(ix + 5 + k, iy + 3 + k, 0xFFFF0000u);
+                draw_pixel(ix + 10 - k, iy + 3 + k, 0xFFFF0000u);
+            }
+        }
+    }
+
+    w98_text(time_str, tray_x + net_icon_w + 7, tray_y + 6, W98_BTNTEXT,
+             W98_BTNFACE, 1, NULL);
 }
 
 /* ----------------------------------------------------------------- render */
 
 extern void mouse_draw_cursor(void);
+
+extern void mouse_restore_under_cursor(void);
 
 void desktop_render(void) {
     desktop.dirty = false;
@@ -469,6 +517,42 @@ void desktop_render(void) {
     }
 
     flush_screen_to_hw();
+}
+
+/* Pointer-only update. A mouse move used to mark the whole desktop dirty,
+ * which recomposed wallpaper + icons + every window and pushed the full
+ * frame to VRAM - several milliseconds per pixel of movement on a slow
+ * machine. Nothing but the pointer changed, so restore the pixels that were
+ * under the old arrow, draw it at the new spot and flush only the rows that
+ * were touched. */
+void desktop_render_cursor_only(int old_x, int old_y) {
+    (void)old_x;                      /* whole rows are flushed */
+    if (!mouse_enabled) return;
+
+    mouse_restore_under_cursor();
+    mouse_draw_cursor();
+
+    int y0 = old_y < mouse_cursor_y ? old_y : mouse_cursor_y;
+    int y1 = (old_y > mouse_cursor_y ? old_y : mouse_cursor_y) + 16;
+    flush_rows_to_hw(y0, y1);
+}
+
+/* Some windows redraw depending on where the pointer is (hover highlights in
+ * Settings, File Manager and the Start menu). Only those need a real
+ * repaint on pointer motion. */
+bool desktop_pointer_needs_repaint(int mx, int my) {
+    if (desktop.start_menu.visible) return true;
+    if (desktop_mouse_down) return true;      /* dragging / resizing */
+    for (int i = 0; i < desktop.window_count; i++) {
+        window_t* w = &desktop.windows[i];
+        if (!w->visible || w->state == WINDOW_STATE_MINIMIZED) continue;
+        if (w->type != WINDOW_TYPE_SETTINGS && w->type != WINDOW_TYPE_FILEMANAGER) continue;
+        if (mx >= w->rect.x && mx < w->rect.x + w->rect.width &&
+            my >= w->rect.y && my < w->rect.y + w->rect.height) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /* ------------------------------------------------------------------- input */
@@ -589,6 +673,22 @@ void desktop_handle_mouse(int mx, int my, int buttons) {
 }
 
 void desktop_handle_keyboard(char c) {
+    if (c == 27 && ctrl_pressed) {
+        /* Ctrl+Esc: Task Manager (Win98 had Ctrl+Alt+Del for this). */
+        for (int i = 0; i < desktop.window_count; i++) {
+            if (desktop.windows[i].type == WINDOW_TYPE_TASKMANAGER) {
+                if (desktop.windows[i].state == WINDOW_STATE_MINIMIZED) {
+                    window_restore(i);
+                } else {
+                    window_focus(i);
+                }
+                desktop.dirty = true;
+                return;
+            }
+        }
+        desktop_icon_launch_offset(WINDOW_TYPE_TASKMANAGER, "Task Manager");
+        return;
+    }
     if (c == '\t' && ctrl_pressed) {
         if (!desktop.alt_tab_active) {
             desktop.alt_tab_active = true;
@@ -656,6 +756,8 @@ void desktop_init(void) {
     desktop_icon_add("File Manager", WINDOW_TYPE_FILEMANAGER);
     desktop_icon_add("Settings", WINDOW_TYPE_SETTINGS);
     desktop_icon_add("Network", WINDOW_TYPE_NETWORK);
+    desktop_icon_add("Browser", WINDOW_TYPE_BROWSER);
+    desktop_icon_add("Task Manager", WINDOW_TYPE_TASKMANAGER);
     desktop_icon_add("About", WINDOW_TYPE_ABOUT);
     desktop_icon_add("FAQ", WINDOW_TYPE_FAQ);
 

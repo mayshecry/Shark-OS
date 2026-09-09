@@ -238,6 +238,18 @@ int window_create(window_type_t type, const char* title, int x, int y, int w, in
             break;
         case WINDOW_TYPE_NETWORK:
             win->draw_func = app_window_draw_network;
+            win->mouse_func = app_window_mouse_network;
+            break;
+        case WINDOW_TYPE_TASKMANAGER:
+            win->draw_func = app_window_draw_taskmanager;
+            win->mouse_func = app_window_mouse_taskmanager;
+            win->keyboard_func = app_window_keyboard_taskmanager;
+            break;
+        case WINDOW_TYPE_BROWSER:
+            win->draw_func = app_window_draw_browser;
+            win->mouse_func = app_window_mouse_browser;
+            win->keyboard_func = app_window_keyboard_browser;
+            win->close_func = browser_close;
             break;
         default:
             break;
