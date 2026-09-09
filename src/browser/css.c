@@ -6,10 +6,129 @@
 
 static br_rule_t rules[BR_MAX_RULES];
 static int rule_count = 0;
+/* Selector compounds and declarations are pooled (a rule averages ~1.5
+ * parts and ~3 declarations, so fixed per-rule arrays wasted most of the
+ * memory); --x declarations have their own pool because a design-token
+ * :root block has hundreds of them */
+static br_selpart_t part_pool[BR_MAX_PART_POOL];
+static int part_pool_used = 0;
+static br_decl_t decl_pool[BR_MAX_DECL_POOL];
+static int decl_pool_used = 0;
+static br_decl_t var_decls[BR_MAX_VAR_DECLS];
+static int var_decl_count = 0;
+
+/* Rules are bucketed by a hash of their subject's first class name or id
+ * (tag-only and universal rules go to the shared bucket), so an element
+ * only visits rules that can possibly match it. Pseudo-element rules
+ * (::before/::after) have their own chain for br_css_pseudo_content. */
+#define RULE_BUCKETS 256
+static short bucket_head[RULE_BUCKETS], bucket_tail[RULE_BUCKETS];
+static short rule_next[BR_MAX_RULES];
+static short shared_head = -1, shared_tail = -1;   /* rules without class/id subject */
+static short pseudo_head = -1, pseudo_tail = -1;   /* ::before / ::after rules      */
+static int   rules_indexed = 0;             /* rules[0..rules_indexed) are in the index */
+static unsigned key_hash(const char* s, int n) {
+    unsigned h = 2166136261u;
+    for (int i = 0; i < n; i++) { h ^= (unsigned char)s[i]; h *= 16777619u; }
+    return h & (RULE_BUCKETS - 1);
+}
+static void index_rule(int i) {
+    br_rule_t* r = &rules[i];
+    const br_selpart_t* p0 = &r->parts[0];
+    short *head, *tail;
+    if (p0->pseudo == 20 || p0->pseudo == 21) { head = &pseudo_head; tail = &pseudo_tail; }
+    else if (p0->id) { unsigned b = key_hash(p0->id, (int)strlen(p0->id)); head = &bucket_head[b]; tail = &bucket_tail[b]; }
+    else if (p0->cls) { int l = 0; while (p0->cls[l] && p0->cls[l] != ' ') l++; unsigned b = key_hash(p0->cls, l); head = &bucket_head[b]; tail = &bucket_tail[b]; }
+    else { head = &shared_head; tail = &shared_tail; }
+    /* append: chains keep cascade order */
+    rule_next[i] = -1;
+    if (*head < 0) *head = (short)i; else rule_next[*tail] = (short)i;
+    *tail = (short)i;
+}
+static void rules_reindex(void) {
+    for (int b = 0; b < RULE_BUCKETS; b++) { bucket_head[b] = -1; bucket_tail[b] = -1; }
+    shared_head = -1; shared_tail = -1; pseudo_head = -1; pseudo_tail = -1;
+    for (int i = 0; i < rule_count; i++) index_rule(i);
+    rules_indexed = rule_count;
+}
+static void rules_index_sync(void) {
+    if (rules_indexed == rule_count) return;
+    if (rules_indexed > rule_count) { rules_reindex(); return; }
+    for (int i = rules_indexed; i < rule_count; i++) index_rule(i);
+    rules_indexed = rule_count;
+}
 static int rule_order = 0;
 static int fontface_count;
 static int import_count;
 static int parse_length(const char* s, int base_px, int* ok);
+
+/* CSS custom properties: --name: value pairs declared anywhere (:root, html,
+ * body, any rule). They are resolved globally (no per-element scoping) when a
+ * value containing var() is applied, which covers the design-token usage
+ * every modern site relies on. */
+/* The custom properties in scope form a stack that follows the cascade's
+ * tree walk: an element pushes its own --x declarations, its subtree sees
+ * them (inheritance), and they are popped afterwards. Lookups scan from
+ * the top so the nearest declaration wins. The <html>/<body> level is never
+ * popped, so generated content resolved at layout time still sees the
+ * page's design tokens. */
+static struct { const char* name; const char* value; } css_vars[BR_MAX_VARS];
+static int var_count = 0;
+static int vars_pass = 1;             /* 0: collecting --x declarations, 1: applying the rest */
+
+static void set_var(const char* name, const char* value) {
+    if (var_count < BR_MAX_VARS) { css_vars[var_count].name = name; css_vars[var_count].value = value; var_count++; }
+}
+static const char* get_var(const char* name, int len) {
+    for (int i = var_count - 1; i >= 0; i--) {
+        const char* v = css_vars[i].name; int k = 0;
+        while (k < len && v[k] && v[k] == name[k]) k++;
+        if (k == len && !v[k]) return css_vars[i].value;
+    }
+    return NULL;
+}
+/* Expand var(--x[, fallback]) recursively into out. Returns 0 when a
+ * variable is undefined and has no fallback (the declaration is then
+ * invalid at computed-value time and ignored). */
+static int expand_vars(const char* v, char* out, int max, int depth) {
+    int o = 0;
+    if (depth > 6) return 0;
+    while (*v && o < max - 1) {
+        if (v[0] == 'v' && v[1] == 'a' && v[2] == 'r' && v[3] == '(') {
+            const char* p = v + 4;
+            while (*p == ' ') p++;
+            const char* ns = p;
+            while (*p && *p != ',' && *p != ')' && *p != ' ') p++;
+            int nl = (int)(p - ns);
+            while (*p == ' ') p++;
+            const char* fb = NULL; int fbl = 0;
+            if (*p == ',') {
+                p++; while (*p == ' ') p++;
+                fb = p; int d = 0;
+                while (*p && (d || *p != ')')) { if (*p == '(') d++; else if (*p == ')') d--; p++; }
+                fbl = (int)(p - fb);
+            }
+            if (*p == ')') p++;
+            const char* val = get_var(ns, nl);
+            char tmp[256];
+            if (val) {
+                if (!expand_vars(val, tmp, sizeof(tmp), depth + 1)) return 0;
+            } else if (fb) {
+                char fbs[256]; if (fbl > 255) fbl = 255;
+                for (int i = 0; i < fbl; i++) fbs[i] = fb[i];
+                fbs[fbl] = 0;
+                if (!expand_vars(fbs, tmp, sizeof(tmp), depth + 1)) return 0;
+            } else return 0;
+            for (int i = 0; tmp[i] && o < max - 1; i++) out[o++] = tmp[i];
+            v = p;
+            continue;
+        }
+        out[o++] = *v++;
+    }
+    out[o] = 0;
+    return 1;
+}
+static int has_var(const char* v) { for (; *v; v++) if (v[0] == 'v' && v[1] == 'a' && v[2] == 'r' && v[3] == '(') return 1; return 0; }
 
 /* The UA stylesheet is expressed as CSS text so it goes through the same
  * parser as author styles. Parsed once per document (cheap). */
@@ -19,7 +138,7 @@ static const char ua_sheet[] =
     "div,p,h1,h2,h3,h4,h5,h6,ul,ol,li,pre,blockquote,form,section,article,header,footer,nav,main,"
     "aside,center,dl,dt,dd,fieldset,figure,figcaption,address,details,summary,hr,table,tr,td,th,"
     "thead,tbody,caption,textarea,select,option{display:block}"
-    "table{display:table} tr{display:table-row} td,th{display:table-cell;padding:2px 4px}"
+    "table{display:table} tr{display:table-row} td,th{display:table-cell;padding:2px 4px;text-align:start} th{text-align:center}"
     "th{font-weight:bold;text-align:center}"
     "li{display:list-item}"
     "p{margin:1em 0} h1{font-size:2em;font-weight:bold;margin:0.67em 0}"
@@ -32,12 +151,15 @@ static const char ua_sheet[] =
     "b,strong{font-weight:bold} i,em,cite,var,dfn{font-style:italic}"
     "u,ins{text-decoration:underline} s,strike,del{text-decoration:line-through}"
     "a{color:#0000ee;text-decoration:underline} a:hover{color:#ee0000}"
-    "center{text-align:center} hr{margin:8px 0;border:1px solid #808080}"
+    "center{text-align:-webkit-center} hr{margin:8px 0;border:1px solid #808080}"
     "small{font-size:smaller} big{font-size:larger} mark{background:#ffff00}"
     "button,input,select,textarea{display:inline-block;background:#c0c0c0;padding:2px 6px;font-size:13px;font-family:sans-serif}"
     "fieldset{border:1px solid #808080;padding:6px;margin:6px 0}"
     "dd{margin-left:24px} sup,sub{font-size:80%}"
-    "figure{margin:8px 24px} summary{font-weight:bold}";
+    "figure{margin:8px 24px} summary{font-weight:bold}"
+    "template,dialog:not([open]),[hidden]{display:none} picture,video,audio,canvas,iframe{display:inline-block}"
+    "abbr[title]{text-decoration:underline} q:before{content:open-quote} progress,meter{display:inline-block;width:100px;height:12px;background:#e0e0e0;border:1px solid #808080}"
+    "menu,dir{display:block;margin:8px 0;padding-left:24px} label{display:inline} optgroup{font-weight:bold} time,data,output{display:inline}";
 
 /* <noscript> is hidden while scripting is on; the browser flips this on
  * when a page ends up empty without JavaScript (see parse_and_show). */
@@ -47,6 +169,12 @@ int br_css_noscript_visible(void) { return noscript_visible; }
 
 void br_css_reset(void) {
     rule_count = 0;
+    var_decl_count = 0;
+    part_pool_used = 0;
+    decl_pool_used = 0;
+    rules_indexed = 0;
+    rules_reindex();
+    var_count = 0;
     rule_order = 0;
     fontface_count = 0;
     import_count = 0;
@@ -79,7 +207,23 @@ static const struct { const char* name; uint32_t rgb; } named_colors[] = {
     {"firebrick", 0xB22222}, {"slategray", 0x708090}, {"dimgray", 0x696969}, {"whitesmoke", 0xF5F5F5},
     {"gainsboro", 0xDCDCDC}, {"aliceblue", 0xF0F8FF}, {"lavender", 0xE6E6FA}, {"mintcream", 0xF5FFFA},
     {"honeydew", 0xF0FFF0}, {"linen", 0xFAF0E6}, {"wheat", 0xF5DEB3}, {"plum", 0xDDA0DD},
-    {"rebeccapurple", 0x663399}, {"transparent", 0xFF000000}, {NULL, 0}
+    {"rebeccapurple", 0x663399}, {"transparent", 0xFF000000}, {"darkorange", 0xFF8C00}, {"lightcoral", 0xF08080},
+    {"midnightblue", 0x191970}, {"darkslategray", 0x2F4F4F}, {"lightslategray", 0x778899}, {"cornflowerblue", 0x6495ED},
+    {"mediumseagreen", 0x3CB371}, {"limegreen", 0x32CD32}, {"orangered", 0xFF4500}, {"deeppink", 0xFF1493}, {"hotpink", 0xFF69B4},
+    {"snow", 0xFFFAFA}, {"seashell", 0xFFF5EE}, {"oldlace", 0xFDF5E6}, {"azure", 0xF0FFFF}, {"ghostwhite", 0xF8F8FF},
+    {"lightcyan", 0xE0FFFF}, {"powderblue", 0xB0E0E6}, {"cadetblue", 0x5F9EA0}, {"slateblue", 0x6A5ACD}, {"darkviolet", 0x9400D3},
+    {"goldenrod", 0xDAA520}, {"peru", 0xCD853F}, {"sienna", 0xA0522D}, {"saddlebrown", 0x8B4513}, {"navajowhite", 0xFFDEAD},
+    {"palegreen", 0x98FB98}, {"springgreen", 0x00FF7F}, {"yellowgreen", 0x9ACD32}, {"olivedrab", 0x6B8E23}, {"darkolivegreen", 0x556B2F},
+    {"darkcyan", 0x008B8B}, {"darkturquoise", 0x00CED1}, {"deepskyblue", 0x00BFFF}, {"lightskyblue", 0x87CEFA}, {"lightsteelblue", 0xB0C4DE},
+    {"mediumblue", 0x0000CD}, {"darkmagenta", 0x8B008B}, {"mediumpurple", 0x9370DB}, {"thistle", 0xD8BFD8}, {"mistyrose", 0xFFE4E1},
+    {"papayawhip", 0xFFEFD5}, {"moccasin", 0xFFE4B5}, {"peachpuff", 0xFFDAB9}, {"bisque", 0xFFE4C4}, {"cornsilk", 0xFFF8DC},
+    {"lemonchiffon", 0xFFFACD}, {"lavenderblush", 0xFFF0F5}, {"floralwhite", 0xFFFAF0}, {"antiquewhite", 0xFAEBD7}, {"burlywood", 0xDEB887},
+    {"rosybrown", 0xBC8F8F}, {"indianred", 0xCD5C5C}, {"darksalmon", 0xE9967A}, {"lightsalmon", 0xFFA07A}, {"lightpink", 0xFFB6C1},
+    {"palevioletred", 0xDB7093}, {"mediumvioletred", 0xC71585}, {"darkkhaki", 0xBDB76B}, {"palegoldenrod", 0xEEE8AA}, {"aquamarine", 0x7FFFD4},
+    {"mediumaquamarine", 0x66CDAA}, {"lightseagreen", 0x20B2AA}, {"darkseagreen", 0x8FBC8F}, {"lawngreen", 0x7CFC00}, {"chartreuse", 0x7FFF00},
+    {"greenyellow", 0xADFF2F}, {"blueviolet", 0x8A2BE2}, {"darkorchid", 0x9932CC}, {"mediumorchid", 0xBA55D3}, {"mediumslateblue", 0x7B68EE},
+    {"darkslateblue", 0x483D8B}, {"canvas", 0xFFFFFF}, {"canvastext", 0x000000}, {"linktext", 0x0000EE}, {"buttonface", 0xEFEFEF}, {"fieldtext", 0x000000},
+    {"graytext", 0x808080}, {"highlight", 0x3390FF}, {"window", 0xFFFFFF}, {"windowtext", 0x000000}, {"buttontext", 0x000000}, {NULL, 0}
 };
 
 static int parse_num(const char** pp, int* out) {
@@ -105,12 +249,16 @@ uint32_t br_css_parse_color(const char* s, int* ok) {
         while (hexval(s[n]) >= 0) n++;
         if (n == 3 || n == 4) {
             int r = hexval(s[0]), g = hexval(s[1]), b = hexval(s[2]);
-            return 0xFF000000u | (uint32_t)((r * 17) << 16) | (uint32_t)((g * 17) << 8) | (uint32_t)(b * 17);
+            uint32_t a = n == 4 ? (uint32_t)(hexval(s[3]) * 17) : 0xFFu;
+            if (a == 0) return 0;
+            return (a << 24) | (uint32_t)((r * 17) << 16) | (uint32_t)((g * 17) << 8) | (uint32_t)(b * 17);
         }
         if (n == 6 || n == 8) {
             uint32_t v = 0;
             for (int i = 0; i < 6; i++) v = (v << 4) | (uint32_t)hexval(s[i]);
-            return 0xFF000000u | v;
+            uint32_t a = n == 8 ? (uint32_t)(hexval(s[6]) * 16 + hexval(s[7])) : 0xFFu;
+            if (a == 0) return 0;
+            return (a << 24) | v;
         }
         *ok = 0; return 0;
     }
@@ -128,15 +276,65 @@ uint32_t br_css_parse_color(const char* s, int* ok) {
             if (c[i] < 0) c[i] = 0;
             if (c[i] > 255) c[i] = 255;
         }
-        /* alpha: treat 0 as transparent, anything else as opaque */
-        int a = 1;
+        /* alpha 0..1 (or %) -> 0..255; fully transparent stays 0 */
+        int a = 255;
         if ((*p >= '0' && *p <= '9') || *p == '.') {
-            if (*p == '0' && (p[1] == ')' || p[1] == ' ' || p[1] == 0)) a = 0;
-            if (*p == '.' ) a = 1;
+            int whole = 0, frac = 0, fd = 0;
+            while (*p >= '0' && *p <= '9') { whole = whole * 10 + (*p - '0'); p++; }
+            if (*p == '.') { p++; while (*p >= '0' && *p <= '9') { if (fd < 3) { frac = frac * 10 + (*p - '0'); fd++; } p++; } }
+            while (fd < 3) { frac *= 10; fd++; }
+            if (*p == '%') a = whole * 255 / 100;
+            else a = whole >= 1 ? 255 : frac * 255 / 1000;
+            if (a < 0) a = 0;
+            if (a > 255) a = 255;
         }
-        if (!a) return 0x00000000u;
-        return 0xFF000000u | (uint32_t)(c[0] << 16) | (uint32_t)(c[1] << 8) | (uint32_t)c[2];
+        if (a == 0) return 0x00000000u;
+        return ((uint32_t)a << 24) | (uint32_t)(c[0] << 16) | (uint32_t)(c[1] << 8) | (uint32_t)c[2];
     }
+    if ((s[0] == 'h' || s[0] == 'H') && (s[1] == 's' || s[1] == 'S') && (s[2] == 'l' || s[2] == 'L')) {
+        /* hsl(H, S%, L% [, A]) / hsl(H S% L% / A) */
+        const char* p = s + 3;
+        if (*p == 'a' || *p == 'A') p++;
+        while (*p == ' ') p++;
+        if (*p != '(') { *ok = 0; return 0; }
+        p++;
+        int h, sat, lig;
+        if (!parse_num(&p, &h)) { *ok = 0; return 0; }
+        while (*p && *p != ' ' && *p != ',' && (*p < '0' || *p > '9')) p++;   /* deg */
+        while (*p == ' ' || *p == ',') p++;
+        if (!parse_num(&p, &sat)) { *ok = 0; return 0; }
+        if (*p == '%') p++;
+        while (*p == ' ' || *p == ',') p++;
+        if (!parse_num(&p, &lig)) { *ok = 0; return 0; }
+        if (*p == '%') p++;
+        while (*p == ' ' || *p == ',' || *p == '/') p++;
+        int a = 255;
+        if ((*p >= '0' && *p <= '9') || *p == '.') {
+            int whole = 0, frac = 0, fd = 0;
+            while (*p >= '0' && *p <= '9') { whole = whole * 10 + (*p - '0'); p++; }
+            if (*p == '.') { p++; while (*p >= '0' && *p <= '9') { if (fd < 3) { frac = frac * 10 + (*p - '0'); fd++; } p++; } }
+            while (fd < 3) { frac *= 10; fd++; }
+            a = *p == '%' ? whole * 255 / 100 : (whole >= 1 ? 255 : frac * 255 / 1000);
+        }
+        h = ((h % 360) + 360) % 360;
+        if (sat < 0) sat = 0; if (sat > 100) sat = 100;
+        if (lig < 0) lig = 0; if (lig > 100) lig = 100;
+        /* integer HSL->RGB, all values scaled by 1000 */
+        int c = (1000 - (lig > 50 ? 2 * lig - 100 : 100 - 2 * lig) * 10) ; c = (100 - (lig > 50 ? 2 * lig - 100 : 100 - 2 * lig)) * sat / 10;   /* chroma *1000 */
+        int hh = h * 1000 / 60;                      /* 0..6000 */
+        int xm = hh % 2000; if (xm > 1000) xm = 2000 - xm;
+        int x = c * xm / 1000;
+        int r1 = 0, g1 = 0, b1 = 0;
+        switch (hh / 1000) { case 0: r1 = c; g1 = x; break; case 1: r1 = x; g1 = c; break; case 2: g1 = c; b1 = x; break; case 3: g1 = x; b1 = c; break; case 4: r1 = x; b1 = c; break; default: r1 = c; b1 = x; break; }
+        int m = lig * 10 - c / 2;
+        int r = (r1 + m) * 255 / 1000, g = (g1 + m) * 255 / 1000, b = (b1 + m) * 255 / 1000;
+        if (r < 0) r = 0; if (r > 255) r = 255;
+        if (g < 0) g = 0; if (g > 255) g = 255;
+        if (b < 0) b = 0; if (b > 255) b = 255;
+        if (a == 0) return 0;
+        return ((uint32_t)a << 24) | (uint32_t)(r << 16) | (uint32_t)(g << 8) | (uint32_t)b;
+    }
+    if (br_streq_prefix(s, "currentcolor") || br_streq_prefix(s, "currentColor")) return 0x01000000u;   /* marker: resolved by apply_decl */
     char name[24];
     int n = 0;
     while (s[n] && s[n] != ' ' && s[n] != ';' && n < 23) { name[n] = (char)((s[n] >= 'A' && s[n] <= 'Z') ? s[n] + 32 : s[n]); n++; }
@@ -159,21 +357,62 @@ static int parse_length_em(const char* s, int base_px, int em_px, int* ok) {
     int v;
     *ok = 1;
     while (*p == ' ') p++;
-    if (br_streq_prefix(p, "calc(")) {
-        /* calc(A op B ...): evaluate a single +/- chain of lengths (no nesting, no * /) */
-        p += 5;
-        int total = 0, sign = 1, any = 0;
-        while (*p && *p != ')') {
+    if (br_streq_prefix(p, "calc(") || br_streq_prefix(p, "min(") || br_streq_prefix(p, "max(") || br_streq_prefix(p, "clamp(") || br_streq_prefix(p, "-webkit-calc(")) {
+        /* calc(): terms joined by + - * / with one level of nesting; min()/
+         * max()/clamp(): comma separated lengths. Multiplication uses the
+         * plain number on either side (calc(2 * 1em), calc(100% / 3)). */
+        int mode = p[0] == 'm' ? (p[1] == 'i' ? 1 : 2) : p[0] == 'c' && p[1] == 'l' ? 3 : 0;
+        while (*p && *p != '(') p++;
+        p++;
+        int vals[4]; int nv = 0;
+        int total = 0, sign = 1, any = 0, mul = 0, divv = 0;
+        int depth = 0;
+        while (*p) {
             while (*p == ' ') p++;
+            if (!*p) break;
+            if (*p == ')' && depth == 0) { p++; break; }
+            if (*p == ',' ) { if (nv < 4) vals[nv++] = total; total = 0; sign = 1; any = 0; p++; continue; }
             if (*p == '+') { sign = 1; p++; continue; }
             if (*p == '-' && (p[1] == ' ')) { sign = -1; p++; continue; }
-            if (*p == '*' || *p == '/') { *ok = 0; return 0; }
-            int o2; int l = parse_length_em(p, base_px, em_px, &o2);
+            if (*p == '*') { mul = 1; p++; continue; }
+            if (*p == '/') { divv = 1; p++; continue; }
+            int l = 0, o2 = 0, plain = 0;
+            if (*p == '(') {
+                /* nested group: evaluate as a calc */
+                char sub[96]; int sl = 0; int d = 0;
+                sub[sl++] = 'c'; sub[sl++] = 'a'; sub[sl++] = 'l'; sub[sl++] = 'c';
+                while (*p && sl < 94) { if (*p == '(') d++; else if (*p == ')') { d--; if (d == 0) { sub[sl++] = *p++; break; } } sub[sl++] = *p++; }
+                sub[sl] = 0;
+                l = parse_length_em(sub, base_px, em_px, &o2);
+            } else {
+                const char* q = p; int neg2 = 0;
+                if (*q == '-') { neg2 = 1; q++; }
+                const char* r = q; while ((*r >= '0' && *r <= '9') || *r == '.') r++;
+                if (r > q && (*r == ' ' || *r == ')' || *r == ',' || *r == 0 || *r == '*' || *r == '/')) {
+                    /* unitless number (factor) */
+                    int whole = 0, frac = 0, fd = 0;
+                    while (*q >= '0' && *q <= '9') { whole = whole * 10 + (*q - '0'); q++; }
+                    if (*q == '.') { q++; while (*q >= '0' && *q <= '9') { if (fd < 2) { frac = frac * 10 + (*q - '0'); fd++; } q++; } }
+                    while (fd < 2) { frac *= 10; fd++; }
+                    l = whole * 100 + frac; if (neg2) l = -l;
+                    plain = 1; o2 = 1;
+                } else {
+                    l = parse_length_em(p, base_px, em_px, &o2);
+                }
+                int d = 0;
+                while (*p && (d || (*p != ' ' && *p != ')' && *p != ',' && *p != '*' && *p != '/'))) { if (*p == '(') d++; else if (*p == ')') d--; p++; }
+            }
             if (!o2) { *ok = 0; return 0; }
-            total += sign * l; any = 1;
-            while (*p && *p != ' ' && *p != ')' && *p != '+') p++;
+            if (mul) { total = any ? total * l / (plain ? 100 : 1) : l; mul = 0; }
+            else if (divv) { if (l == 0) { *ok = 0; return 0; } total = plain ? total * 100 / l : total / l; divv = 0; }
+            else { total += sign * (plain ? l / 100 : l); any = 1; }
+            sign = 1;
         }
-        if (!any) *ok = 0;
+        if (nv < 4) vals[nv++] = total;
+        if (mode == 1) { int m = vals[0]; for (int i = 1; i < nv; i++) if (vals[i] < m) m = vals[i]; return m; }
+        if (mode == 2) { int m = vals[0]; for (int i = 1; i < nv; i++) if (vals[i] > m) m = vals[i]; return m; }
+        if (mode == 3 && nv >= 3) { int v = vals[1]; if (v < vals[0]) v = vals[0]; if (v > vals[2]) v = vals[2]; return v; }
+        if (!any && nv == 0) *ok = 0;
         return total;
     }
     if (br_streq(p, "auto") || br_streq(p, "inherit") || br_streq(p, "initial") || br_streq(p, "none") || br_streq(p, "unset")) { *ok = 0; return 0; }
@@ -275,7 +514,14 @@ static int parse_compound(const char* s, int n, br_selpart_t* part) {
             if (i < n) i++;                                  /* ']' */
             continue;
         }
-        if (k == ':' && i < n && s[i] == ':') return 0;      /* ::before etc.: never matches */
+        if (k == ':' && i < n && s[i] == ':') {
+            /* ::before/::after are handled by the layout (content:), the
+             * other pseudo-elements never match */
+            int l2 = 0; while (i + 1 + l2 < n && s[i + 1 + l2] != '.' && s[i + 1 + l2] != '#' && s[i + 1 + l2] != ':' && s[i + 1 + l2] != '[') l2++;
+            if ((l2 == 6 && br_streq_n(&s[i + 1], 6, "before")) ) { part->pseudo = 20; i += 1 + l2; continue; }
+            if ((l2 == 5 && br_streq_n(&s[i + 1], 5, "after"))) { part->pseudo = 21; i += 1 + l2; continue; }
+            return 0;
+        }
         while (i < n && s[i] != '.' && s[i] != '#' && s[i] != ':' && s[i] != '[') {
             if (s[i] == '(') { int d = 0; while (i < n) { if (s[i] == '(') d++; else if (s[i] == ')') { d--; if (d == 0) { i++; break; } } i++; } continue; }
             i++;
@@ -290,16 +536,57 @@ static int parse_compound(const char* s, int n, br_selpart_t* part) {
             for (int z = 0; z < l; z++) ps[z] = s[st + z];
             ps[l] = 0;
             if (br_streq(ps, "hover") || br_streq(ps, "focus-within")) part->pseudo_hover = 1;
-            else if (br_streq(ps, "link") || br_streq(ps, "visited") || br_streq(ps, "root") || br_streq(ps, "any-link") || br_streq(ps, "enabled")) { /* always true here */ }
+            else if (br_streq(ps, "link") || br_streq(ps, "visited") || br_streq(ps, "any-link") || br_streq(ps, "enabled") ||
+                     br_streq(ps, "defined") || br_streq(ps, "-moz-any-link") || br_streq(ps, "-webkit-any-link") || br_streq(ps, "optional") || br_streq(ps, "read-write") || br_streq(ps, "valid")) { /* always true here */ }
+            else if (br_streq(ps, "root")) { part->tag = "html"; }
+            else if (br_streq(ps, "before")) part->pseudo = 20;
+            else if (br_streq(ps, "after")) part->pseudo = 21;
+            else if (br_streq(ps, "checked")) part->pseudo = 8;
+            else if (br_streq(ps, "disabled")) { part->attr_name = "disabled"; part->attr_op = 0; }
+            else if (br_streq(ps, "required")) { part->attr_name = "required"; part->attr_op = 0; }
+            else if (br_streq(ps, "focus") || br_streq(ps, "focus-visible") || br_streq(ps, "active") || br_streq(ps, "target") ||
+                     br_streq(ps, "invalid") || br_streq(ps, "placeholder-shown") || br_streq(ps, "read-only") || br_streq(ps, "indeterminate") ||
+                     br_streq(ps, "fullscreen") || br_streq(ps, "popover-open") || br_streq(ps, "modal") || br_streq(ps, "playing") ||
+                     br_streq(ps, "autofill") || br_streq(ps, "-webkit-autofill") || br_streq(ps, "user-invalid") || br_streq(ps, "default") || br_streq(ps, "in-range") || br_streq(ps, "out-of-range")) return 0;   /* state we never enter: rule never matches */
+            else if (br_streq_prefix(ps, "is(") || br_streq_prefix(ps, "where(") || br_streq_prefix(ps, "-webkit-any(") || br_streq_prefix(ps, "matches(")) {
+                /* :is(a, b): approximate with the first alternative that is a
+                 * simple compound (a full list would need rule duplication) */
+                const char* a = ps; while (*a && *a != '(') a++; a++;
+                const char* e = a; int d = 0; while (*e && (d || (*e != ',' && *e != ')'))) { if (*e == '(') d++; else if (*e == ')') d--; e++; }
+                /* skip complex selectors inside (descendant combinators) */
+                int simple = 1; for (const char* q = a; q < e; q++) if (*q == ' ' || *q == '>' || *q == '+' || *q == '~') simple = 0;
+                if (!simple) return 0;
+                br_selpart_t inner;
+                if (!parse_compound(a, (int)(e - a), &inner)) return 0;
+                if (inner.tag) { if (part->tag && !br_streq(part->tag, inner.tag)) return 0; part->tag = inner.tag; }
+                if (inner.id) part->id = inner.id;
+                if (inner.cls) { int l2 = (int)strlen(inner.cls); if (cl + l2 + 1 < (int)sizeof(classes)) { if (cl) classes[cl++] = ' '; for (int z = 0; z < l2; z++) classes[cl++] = inner.cls[z]; classes[cl] = 0; } }
+                if (inner.attr_name && !part->attr_name) { part->attr_name = inner.attr_name; part->attr_op = inner.attr_op; part->attr_value = inner.attr_value; }
+                if (inner.pseudo && !part->pseudo) part->pseudo = inner.pseudo;
+                if (inner.pseudo_hover) part->pseudo_hover = 1;
+            }
+            else if (br_streq_prefix(ps, "has(") || br_streq_prefix(ps, "host") || br_streq_prefix(ps, "lang(") || br_streq_prefix(ps, "dir(") || br_streq_prefix(ps, "state(")) return 0;
             else if (br_streq(ps, "first-child") || br_streq(ps, "first-of-type")) part->pseudo = 1;
             else if (br_streq(ps, "last-child") || br_streq(ps, "last-of-type")) part->pseudo = 2;
             else if (br_streq(ps, "only-child")) part->pseudo = 6;
             else if (br_streq(ps, "empty")) part->pseudo = 5;
-            else if (br_streq_prefix(ps, "nth-child(") || br_streq_prefix(ps, "nth-of-type(")) {
+            else if (br_streq_prefix(ps, "nth-child(") || br_streq_prefix(ps, "nth-of-type(") || br_streq_prefix(ps, "nth-last-child(") || br_streq_prefix(ps, "nth-last-of-type(")) {
                 const char* a = ps; while (*a && *a != '(') a++; a++;
+                int last = ps[4] == 'l';
                 if (br_streq_prefix(a, "even") || br_streq_prefix(a, "2n)") || br_streq_prefix(a, "2n+0")) part->pseudo = 3;
                 else if (br_streq_prefix(a, "odd") || br_streq_prefix(a, "2n+1")) part->pseudo = 4;
-                else if (*a >= '0' && *a <= '9' && !my_strstr_ci(a, "n")) { part->pseudo = 7; part->attr_op = br_atoi(a); }
+                else if (*a >= '0' && *a <= '9' && !my_strstr_ci(a, "n")) { part->pseudo = last ? 9 : 7; part->attr_op = br_atoi(a); }
+                else if (my_strstr_ci(a, "n")) {
+                    /* An+B: store A in attr_op (high 16 bits) and B (low 16) */
+                    int A = 1, B = 0; const char* q = a; int neg = 0;
+                    if (*q == '-') { neg = 1; q++; } else if (*q == '+') q++;
+                    if (*q >= '0' && *q <= '9') { A = 0; while (*q >= '0' && *q <= '9') { A = A * 10 + (*q - '0'); q++; } }
+                    if (neg) A = -A;
+                    if (*q == 'n') q++;
+                    while (*q == ' ') q++;
+                    if (*q == '+' || *q == '-') { int bn = *q == '-'; q++; while (*q == ' ') q++; B = br_atoi(q); if (bn) B = -B; }
+                    part->pseudo = last ? 11 : 10; part->attr_op = ((A & 0xFFFF) << 16) | (B & 0xFFFF);
+                }
                 else return 0;
             }
             else if (br_streq_prefix(ps, "not(")) {
@@ -318,8 +605,12 @@ static int parse_compound(const char* s, int n, br_selpart_t* part) {
 
 static void add_rule(const char* sel, int seln, const char* body, int bodyn) {
     if (rule_count >= BR_MAX_RULES) return;
+    if (part_pool_used + BR_MAX_SELPARTS > BR_MAX_PART_POOL || decl_pool_used + BR_MAX_DECLS > BR_MAX_DECL_POOL) return;
     br_rule_t* r = &rules[rule_count];
     memset(r, 0, sizeof(*r));
+    r->parts = &part_pool[part_pool_used];
+    r->decls = &decl_pool[decl_pool_used];
+    memset(r->parts, 0, sizeof(br_selpart_t) * BR_MAX_SELPARTS);
 
     /* Split into compound parts right to left, remembering the combinator
      * that joins each part to the one on its left. */
@@ -366,10 +657,20 @@ static void add_rule(const char* sel, int seln, const char* body, int bodyn) {
 
     /* declarations */
     int i = 0;
-    while (i < bodyn && r->decl_count < BR_MAX_DECLS) {
+    r->var_first = var_decl_count; r->var_count = 0;
+    while (i < bodyn) {
         int st = i;
         while (i < bodyn && body[i] != ':') i++;
         if (i >= bodyn) break;
+        /* skip the name if it is going nowhere (both tables full) */
+        int is_var = 0;
+        { int q = st; while (q < i && is_ws(body[q])) q++; is_var = (q + 1 < i && body[q] == '-' && body[q + 1] == '-'); }
+        if ((is_var && var_decl_count >= BR_MAX_VAR_DECLS) || (!is_var && r->decl_count >= BR_MAX_DECLS)) {
+            i++; int paren = 0;
+            while (i < bodyn && (body[i] != ';' || paren)) { if (body[i] == '(') paren++; if (body[i] == ')') paren--; i++; }
+            i++;
+            continue;
+        }
         char* name = trim_dup(&body[st], i - st);
         lower_inplace(name);
         i++;
@@ -380,9 +681,15 @@ static void add_rule(const char* sel, int seln, const char* body, int bodyn) {
         int important = 0;
         int vl = (int)strlen(value);
         for (int k = 0; k + 1 < vl; k++) if (value[k] == '!' && (value[k + 1] == 'i' || value[k + 1] == 'I')) { important = 1; value[k] = 0; while (k > 0 && value[k - 1] == ' ') value[--k] = 0; break; }
-        if (name[0]) { r->decls[r->decl_count].name = name; r->decls[r->decl_count].value = value; r->decls[r->decl_count].important = important; r->decl_count++; }
+        if (is_var) {
+            /* only contiguous when no other rule interleaves: rules are parsed one at a time, so they are */
+            var_decls[var_decl_count].name = name; var_decls[var_decl_count].value = value; var_decls[var_decl_count].important = important;
+            var_decl_count++; r->var_count++;
+        } else if (name[0]) { r->decls[r->decl_count].name = name; r->decls[r->decl_count].value = value; r->decls[r->decl_count].important = important; r->decl_count++; }
         i++;
     }
+    part_pool_used += r->part_count;
+    decl_pool_used += r->decl_count;
     rule_count++;
 }
 
@@ -497,8 +804,39 @@ static int media_matches(const char* q, int n) {
         if ((mw = my_strstr_ci(s, "max-width"))) { const char* v = mw; while (*v && *v != ':') v++; if (*v) { v++; int okv; int px = parse_length(v, width, &okv); if (okv && width > px) ok = 0; } }
         if ((mw = my_strstr_ci(s, "min-device-width"))) { const char* v = mw; while (*v && *v != ':') v++; if (*v) { v++; int okv; int px = parse_length(v, width, &okv); if (okv && (int)screen_width < px) ok = 0; } }
         if ((mw = my_strstr_ci(s, "max-device-width"))) { const char* v = mw; while (*v && *v != ':') v++; if (*v) { v++; int okv; int px = parse_length(v, width, &okv); if (okv && (int)screen_width > px) ok = 0; } }
-        if ((mw = my_strstr_ci(s, "width >="))) { int okv; int px = parse_length(mw + 8, width, &okv); if (okv && width < px) ok = 0; }
-        if ((mw = my_strstr_ci(s, "width <="))) { int okv; int px = parse_length(mw + 8, width, &okv); if (okv && width > px) ok = 0; }
+        /* range syntax: (width >= 480px), (width<=959px), (400px < width < 900px) */
+        {
+            char ns[200]; int k = 0;
+            for (const char* c = s; *c && k < 199; c++) if (*c != ' ') ns[k++] = *c;
+            ns[k] = 0;
+            const char* w = ns;
+            while ((w = my_strstr_ci(w, "width"))) {
+                if (w > ns && (w[-1] == '-' || (w[-1] >= 'a' && w[-1] <= 'z'))) { w += 5; continue; }   /* min-width, device-width */
+                const char* a = w + 5; int okv, px;
+                if (a[0] == '>' && a[1] == '=') { px = parse_length(a + 2, width, &okv); if (okv && width < px) ok = 0; }
+                else if (a[0] == '<' && a[1] == '=') { px = parse_length(a + 2, width, &okv); if (okv && width > px) ok = 0; }
+                else if (a[0] == '>') { px = parse_length(a + 1, width, &okv); if (okv && width <= px) ok = 0; }
+                else if (a[0] == '<') { px = parse_length(a + 1, width, &okv); if (okv && width >= px) ok = 0; }
+                /* value on the left: 400px<=width  means width >= 400px */
+                if (w > ns) {
+                    const char* b = w - 1;
+                    int ge = (b[0] == '=' && b > ns && b[-1] == '<'), gt = (b[0] == '<' && !(b > ns && b[-1] == '<'));
+                    int le = (b[0] == '=' && b > ns && b[-1] == '>'), lt = (b[0] == '>');
+                    if (ge || gt || le || lt) {
+                        const char* v = (ge || le) ? b - 1 : b;
+                        while (v > ns && v[-1] != '(' && v[-1] != 'd') v--;      /* back to the start of the number ('d' of "and") */
+                        px = parse_length(v, width, &okv);
+                        if (okv) {
+                            if (ge && width < px) ok = 0;
+                            if (gt && width <= px) ok = 0;
+                            if (le && width > px) ok = 0;
+                            if (lt && width >= px) ok = 0;
+                        }
+                    }
+                }
+                w += 5;
+            }
+        }
         if (negate) ok = !ok;
         if (ok) return 1;
         p = *e ? e + 1 : e;
@@ -637,11 +975,62 @@ static int element_index(const br_node_t* n, int* count) {
     return idx;
 }
 
+/* class="" membership test on a raw attribute value (space separated). */
+static int class_in_list(const char* v, const char* cls) {
+    int cl = (int)strlen(cls);
+    while (*v) {
+        while (*v == ' ') v++;
+        const char* st = v;
+        while (*v && *v != ' ') v++;
+        if ((int)(v - st) == cl) {
+            int i = 0;
+            while (i < cl && st[i] == cls[i]) i++;
+            if (i == cl) return 1;
+        }
+    }
+    return 0;
+}
+static int has_all_classes_v(const char* v, const char* list) {
+    char one[64];
+    while (*list) {
+        while (*list == ' ') list++;
+        int l = 0;
+        while (*list && *list != ' ' && l < 63) one[l++] = *list++;
+        one[l] = 0;
+        if (l && !class_in_list(v, one)) return 0;
+    }
+    return 1;
+}
+
+/* The id and class attributes of an element, looked up once per element
+ * per cascade (the selector matcher asks for them for nearly every rule). */
+static const br_node_t* attr_cache_node = NULL;
+static const char* attr_cache_id;
+static const char* attr_cache_cls;
+static void attr_cache_fill(const br_node_t* n) {
+    if (attr_cache_node == n) return;
+    attr_cache_node = n;
+    attr_cache_id = NULL; attr_cache_cls = NULL;
+    for (int i = 0; i < n->attr_count; i++) {
+        const char* nm = n->attrs[i].name;
+        if (nm[0] == 'i' && nm[1] == 'd' && !nm[2]) attr_cache_id = n->attrs[i].value;
+        else if (nm[0] == 'c' && nm[1] == 'l' && nm[2] == 'a' && nm[3] == 's' && nm[4] == 's' && !nm[5]) attr_cache_cls = n->attrs[i].value;
+    }
+}
+void br_css_attr_cache_invalidate(void) { attr_cache_node = NULL; }
+
 static int part_matches(const br_node_t* n, const br_selpart_t* p, int hover_id) {
     if (n->type != BR_NODE_ELEMENT) return 0;
     if (p->tag && !br_streq(n->tag, p->tag)) return 0;
-    if (p->id) { const char* v = br_attr(n, "id"); if (!v || !br_streq(v, p->id)) return 0; }
-    if (p->cls && !has_all_classes(n, p->cls)) return 0;
+    if (p->id || p->cls) {
+        /* ancestors are looked up through the same one-entry cache; the
+         * subject element is the common case and always hits */
+        const char* idv; const char* clv;
+        if (attr_cache_node == n) { idv = attr_cache_id; clv = attr_cache_cls; }
+        else { idv = br_attr(n, "id"); clv = br_attr(n, "class"); }
+        if (p->id && (!idv || !br_streq(idv, p->id))) return 0;
+        if (p->cls && (!clv || !has_all_classes_v(clv, p->cls))) return 0;
+    }
     if (p->attr_name && !attr_matches(n, p)) return 0;
     if (p->neg) {
         int m = 1;
@@ -660,6 +1049,16 @@ static int part_matches(const br_node_t* n, const br_selpart_t* p, int hover_id)
         case 5: if (n->first_child) return 0; break;
         case 6: if (cnt != 1) return 0; break;
         case 7: if (idx != p->attr_op) return 0; break;
+        case 8: if (!n->checked && !br_attr(n, "checked") && !br_attr(n, "selected")) return 0; break;
+        case 9: if (cnt - idx + 1 != p->attr_op) return 0; break;
+        case 10: case 11: {
+            int A = (int16_t)(p->attr_op >> 16), B = (int16_t)(p->attr_op & 0xFFFF);
+            int i2 = p->pseudo == 11 ? cnt - idx + 1 : idx;
+            if (A == 0) { if (i2 != B) return 0; }
+            else { int d = i2 - B; if (d % A != 0 || d / A < 0) return 0; }
+            break;
+        }
+        case 20: case 21: break;          /* ::before/::after: matched by the element, used by layout */
         }
     }
     if (p->pseudo_hover) {
@@ -702,7 +1101,7 @@ static int rule_matches(const br_node_t* n, const br_rule_t* r, int hover_id) {
 
 int br_css_match_selector_string(br_node_t* n, const char* sel) {
     /* querySelector support: parse into a temporary rule */
-    int saved = rule_count;
+    int saved = rule_count, saved_parts = part_pool_used, saved_decls = decl_pool_used, saved_vars = var_decl_count;
     add_rule(sel, (int)strlen(sel), "", 0);
     int ok = 0;
     if (rule_count > saved) {
@@ -710,6 +1109,7 @@ int br_css_match_selector_string(br_node_t* n, const char* sel) {
         rule_count = saved;
         rule_order--;
     }
+    part_pool_used = saved_parts; decl_pool_used = saved_decls; var_decl_count = saved_vars;
     return ok;
 }
 
@@ -767,15 +1167,27 @@ static void apply_box_sides(int* t, int* r, int* b, int* l, const char* value, i
 static void apply_decl(br_style_t* st, const char* name, const char* value, int parent_font_px) {
     int ok;
     int em = st->font_px > 0 ? st->font_px : parent_font_px;
-    if (br_streq(value, "inherit") || br_streq(value, "unset") || br_streq(value, "revert")) return;   /* keep inherited value */
-    if (br_streq(name, "color")) { uint32_t c = br_css_parse_color(value, &ok); if (ok && c) st->color = c; }
+    if (br_streq(value, "inherit") || br_streq(value, "unset") || br_streq(value, "revert") || br_streq(value, "revert-layer")) return;   /* keep inherited value */
+    if (name[0] == '-' && name[1] == '-') {
+        /* custom property: pushed on the scope stack during the collecting
+         * pass (values stay raw; nested var() resolves at use time) */
+        if (vars_pass == 0) set_var(name, value);
+        return;
+    }
+    if (vars_pass == 0) return;
+    char expanded[256];
+    if (has_var(value)) {
+        if (!expand_vars(value, expanded, sizeof(expanded), 0)) return;  /* undefined variable: declaration invalid */
+        value = expanded;
+    }
+    if (br_streq(name, "color")) { uint32_t c = br_css_parse_color(value, &ok); if (ok && c && c != 0x01000000u) st->color = c; }
     else if (br_streq(name, "background") || br_streq(name, "background-color")) {
         /* background: <color> [image...] -> first token that parses as colour */
         const char* p = value;
         int found = 0;
         while (*p && !found) {
             uint32_t c = br_css_parse_color(p, &ok);
-            if (ok) { st->background = c; found = 1; break; }
+            if (ok) { st->background = c == 0x01000000u ? st->color : c; found = 1; break; }
             if (br_streq_prefix(p, "url(") || br_streq_prefix(p, "linear-gradient(") || br_streq_prefix(p, "radial-gradient(") || br_streq_prefix(p, "rgb")) {
                 /* gradient: approximate with its first colour stop */
                 if (p[0] == 'l' || p[0] == 'r') {
@@ -861,6 +1273,7 @@ static void apply_decl(br_style_t* st, const char* name, const char* value, int 
     else if (br_streq(name, "letter-spacing")) { int l = parse_length_em(value, em, em, &ok); st->letter_spacing = ok ? l : 0; }
     else if (br_streq(name, "text-align")) {
         if (br_streq(value, "center") || br_streq(value, "-webkit-center")) st->text_align = 1;
+        else if (br_streq(value, "left") || br_streq(value, "start")) st->text_align = 0;
         else if (br_streq(value, "right") || br_streq(value, "end")) st->text_align = 2;
         else if (br_streq(value, "justify")) st->text_align = 0;
         else st->text_align = 0;
@@ -878,7 +1291,7 @@ static void apply_decl(br_style_t* st, const char* name, const char* value, int 
         else st->display = BR_DISPLAY_BLOCK;   /* block, flow-root, ... */
     }
     else if (br_streq(name, "flex-direction") || br_streq(name, "flex-flow")) st->flex_col = br_streq_prefix(value, "column");
-    else if (br_streq(name, "gap") || br_streq(name, "column-gap") || br_streq(name, "grid-gap")) { int l = parse_length_em(value, 400, em, &ok); if (ok) st->gap = l; }
+    else if (br_streq(name, "gap") || br_streq(name, "column-gap") || br_streq(name, "grid-gap") || br_streq(name, "grid-column-gap")) { int l = parse_length_em(value, 400, em, &ok); if (ok) st->gap = l; }
     else if (br_streq(name, "float")) { st->float_dir = br_streq(value, "left") ? 1 : br_streq(value, "right") ? 2 : 0; }
     else if (br_streq(name, "visibility")) st->visible = !br_streq(value, "hidden") && !br_streq(value, "collapse");
     else if (br_streq(name, "margin")) {
@@ -945,7 +1358,7 @@ static void apply_decl(br_style_t* st, const char* name, const char* value, int 
                      br_streq_prefix(p, "ridge") || br_streq_prefix(p, "groove")) { got_style = 1; }
             else {
                 uint32_t c = br_css_parse_color(p, &ok);
-                if (ok) st->border_color = c;
+                if (ok) st->border_color = c == 0x01000000u ? st->color : c;
             }
             int d = 0; while (*p && (d || *p != ' ')) { if (*p == '(') d++; if (*p == ')') d--; p++; }
         }
@@ -976,7 +1389,80 @@ static void apply_decl(br_style_t* st, const char* name, const char* value, int 
             st->border = m;
         }
     }
-    else if (br_streq(name, "border-color")) { uint32_t c = br_css_parse_color(value, &ok); if (ok) st->border_color = c; }
+    else if (br_streq(name, "border-color") || br_streq(name, "border-bottom-color") || br_streq(name, "border-top-color") || br_streq(name, "border-left-color") || br_streq(name, "border-right-color")) { uint32_t c = br_css_parse_color(value, &ok); if (ok) st->border_color = c == 0x01000000u ? st->color : c; }
+    else if (br_streq(name, "border-radius") || br_streq(name, "border-top-left-radius") || br_streq(name, "border-top-right-radius")) {
+        int l = parse_length_em(value, 100, em, &ok);
+        if (ok) { if (l > 40 && value[strlen(value) - 1] == '%') l = 40; st->radius = l < 0 ? 0 : l; }
+    }
+    else if (br_streq(name, "white-space") || br_streq(name, "text-wrap") || br_streq(name, "white-space-collapse")) {
+        if (br_streq(value, "nowrap") || br_streq(value, "pre")) st->nowrap = 1;
+        else if (br_streq(value, "normal") || br_streq(value, "pre-wrap") || br_streq(value, "pre-line") || br_streq(value, "wrap") || br_streq(value, "balance") || br_streq(value, "collapse")) st->nowrap = 0;
+    }
+    else if (br_streq(name, "justify-content")) {
+        if (br_streq_prefix(value, "center")) st->justify = 1;
+        else if (br_streq_prefix(value, "flex-end") || br_streq_prefix(value, "end") || br_streq_prefix(value, "right")) st->justify = 2;
+        else if (br_streq_prefix(value, "space-between")) st->justify = 3;
+        else if (br_streq_prefix(value, "space-around")) st->justify = 4;
+        else if (br_streq_prefix(value, "space-evenly")) st->justify = 5;
+        else st->justify = 0;
+    }
+    else if (br_streq(name, "align-items") || br_streq(name, "align-self") || br_streq(name, "place-items")) {
+        if (br_streq_prefix(value, "center")) st->align_items = 1;
+        else if (br_streq_prefix(value, "flex-end") || br_streq_prefix(value, "end")) st->align_items = 2;
+        else st->align_items = 0;
+    }
+    else if (br_streq(name, "place-content")) { if (br_streq_prefix(value, "center")) { st->justify = 1; st->align_items = 1; } }
+    else if (br_streq(name, "flex-grow")) st->flex_grow = br_atoi(value) > 0 ? br_atoi(value) : (value[0] == '0' && value[1] == '.' ? 1 : 0);
+    else if (br_streq(name, "flex")) {
+        /* flex: <grow> [<shrink>] [<basis>] | auto | none | initial | <basis> */
+        if (br_streq(value, "auto")) { st->flex_grow = 1; }
+        else if (br_streq(value, "none") || br_streq(value, "initial")) { st->flex_grow = 0; }
+        else if ((value[0] >= '0' && value[0] <= '9') || value[0] == '.') {
+            const char* q = value; while ((*q >= '0' && *q <= '9') || *q == '.') q++;
+            if (*q == 0 || *q == ' ') { st->flex_grow = br_atoi(value) > 0 ? br_atoi(value) : 0; }
+            else { int l = parse_length_em(value, 0, em, &ok); if (ok && l > 0 && value[strlen(value) - 1] != '%') st->width = l; else if (ok && value[strlen(value) - 1] == '%') st->width = -(2 + br_atoi(value)); }
+            /* trailing basis */
+            const char* b = value; int tok = 0;
+            while (*b) { while (*b == ' ') b++; if (!*b) break; const char* e = b; while (*e && *e != ' ') e++; if (tok >= 1 && ((b[0] >= '0' && b[0] <= '9') || b[0] == '.') && !(e - b <= 3 && !((e[-1] >= '0' && e[-1] <= '9') == 0))) { int l = parse_length_em(b, 0, em, &ok); if (ok && l > 0 && e[-1] != '%' && !(e - b == 1)) st->width = l; } b = e; tok++; }
+        }
+    }
+    else if (br_streq(name, "flex-basis")) { int l = parse_length_em(value, 0, em, &ok); if (ok && l > 0) st->width = value[strlen(value) - 1] == '%' ? -(2 + br_atoi(value)) : l; }
+    else if (br_streq(name, "flex-wrap")) { /* rows always wrap when full */ }
+    else if (br_streq(name, "grid-template-columns")) {
+        /* count the tracks: "1fr 1fr 1fr", "repeat(3, 1fr)", "repeat(auto-fill, minmax(200px, 1fr))", "200px 1fr" */
+        const char* p = value; int cols = 0;
+        if (br_streq_prefix(p, "repeat(")) {
+            p += 7;
+            while (*p == ' ') p++;
+            if (br_streq_prefix(p, "auto-fill") || br_streq_prefix(p, "auto-fit")) {
+                const char* m = my_strstr_ci(p, "minmax(");
+                int px = 200;
+                if (m) { int o2; int l = parse_length_em(m + 7, 0, em, &o2); if (o2 && l > 0) px = l; }
+                st->grid_cols = -px;
+            } else {
+                cols = br_atoi(p);
+                if (cols < 1) cols = 1;
+                if (cols > 12) cols = 12;
+                st->grid_cols = cols;
+            }
+        } else if (!br_streq(value, "none")) {
+            int d = 0;
+            while (*p) {
+                while (*p == ' ') p++;
+                if (!*p) break;
+                cols++;
+                while (*p && (d || *p != ' ')) { if (*p == '(') d++; if (*p == ')') d--; p++; }
+            }
+            if (cols > 12) cols = 12;
+            st->grid_cols = cols > 1 ? cols : 0;
+        }
+    }
+    else if (br_streq(name, "grid-template") || br_streq(name, "grid")) { if (my_strstr_ci(value, "/")) { const char* c2 = my_strstr_ci(value, "/") + 1; apply_decl(st, "grid-template-columns", c2, parent_font_px); } }
+    else if (br_streq(name, "grid-auto-flow") || br_streq(name, "grid-template-rows") || br_streq(name, "grid-column") || br_streq(name, "grid-row") || br_streq(name, "grid-area")) { }
+    else if (br_streq(name, "row-gap")) { }
+    else if (br_streq(name, "max-height")) { int l = parse_length_em(value, 0, em, &ok); if (ok && value[strlen(value) - 1] != '%' && l >= 0) st->max_height = l; else if (br_streq(value, "none")) st->max_height = -1; }
+    else if (br_streq(name, "overflow") || br_streq(name, "overflow-y") || br_streq(name, "overflow-x")) { st->overflow_hidden = br_streq_prefix(value, "hidden") || br_streq_prefix(value, "clip"); }
+    else if (br_streq(name, "content")) { /* handled by layout for ::before/::after */ }
     else if (br_streq(name, "border-style")) {
         if (br_streq(value, "none") || br_streq(value, "hidden")) st->border = st->border_t = st->border_r = st->border_b = st->border_l = 0;
         else if (!st->border) st->border = st->border_t = st->border_r = st->border_b = st->border_l = 1;
@@ -996,17 +1482,55 @@ static void apply_decl(br_style_t* st, const char* name, const char* value, int 
     else if (br_streq(name, "max-width")) {
         int l = parse_length_em(value, 0, em, &ok);
         if (ok && value[strlen(value) - 1] != '%') st->max_width = l;
+        else if (ok && value[strlen(value) - 1] == '%') { int p = br_atoi(value); st->max_width = p > 0 && p < 100 ? -(2 + p) : -1; }   /* -(2+pct): resolved against the container */
         else if (br_streq(value, "none")) st->max_width = -1;
     }
-    else if (br_streq(name, "height") || br_streq(name, "min-height")) { int l = parse_length_em(value, 0, em, &ok); if (ok && value[strlen(value) - 1] != '%') st->height = l; }
+    else if (br_streq(name, "height")) { int l = parse_length_em(value, 0, em, &ok); if (ok && value[strlen(value) - 1] != '%') st->height = l; else if (br_streq(value, "auto")) st->height = -1; }
     else if (br_streq(name, "list-style") || br_streq(name, "list-style-type")) {
         if (my_strstr_ci(value, "none")) st->list_style = 2;
         else if (my_strstr_ci(value, "decimal")) st->list_style = 1;
         else st->list_style = 0;
     }
     else if (br_streq(name, "white-space")) { /* pre handled by tag */ }
-    else if (br_streq(name, "opacity")) { if (value[0] == '0' && (value[1] == 0 || value[1] == '.')) { if (value[1] == 0) st->visible = 0; } }
-    else if (br_streq(name, "position")) { if (br_streq(value, "fixed")) st->display = BR_DISPLAY_NONE; /* fixed overlays (cookie bars, sticky headers) would cover content */ }
+    else if (br_streq(name, "opacity")) { if (value[0] == '0' && (value[1] == 0 || (value[1] == '.' && value[2] == '0' && !value[3]))) st->visible = 0; else if (value[0] == '1' || (value[0] == '0' && value[1] == '.')) st->visible = 1; }
+    else if (br_streq(name, "text-indent")) { int l = parse_length_em(value, 1000, em, &ok); if (ok && l < -500) st->visible = 0; }
+    else if (br_streq(name, "word-break") || br_streq(name, "overflow-wrap") || br_streq(name, "word-wrap") || br_streq(name, "hyphens")) { }
+    else if (br_streq(name, "vertical-align") || br_streq(name, "text-overflow") || br_streq(name, "box-shadow") || br_streq(name, "text-shadow") || br_streq(name, "filter") || br_streq(name, "backdrop-filter")) { }
+    else if (br_streq(name, "font-variant") || br_streq(name, "font-stretch") || br_streq(name, "font-feature-settings") || br_streq(name, "text-rendering")) { }
+    else if (br_streq(name, "background-image")) {
+        /* gradients: approximate with the first colour stop; url(): ignore */
+        if (br_streq_prefix(value, "linear-gradient(") || br_streq_prefix(value, "radial-gradient(")) apply_decl(st, "background", value, parent_font_px);
+    }
+    else if (br_streq(name, "background-clip") || br_streq(name, "-webkit-background-clip")) { if (br_streq(value, "text")) st->background = 0; }
+    else if (br_streq(name, "-webkit-text-fill-color")) { uint32_t c = br_css_parse_color(value, &ok); if (ok && c && c != 0x01000000u) st->color = c; }
+    else if (br_streq(name, "aspect-ratio") || br_streq(name, "object-fit") || br_streq(name, "isolation") || br_streq(name, "contain") || br_streq(name, "content-visibility")) { }
+    else if (br_streq(name, "min-height") ) { int l = parse_length_em(value, 0, em, &ok); if (ok && value[strlen(value) - 1] != '%' && l > 0 && (st->height < 0 || st->height < l)) st->height = l; }
+    else if (br_streq(name, "position")) {
+        /* fixed overlays (cookie bars, modals) would cover content: hidden.
+         * absolute boxes are pulled out of flow: rendered as floats at the
+         * end of their line (they must not push normal content around);
+         * sticky/relative flow normally. */
+        if (br_streq(value, "fixed")) st->display = BR_DISPLAY_NONE;
+        else if (br_streq(value, "absolute")) { if (st->display != BR_DISPLAY_NONE) st->float_dir = 3; st->relative = 0; }
+        else { if (st->float_dir == 3) st->float_dir = 0; st->relative = br_streq(value, "relative") || br_streq(value, "sticky"); }
+    }
+    else if (br_streq(name, "top") || br_streq(name, "left") || br_streq(name, "right") || br_streq(name, "bottom") || br_streq(name, "inset") || br_streq(name, "inset-inline-start") || br_streq(name, "inset-inline-end")) {
+        int v;
+        if (br_streq(value, "auto")) v = BR_POS_AUTO;
+        else {
+            int l = parse_length_em(value, 100, em, &ok);
+            if (!ok) return;
+            int pct = value[strlen(value) - 1] == '%';
+            if (!pct && (l < -2000 || l > 20000)) { st->display = BR_DISPLAY_NONE; return; }   /* visually-hidden idiom */
+            v = pct ? -(100000 + br_atoi(value)) : l;
+        }
+        if (name[0] == 't') st->pos_t = v;
+        else if (name[0] == 'l' || br_streq(name, "inset-inline-start")) st->pos_l = v;
+        else if (name[0] == 'r' || br_streq(name, "inset-inline-end")) st->pos_r = v;
+        else if (name[0] == 'b') st->pos_b = v;
+        else { st->pos_t = st->pos_r = st->pos_b = st->pos_l = v; }
+    }
+    else if (br_streq(name, "z-index") || br_streq(name, "pointer-events") || br_streq(name, "cursor") || br_streq(name, "transition") || br_streq(name, "animation") || br_streq(name, "will-change")) { }
     else if (br_streq(name, "clip") || br_streq(name, "clip-path")) { if (br_streq_prefix(value, "rect(0") || br_streq_prefix(value, "rect(1px") || br_streq(value, "inset(50%)")) st->display = BR_DISPLAY_NONE; /* visually-hidden idiom */ }
     else if (br_streq(name, "transform")) { if (br_streq_prefix(value, "scale(0")) st->display = BR_DISPLAY_NONE; }
 }
@@ -1071,6 +1595,16 @@ static void compute_node(br_node_t* n, const br_style_t* parent) {
     st->margin_auto = 0;
     st->flex_col = 0;
     st->gap = 0;
+    st->nowrap = parent->nowrap;
+    st->radius = 0;
+    st->justify = 0;
+    st->align_items = 0;
+    st->flex_grow = 0;
+    st->grid_cols = 0;
+    st->max_height = -1;
+    st->overflow_hidden = 0;
+    st->pos_t = st->pos_r = st->pos_b = st->pos_l = BR_POS_AUTO;
+    st->relative = 0;
 
     if (n->type != BR_NODE_ELEMENT) return;
 
@@ -1096,10 +1630,38 @@ static void compute_node(br_node_t* n, const br_style_t* parent) {
      * an insertion-ordered scan per specificity bucket is fine. */
     int parent_px = parent->font_px > 0 ? parent->font_px : 16;
     /* Gather matches then apply in ascending (spec, order). */
-    int idx[96]; int cnt = 0;
-    for (int i = 0; i < rule_count && cnt < 96; i++) {
-        if (rule_matches(n, &rules[i], hover_node_id)) idx[cnt++] = i;
+    int idx[160]; int cnt = 0;
+    attr_cache_node = NULL;
+    attr_cache_fill(n);
+    rules_index_sync();
+    /* candidate chains: shared (tag/universal), the id's, one per class word */
+    short chains[34]; int nch = 0;
+    chains[nch++] = shared_head;
+    if (attr_cache_id) chains[nch++] = bucket_head[key_hash(attr_cache_id, (int)strlen(attr_cache_id))];
+    if (attr_cache_cls) {
+        const char* c = attr_cache_cls;
+        while (*c && nch < 34) {
+            while (*c == ' ' || *c == '\t' || *c == '\n') c++;
+            if (!*c) break;
+            int l = 0; while (c[l] && c[l] != ' ' && c[l] != '\t' && c[l] != '\n') l++;
+            short h = bucket_head[key_hash(c, l)];
+            int dup = 0; for (int k = 1; k < nch; k++) if (chains[k] == h) dup = 1;
+            if (!dup) chains[nch++] = h;
+            c += l;
+        }
     }
+    for (int ci = 0; ci < nch && cnt < 160; ci++) {
+        for (int i = chains[ci]; i >= 0 && cnt < 160; i = rule_next[i]) {
+            const br_rule_t* r = &rules[i];
+            /* cheap rejection before the full match: subject tag / id / class */
+            const br_selpart_t* p0 = &r->parts[0];
+            if (p0->tag && !br_streq(n->tag, p0->tag)) continue;
+            if (p0->id && (!attr_cache_id || !br_streq(attr_cache_id, p0->id))) continue;
+            if (p0->cls && !attr_cache_cls) continue;
+            if (rule_matches(n, r, hover_node_id)) idx[cnt++] = i;
+        }
+    }
+    attr_cache_node = NULL;
     /* insertion sort */
     for (int i = 1; i < cnt; i++) {
         int k = idx[i]; int j = i - 1;
@@ -1109,26 +1671,45 @@ static void compute_node(br_node_t* n, const br_style_t* parent) {
         }
         idx[j + 1] = k;
     }
-    int any_important = 0;
-    for (int i = 0; i < cnt; i++) {
-        br_rule_t* r = &rules[idx[i]];
-        for (int d = 0; d < r->decl_count; d++) {
-            if (r->decls[d].important) { any_important = 1; continue; }
-            apply_decl(st, r->decls[d].name, r->decls[d].value, parent_px);
-        }
-    }
-    /* style="" wins over normal declarations */
+    /* Two passes: custom properties first (they are resolved at computed-
+     * value time, so a later rule's --x is visible to an earlier rule's
+     * var(--x)), then everything else. */
     const char* inl = br_attr(n, "style");
-    if (inl) br_css_apply_inline(n, inl);
-    /* ... but !important wins over everything */
-    if (any_important) {
+    /* pass 0: custom properties of the matched rules (cascade order) */
+    vars_pass = 0;
+    for (int i = 0; i < cnt; i++) {
+        const br_rule_t* r = &rules[idx[i]];
+        for (int d = 0; d < r->var_count; d++) set_var(var_decls[r->var_first + d].name, var_decls[r->var_first + d].value);
+    }
+    if (inl && inl[0] == '-' && inl[1] == '-') br_css_apply_inline(n, inl);    /* style="--x: ..." */
+    else if (inl && my_strstr_ci(inl, ";--")) br_css_apply_inline(n, inl);
+    /* pass 1: everything else */
+    vars_pass = 1;
+    {
+        int any_important = 0;
         for (int i = 0; i < cnt; i++) {
             br_rule_t* r = &rules[idx[i]];
-            for (int d = 0; d < r->decl_count; d++)
-                if (r->decls[d].important) apply_decl(st, r->decls[d].name, r->decls[d].value, parent_px);
+            for (int d = 0; d < r->decl_count; d++) {
+                if (r->decls[d].important) { any_important = 1; continue; }
+                apply_decl(st, r->decls[d].name, r->decls[d].value, parent_px);
+            }
+        }
+        /* style="" wins over normal declarations */
+        if (inl) br_css_apply_inline(n, inl);
+        /* ... but !important wins over everything */
+        if (any_important) {
+            for (int i = 0; i < cnt; i++) {
+                br_rule_t* r = &rules[idx[i]];
+                for (int d = 0; d < r->decl_count; d++)
+                    if (r->decls[d].important) apply_decl(st, r->decls[d].name, r->decls[d].value, parent_px);
+            }
         }
     }
 
+    if (br_streq(n->tag, "body") || br_streq(n->tag, "html")) { st->float_dir = 0; st->display = BR_DISPLAY_BLOCK; st->overflow_hidden = 0; st->max_height = -1; }
+    /* a float as wide as its container (Bootstrap's carousel slides:
+     * float:left; width:100%; margin-right:-100%) is a plain block */
+    if ((st->float_dir == 1 || st->float_dir == 2) && st->width == -102 && st->display != BR_DISPLAY_NONE) { st->float_dir = 0; if (st->margin_r < 0) st->margin_r = 0; }
     /* <noscript>: author CSS cannot override this either way */
     if (br_streq(n->tag, "noscript")) st->display = noscript_visible ? BR_DISPLAY_BLOCK : BR_DISPLAY_NONE;
     /* <a> without href is not a link */
@@ -1147,9 +1728,12 @@ static void compute_node(br_node_t* n, const br_style_t* parent) {
 
 static void compute_tree(br_node_t* n, const br_style_t* parent) {
     if (br_stack_headroom() < BR_STACK_MIN) { n->style = *parent; n->style.display = BR_DISPLAY_NONE; return; }
+    int saved_vars = var_count;
     compute_node(n, parent);
-    if (n->style.display == BR_DISPLAY_NONE) return;
-    for (br_node_t* c = n->first_child; c; c = c->next) compute_tree(c, &n->style);
+    if (n->style.display != BR_DISPLAY_NONE)
+        for (br_node_t* c = n->first_child; c; c = c->next) compute_tree(c, &n->style);
+    /* pop this element's custom properties (the page-level ones stay) */
+    if (!(n->type == BR_NODE_ELEMENT && (br_streq(n->tag, "html") || br_streq(n->tag, "body"))) && n->type != BR_NODE_DOCUMENT) var_count = saved_vars;
 }
 
 void br_css_compute(br_node_t* doc) {
@@ -1166,5 +1750,92 @@ void br_css_compute(br_node_t* doc) {
     root.height = -1;
     root.visible = 1;
     hover_node_id = brs.hover_link;
+    var_count = 0;
+    vars_pass = 1;
     compute_tree(doc, &root);
+}
+
+/* ::before / ::after: returns the text of the `content` declaration of the
+ * best matching rule (highest specificity, last wins), decoded from its
+ * quotes, or NULL when the element has no generated content. Only string
+ * content is rendered (counters, attr(), url() icons are skipped). `st`
+ * receives the pseudo-element's own style on top of the element's. */
+const char* br_css_pseudo_content(br_node_t* n, int after, br_style_t* st) {
+    if (!n || n->type != BR_NODE_ELEMENT) return NULL;
+    static char buf[128];
+    const char* content = NULL;
+    int best_spec = -1, best_order = -1;
+    int want = after ? 21 : 20;
+    const br_rule_t* hits[16]; int nh = 0;
+    rules_index_sync();
+    for (int i = pseudo_head; i >= 0; i = rule_next[i]) {
+        const br_rule_t* r = &rules[i];
+        if (r->parts[0].pseudo != want) continue;
+        if (r->parts[0].tag && !br_streq(n->tag, r->parts[0].tag)) continue;
+        if (!rule_matches(n, r, hover_node_id)) continue;
+        if (nh < 16) hits[nh++] = r;
+        for (int d = 0; d < r->decl_count; d++) {
+            if (br_streq(r->decls[d].name, "content") && (r->specificity > best_spec || (r->specificity == best_spec && r->order >= best_order))) {
+                best_spec = r->specificity; best_order = r->order; content = r->decls[d].value;
+            }
+        }
+    }
+    if (!content) return NULL;
+    int saved_vars = var_count;
+    for (int i = 0; i < nh; i++) for (int d = 0; d < hits[i]->var_count; d++) set_var(var_decls[hits[i]->var_first + d].name, var_decls[hits[i]->var_first + d].value);
+    char ex[256];
+    if (has_var(content)) { if (!expand_vars(content, ex, sizeof(ex), 0)) { var_count = saved_vars; return NULL; } content = ex; }
+    if (br_streq(content, "none") || br_streq(content, "normal") || br_streq_prefix(content, "url(") || br_streq_prefix(content, "counter") || br_streq_prefix(content, "attr(")) return NULL;
+    *st = n->style;
+    st->display = BR_DISPLAY_INLINE;
+    st->margin_t = st->margin_b = st->margin_l = st->margin_r = 0;
+    st->padding_t = st->padding_b = st->padding_l = st->padding_r = 0;
+    st->border = st->border_t = st->border_b = st->border_l = st->border_r = 0;
+    st->width = -1; st->height = -1; st->float_dir = 0; st->background = 0;
+    /* insertion-sorted application by (spec, order) */
+    for (int i = 1; i < nh; i++) { const br_rule_t* k = hits[i]; int j = i - 1; while (j >= 0 && (hits[j]->specificity > k->specificity || (hits[j]->specificity == k->specificity && hits[j]->order > k->order))) { hits[j + 1] = hits[j]; j--; } hits[j + 1] = k; }
+    int ppx = n->style.font_px > 0 ? n->style.font_px : 16;
+    for (int i = 0; i < nh; i++) for (int d = 0; d < hits[i]->decl_count; d++) if (!br_streq(hits[i]->decls[d].name, "content")) apply_decl(st, hits[i]->decls[d].name, hits[i]->decls[d].value, ppx);
+    var_count = saved_vars;
+    if (st->display == BR_DISPLAY_NONE || !st->visible) return NULL;
+    /* decode "..." 'x' \2014 escapes; several strings concatenate */
+    int o = 0; const char* p = content;
+    while (*p && o < (int)sizeof(buf) - 5) {
+        if (*p == '"' || *p == '\'') {
+            char q = *p++;
+            while (*p && *p != q && o < (int)sizeof(buf) - 5) {
+                if (*p == '\\') {
+                    p++;
+                    if ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F')) {
+                        uint32_t cp = 0; int k = 0;
+                        while (k < 6 && ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F'))) { char c = *p; cp = cp * 16 + (uint32_t)(c <= '9' ? c - '0' : (c | 32) - 'a' + 10); p++; k++; }
+                        if (*p == ' ') p++;
+                        if (cp < 0x80) buf[o++] = (char)cp;
+                        else if (cp < 0x800) { buf[o++] = (char)(0xC0 | (cp >> 6)); buf[o++] = (char)(0x80 | (cp & 0x3F)); }
+                        else if (cp < 0x10000) { buf[o++] = (char)(0xE0 | (cp >> 12)); buf[o++] = (char)(0x80 | ((cp >> 6) & 0x3F)); buf[o++] = (char)(0x80 | (cp & 0x3F)); }
+                        else { buf[o++] = (char)(0xF0 | (cp >> 18)); buf[o++] = (char)(0x80 | ((cp >> 12) & 0x3F)); buf[o++] = (char)(0x80 | ((cp >> 6) & 0x3F)); buf[o++] = (char)(0x80 | (cp & 0x3F)); }
+                        continue;
+                    }
+                    if (*p) buf[o++] = *p++;
+                    continue;
+                }
+                buf[o++] = *p++;
+            }
+            if (*p == q) p++;
+            continue;
+        }
+        if (br_streq_prefix(p, "open-quote")) { buf[o++] = '"'; p += 10; continue; }
+        if (br_streq_prefix(p, "close-quote")) { buf[o++] = '"'; p += 11; continue; }
+        p++;
+    }
+    buf[o] = 0;
+    if (!o) return NULL;
+    /* a pseudo with no text but a fixed size (icon boxes) is skipped too */
+    return buf;
+}
+
+/* Does any rule with ::before/::after content exist at all? (fast path) */
+int br_css_has_pseudo_content(void) {
+    for (int i = 0; i < rule_count; i++) if (rules[i].parts[0].pseudo == 20 || rules[i].parts[0].pseudo == 21) return 1;
+    return 0;
 }

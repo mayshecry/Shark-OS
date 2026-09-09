@@ -26,11 +26,11 @@
 
 /* ------------------------------------------------------------ limits */
 
-#define JS_MAX_TOKENS   6000
-#define JS_MAX_NODES    6000
-#define JS_MAX_OBJECTS  1400
-#define JS_MAX_PROPS    9000
-#define JS_STR_POOL     (72 * 1024)
+#define JS_MAX_TOKENS   24000
+#define JS_MAX_NODES    24000
+#define JS_MAX_OBJECTS  4000
+#define JS_MAX_PROPS    24000
+#define JS_STR_POOL     (256 * 1024)
 #define JS_MAX_SCOPES   512
 #define JS_MAX_TIMERS   16
 #define JS_STEP_BUDGET  400000
@@ -55,13 +55,14 @@ typedef struct value {
     } u;
 } value_t;
 
-typedef struct { const char* key; value_t val; int next; } prop_t;
+typedef struct { const char* key; value_t val; int next; uint32_t hash; } prop_t;
 
 enum { O_PLAIN = 0, O_ARRAY, O_FUNC, O_NATIVE, O_DOM, O_DATE, O_ERROR, O_REGEXP };
 
 typedef struct {
     uint8_t kind;
     int first_prop;             /* linked list head into props[] */
+    int last_prop;              /* tail, for O(1) append */
     int prop_count;
     int proto;                  /* prototype object or -1 */
     /* arrays */
@@ -216,6 +217,7 @@ static int new_object(int kind) {
     memset(o, 0, sizeof(*o));
     o->kind = (uint8_t)kind;
     o->first_prop = -1;
+    o->last_prop = -1;
     o->proto = kind == O_ARRAY ? proto_array : (kind == O_FUNC || kind == O_NATIVE) ? proto_function : proto_object;
     o->fn_this = -1;
     o->dom_id = -1;
@@ -242,29 +244,34 @@ static void array_push(int o, value_t v) {
     a->items[a->len++] = v;
 }
 
-static prop_t* find_own(int o, const char* key) {
+static uint32_t key_hash(const char* key) {
+    uint32_t h = 2166136261u;
+    while (*key) { h ^= (uint8_t)*key++; h *= 16777619u; }
+    return h;
+}
+static prop_t* find_own_h(int o, const char* key, uint32_t h) {
     if (o < 0) return NULL;
     for (int p = objects[o].first_prop; p >= 0; p = props[p].next) {
-        if (br_streq(props[p].key, key)) return &props[p];
+        if (props[p].hash == h && br_streq(props[p].key, key)) return &props[p];
     }
     return NULL;
 }
+static prop_t* find_own(int o, const char* key) { return find_own_h(o, key, key_hash(key)); }
 
 static void set_prop(int o, const char* key, value_t v) {
     if (o < 0) return;
-    prop_t* p = find_own(o, key);
+    uint32_t h = key_hash(key);
+    prop_t* p = find_own_h(o, key, h);
     if (p) { p->val = v; return; }
     if (prop_count >= JS_MAX_PROPS) { throw_error("out of memory (props)", NULL); return; }
     props[prop_count].key = key;
     props[prop_count].val = v;
     props[prop_count].next = -1;
+    props[prop_count].hash = h;
     /* append at tail to preserve insertion order for for-in / JSON */
     if (objects[o].first_prop < 0) objects[o].first_prop = prop_count;
-    else {
-        int t = objects[o].first_prop;
-        while (props[t].next >= 0) t = props[t].next;
-        props[t].next = prop_count;
-    }
+    else props[objects[o].last_prop].next = prop_count;
+    objects[o].last_prop = prop_count;
     objects[o].prop_count++;
     prop_count++;
 }
@@ -276,6 +283,7 @@ static int del_prop(int o, const char* key) {
     for (int p = objects[o].first_prop; p >= 0; prev = p, p = props[p].next) {
         if (br_streq(props[p].key, key)) {
             if (prev < 0) objects[o].first_prop = props[p].next; else props[prev].next = props[p].next;
+            if (objects[o].last_prop == p) objects[o].last_prop = prev;
             objects[o].prop_count--;
             return 1;
         }
@@ -538,6 +546,7 @@ static int tokenize_into(const char* src, int len, int base) {
         }
         if (c == '"' || c == '\'' || c == '`') {
             char q = c; i++;
+            if (str_used + 8 >= JS_STR_POOL) { throw_error("RangeError: out of string memory", NULL); return -1; }
             char* out = &strpool[str_used];
             int o = 0;
             while (i < len && src[i] != q) {
@@ -1760,14 +1769,36 @@ static value_t eval_inner(int n, int sc) {
     return UNDEF;
 }
 
-/* hoisting: declare function declarations and `var`s of a body up front */
+/* hoisting: declare function declarations and `var`s of a body up front.
+ * `var` is function-scoped, so nested blocks / if / loops / try / switch
+ * are searched too (`if (x) { var a = 1; } use(a)` is a common idiom in
+ * minified scripts); only function bodies stop the walk. */
+static void hoist_vars(int s, int sc, int nest) {
+    if (s < 0 || nest > 12) return;
+    node_t* nd = &nodes[s];
+    switch (nd->type) {
+    case N_VAR:
+        if (nd->op == 0) for (int k = 0; k < nd->count; k++) { int d = lists[nd->list + k]; if (nodes[d].type == N_IDENT && !scope_lookup(sc, nodes[d].s)) scope_declare(sc, nodes[d].s, UNDEF); }
+        return;
+    case N_BLOCK:
+        for (int i = 0; i < nd->count; i++) hoist_vars(lists[nd->list + i], sc, nest + 1);
+        return;
+    case N_IF: hoist_vars(nd->b, sc, nest + 1); hoist_vars(nd->c, sc, nest + 1); return;
+    case N_WHILE: case N_DOWHILE: hoist_vars(nd->b, sc, nest + 1); return;
+    case N_FOR: hoist_vars(nd->a, sc, nest + 1); hoist_vars(nd->d, sc, nest + 1); return;
+    case N_FORIN: case N_FOROF: if (nd->op == 0 && nd->s && !scope_lookup(sc, nd->s)) scope_declare(sc, nd->s, UNDEF); hoist_vars(nd->b, sc, nest + 1); return;
+    case N_TRY: hoist_vars(nd->a, sc, nest + 1); hoist_vars(nd->b, sc, nest + 1); hoist_vars(nd->c, sc, nest + 1); return;
+    case N_SWITCH:
+        for (int i = 0; i < nd->count; i++) { int c = lists[nd->list + i]; for (int k = 0; k < nodes[c].count; k++) hoist_vars(lists[nodes[c].list + k], sc, nest + 1); }
+        return;
+    default: return;
+    }
+}
 static void hoist(int list, int count, int sc) {
     for (int i = 0; i < count; i++) {
         int s = lists[list + i];
         if (nodes[s].type == N_FUNCDECL) scope_declare(sc, nodes[s].s, make_function(s, sc, -1));
-        else if (nodes[s].type == N_VAR && nodes[s].op == 0) {
-            for (int k = 0; k < nodes[s].count; k++) { int d = lists[nodes[s].list + k]; if (nodes[d].type == N_IDENT && !scope_lookup(sc, nodes[d].s)) scope_declare(sc, nodes[d].s, UNDEF); }
-        }
+        else hoist_vars(s, sc, 0);
     }
 }
 
@@ -1853,6 +1884,13 @@ static void exec_inner(int n, int sc) {
                 } else if (nd->op == 0) {
                     value_t* existing = scope_lookup(sc, nodes[d].s);
                     if (existing) continue;                    /* var re-declaration keeps value */
+                }
+                if (nd->op == 0) {
+                    /* `var` is function-scoped: hoisting already declared it
+                     * in the enclosing function scope, assign there rather
+                     * than shadowing it in this block */
+                    value_t* slot = scope_lookup(sc, nodes[d].s);
+                    if (slot) { *slot = v; continue; }
                 }
                 scope_declare(sc, nodes[d].s, v);
             } else {
@@ -2738,6 +2776,63 @@ static value_t n_Date(int t, value_t* a, int n) { (void)t; (void)a; (void)n; int
 static value_t n_Date_now(int t, value_t* a, int n) { (void)t; (void)a; (void)n; return mk_int((int)(uptime_ticks * (1000 / TICKS_PER_SEC))); }
 static value_t n_RegExp(int t, value_t* a, int n) { (void)t; int r = new_object(O_REGEXP); if (r < 0) return UNDEF; const char* pat = n ? to_string(a[0]) : ""; const char* flags = n > 1 ? to_string(a[1]) : ""; objects[r].name = concat(concat("/", pat), concat("/", flags)); return mk_obj(r); }
 static value_t n_Promise(int t, value_t* a, int n) { (void)t; (void)a; (void)n; return mk_obj(new_object(O_PLAIN)); }
+/* IntersectionObserver: everything is "intersecting" immediately, so
+ * reveal-on-scroll sites (opacity:0 until .active is added) show their
+ * content. observe(el) queues one callback with a single entry. */
+static value_t n_setTimeout(int t, value_t* a, int n);
+static value_t n_noop(int t, value_t* a, int n);
+static value_t n_io_observe(int t, value_t* a, int n) {
+    if (t < 0 || !n || a[0].type != V_OBJ) return UNDEF;
+    value_t cb = get_prop(t, "__cb");
+    if (cb.type != V_FUNC) return UNDEF;
+    int entry = new_object(O_PLAIN); if (entry < 0) return UNDEF;
+    set_prop(entry, "target", a[0]); set_prop(entry, "isIntersecting", mk_bool(1)); set_prop(entry, "intersectionRatio", mk_int(1));
+    int arr = new_array(); if (arr < 0) return UNDEF;
+    array_push(arr, mk_obj(entry));
+    /* bind: () => cb([entry], observer) via a native trampoline stored on the entry list */
+    int call = new_object(O_PLAIN); if (call < 0) return UNDEF;
+    set_prop(call, "__cb", cb); set_prop(call, "__arg", mk_obj(arr)); set_prop(call, "__obs", mk_obj(t));
+    value_t targs[2]; targs[0] = get_prop(obj_window, "__ioFire"); targs[1] = mk_int(0);
+    /* the trampoline reads the pending list */
+    value_t pend = get_prop(obj_window, "__ioPending");
+    if (pend.type != V_OBJ) { int p = new_array(); if (p < 0) return UNDEF; pend = mk_obj(p); set_prop(obj_window, "__ioPending", pend); }
+    array_push(pend.u.obj, mk_obj(call));
+    if (targs[0].type == V_FUNC) n_setTimeout(-1, targs, 2);
+    return UNDEF;
+}
+static value_t n_io_fire(int t, value_t* a, int n) {
+    (void)t; (void)a; (void)n;
+    value_t pend = get_prop(obj_window, "__ioPending");
+    if (pend.type != V_OBJ) return UNDEF;
+    int arr = pend.u.obj;
+    int cnt = objects[arr].len;
+    for (int i = 0; i < cnt && !flow; i++) {
+        value_t c = objects[arr].items[i];
+        if (c.type != V_OBJ) continue;
+        value_t args[2]; args[0] = get_prop(c.u.obj, "__arg"); args[1] = get_prop(c.u.obj, "__obs");
+        value_t cb = get_prop(c.u.obj, "__cb");
+        if (cb.type == V_FUNC) call_function(cb, args[1].type == V_OBJ ? args[1].u.obj : -1, args, 2);
+    }
+    /* drop the ones we ran (new ones may have been appended by the callbacks) */
+    int left = objects[arr].len - cnt;
+    for (int i = 0; i < left; i++) objects[arr].items[i] = objects[arr].items[cnt + i];
+    objects[arr].len = left;
+    return UNDEF;
+}
+static value_t n_IntersectionObserver(int t, value_t* a, int n) {
+    (void)t;
+    int o = new_object(O_PLAIN); if (o < 0) return UNDEF;
+    if (n && a[0].type == V_FUNC) set_prop(o, "__cb", a[0]);
+    def_native(o, "observe", n_io_observe);
+    def_native(o, "unobserve", n_noop); def_native(o, "disconnect", n_noop); def_native(o, "takeRecords", n_noop);
+    return mk_obj(o);
+}
+static value_t n_Observer(int t, value_t* a, int n) {
+    (void)t; (void)a; (void)n;
+    int o = new_object(O_PLAIN); if (o < 0) return UNDEF;
+    def_native(o, "observe", n_noop); def_native(o, "unobserve", n_noop); def_native(o, "disconnect", n_noop); def_native(o, "takeRecords", n_noop);
+    return mk_obj(o);
+}
 static value_t n_noop(int t, value_t* a, int n) { (void)t; (void)a; (void)n; return UNDEF; }
 static value_t n_perf_now(int t, value_t* a, int n) { (void)t; (void)a; (void)n; return mk_int((int)(uptime_ticks * (1000 / TICKS_PER_SEC))); }
 
@@ -2979,7 +3074,7 @@ static void style_proxy_set(int o, const char* key, value_t v) {
     if (!n) return;
     if (br_streq(key, "cssText")) {
         br_set_attr(n, "style", to_string(v));
-        objects[o].first_prop = -1; objects[o].prop_count = 0;
+        objects[o].first_prop = -1; objects[o].last_prop = -1; objects[o].prop_count = 0;
         br_js_dom_changed();
         return;
     }
@@ -3590,6 +3685,8 @@ static void setup_globals(void) {
     def_native(g, "RegExp", n_RegExp); objects[get_prop(g, "RegExp").u.obj].name = "RegExp";
     def_native(g, "Promise", n_Promise); objects[get_prop(g, "Promise").u.obj].name = "Promise";
     def_native(g, "Map", n_Object); def_native(g, "Set", n_Object); def_native(g, "WeakMap", n_Object); def_native(g, "Symbol", n_String);
+    def_native(g, "IntersectionObserver", n_IntersectionObserver); def_native(g, "MutationObserver", n_Observer); def_native(g, "ResizeObserver", n_Observer); def_native(g, "PerformanceObserver", n_Observer);
+    def_native(g, "__ioFire", n_io_fire);
     def_native(g, "Event", n_Object); def_native(g, "CustomEvent", n_Object); def_native(g, "Image", n_Object); def_native(g, "XMLHttpRequest", n_Object);
     def_native(g, "HTMLElement", n_Object); objects[get_prop(g, "HTMLElement").u.obj].name = "HTMLElement";
     def_native(g, "Element", n_Object); objects[get_prop(g, "Element").u.obj].name = "Element";
@@ -3713,20 +3810,31 @@ void br_js_reset(void) {
     scopes[global_scope].this_obj = obj_window;
 }
 
+/* "origin: message" without touching the string pool (it may be exhausted). */
+static void console_error(const char* origin, const char* what, const char* msg) {
+    static char line[200];
+    int o = 0;
+    for (int i = 0; origin[i] && o < 60; i++) line[o++] = origin[i];
+    for (int i = 0; what[i] && o < (int)sizeof(line) - 1; i++) line[o++] = what[i];
+    for (int i = 0; msg[i] && o < (int)sizeof(line) - 1; i++) line[o++] = msg[i];
+    line[o] = 0;
+    br_js_console(line);
+}
+
 static void run_source(const char* src, int len, const char* origin) {
     if (!src || len <= 0) return;
     steps = 0; js_aborted = 0; js_error = 0; flow = F_NONE; depth = 0; eval_nest = 0; parse_nest = 0;
-    if (!tokenize(src, len)) { flow = F_NONE; return; }
+    if (!tokenize(src, len)) { console_error(origin, ": ", js_error_msg); js_error = 0; flow = F_NONE; return; }
     pos = 0;
     int prog = parse_program();
     if (js_error) {
-        br_js_console(concat(origin, concat(": ", js_error_msg)));
+        console_error(origin, ": ", js_error_msg);
         js_error = 0; flow = F_NONE;
         return;
     }
     exec(prog, global_scope);
     if (flow == F_THROW) {
-        br_js_console(concat(origin, concat(": Uncaught ", to_string(flow_val))));
+        console_error(origin, ": Uncaught ", flow_val.type == V_STR ? flow_val.u.s : to_string(flow_val));
     }
     flow = F_NONE;
     /* scripts may have changed the DOM: re-layout */

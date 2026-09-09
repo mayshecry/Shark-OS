@@ -379,19 +379,36 @@ static void set_window_title(void) {
  * the current page's sheets are cached (by URL) so a reload/relayout of the
  * same document does not refetch them. */
 static uint8_t css_buf[BR_CSS_BUF];
-#define CSS_CACHE_SLOTS 6
+#define CSS_CACHE_SLOTS BR_MAX_SHEETS
 static struct { char url[BR_URL_MAX]; int off, len; } css_cache[CSS_CACHE_SLOTS];
 static int css_cache_n = 0, css_cache_used = 0;
 static int sheets_fetched = 0;
 
 static void css_cache_reset(void) { css_cache_n = 0; css_cache_used = 0; sheets_fetched = 0; }
 
+/* Sub-resources (stylesheets, web fonts, images) share one time budget per
+ * page load, so a page referencing dozens of files still appears within a
+ * bounded time; whatever did not make it is simply left out. */
+static uint32_t subres_deadline = 0;
+#define BR_SUBRES_BUDGET_MS 30000
+static int subres_abort = 0;                 /* Esc pressed while loading */
+int br_subres_allowed(void) {
+    if (subres_abort) return 0;
+    /* Esc during a long load: skip the remaining sub-resources */
+    char c;
+    while ((c = keyboard_getchar()) != 0) if (c == 27) subres_abort = 1;
+    if (subres_abort) { br_status("Stopped - loading the remaining resources was skipped"); return 0; }
+    return (int32_t)(subres_deadline - uptime_ticks) > 0;
+}
+static void subres_budget_start(void) { subres_deadline = uptime_ticks + BR_SUBRES_BUDGET_MS * (TICKS_PER_SEC / 1000); subres_abort = 0; }
+
 static void load_sheet(const char* abs, int depth) {
     if (depth > 1) return;
     for (int i = 0; i < css_cache_n; i++) {
         if (br_streq(css_cache[i].url, abs)) { br_css_parse_sheet((const char*)css_buf + css_cache[i].off, css_cache[i].len); return; }
     }
-    if (css_cache_n >= CSS_CACHE_SLOTS || sheets_fetched >= 8) return;
+    if (css_cache_n >= CSS_CACHE_SLOTS || sheets_fetched >= BR_MAX_SHEETS) return;
+    if (!br_subres_allowed()) return;
     int room = (int)sizeof(css_buf) - css_cache_used - 1;
     if (room < 1024) return;
     br_status("Loading stylesheet...");
@@ -437,7 +454,10 @@ static void collect_styles(br_node_t* n) {
             const char* rel = br_attr(n, "rel");
             const char* href = br_attr(n, "href");
             const char* media = br_attr(n, "media");
-            if (rel && href && my_strstr_ci(rel, "stylesheet") && !my_strstr_ci(rel, "alternate") && is_net_url(brs.url) &&
+            /* alternate colour themes (GitHub ships light/dark/high-contrast/
+             * colour-blind variants as separate sheets) are skipped by name */
+            int theme_variant = href && (my_strstr_ci(href, "dark") || my_strstr_ci(href, "high_contrast") || my_strstr_ci(href, "colorblind") || my_strstr_ci(href, "tritanopia") || my_strstr_ci(href, "print"));
+            if (rel && href && my_strstr_ci(rel, "stylesheet") && !my_strstr_ci(rel, "alternate") && is_net_url(brs.url) && !theme_variant &&
                 !(media && (my_strstr_ci(media, "print") || my_strstr_ci(media, "dark")))) {
                 char abs[BR_URL_MAX];
                 br_resolve_url(brs.url, href, abs, sizeof(abs));
@@ -465,6 +485,7 @@ static void load_web_fonts(void) {
         uint32_t avail = 0;
         uint8_t* dst = br_font_web_alloc(FONT_WEB_ARENA, &avail);
         if (avail < 8 * 1024) break;
+        if (!br_subres_allowed()) break;
         br_status("Loading font...");
         int len = br_fetch_resource(abs, dst, (int)avail);
         if (len <= 12) continue;
@@ -792,7 +813,11 @@ void br_navigate(const char* url_in, int push_history) {
         brs.history_pos = brs.history_len;
         brs.history_len++;
     }
+    int page_status = net_http_last_status;            /* before sub-resources overwrite it */
+    uint32_t t_parse = uptime_ticks;
+    subres_budget_start();
     parse_and_show();
+    uint32_t t_done = uptime_ticks;
     brs.loading = 0;
     char st[160];
     br_strlcpy(st, ok ? "Done" : "Error", sizeof(st));
@@ -803,9 +828,13 @@ void br_navigate(const char* url_in, int push_history) {
         br_strlcat(st, " bytes, ", sizeof(st));
         br_itoa(br_dom_node_count(), num); br_strlcat(st, num, sizeof(st));
         br_strlcat(st, " nodes", sizeof(st));
-        if (is_net_url(full) && net_http_last_status && net_http_last_status != 200) {
-            br_strlcat(st, " (HTTP ", sizeof(st)); br_itoa(net_http_last_status, num); br_strlcat(st, num, sizeof(st)); br_strlcat(st, ")", sizeof(st));
+        if (is_net_url(full) && page_status && page_status != 200) {
+            br_strlcat(st, " (HTTP ", sizeof(st)); br_itoa(page_status, num); br_strlcat(st, num, sizeof(st)); br_strlcat(st, ")", sizeof(st));
         }
+        /* render time: parse + cascade + layout + scripts (sub-resource fetches included) */
+        br_strlcat(st, ", ", sizeof(st));
+        br_itoa((int)((t_done - t_parse) * 1000 / TICKS_PER_SEC), num); br_strlcat(st, num, sizeof(st));
+        br_strlcat(st, " ms", sizeof(st));
         if (br_streq_prefix(full, "https://")) {
             br_strlcat(st, " - TLS 1.3, cert: ", sizeof(st));
             br_strlcat(st, net_tls_peer_cn[0] ? net_tls_peer_cn : "?", sizeof(st));
@@ -872,6 +901,75 @@ static void draw_text_run(const br_box_t* b, const char* s, int len, int x, int 
     if (b->italic) flags |= FONT_DRAW_ITALIC;
     if (b->bold && !br_font_face_is_bold(face)) flags |= FONT_DRAW_BOLD;
     br_font_draw_ex(face, px, s, len, x, baseline_y, fg, clip, flags);
+}
+
+/* Blend colour c (with alpha) over the back buffer inside clip. */
+static void blend_clipped(int x, int y, int w, int h, uint32_t c, const w98_rect_t* clip) {
+    int x0 = x, y0 = y, x1 = x + w, y1 = y + h;
+    if (x0 < clip->x) x0 = clip->x;
+    if (y0 < clip->y) y0 = clip->y;
+    if (x1 > clip->x + clip->w) x1 = clip->x + clip->w;
+    if (y1 > clip->y + clip->h) y1 = clip->y + clip->h;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > (int)screen_width) x1 = (int)screen_width;
+    if (y1 > (int)screen_height) y1 = (int)screen_height;
+    if (x1 <= x0 || y1 <= y0) return;
+    uint32_t a = c >> 24, ia = 255 - a;
+    uint32_t sr = ((c >> 16) & 0xFF) * a, sg = ((c >> 8) & 0xFF) * a, sb = (c & 0xFF) * a;
+    uint32_t stride = screen_pitch / 4;
+    for (int yy = y0; yy < y1; yy++) {
+        uint32_t* row = &lfbptr[(uint32_t)yy * stride];
+        for (int xx = x0; xx < x1; xx++) {
+            uint32_t d = row[xx];
+            uint32_t r = (sr + ((d >> 16) & 0xFF) * ia) / 255, g = (sg + ((d >> 8) & 0xFF) * ia) / 255, b = (sb + (d & 0xFF) * ia) / 255;
+            row[xx] = 0xFF000000u | (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
+static void fill_clipped(int x, int y, int w, int h, uint32_t c, const w98_rect_t* clip);
+
+/* Filled rectangle with rounded corners (radius r), alpha aware. */
+static void fill_rounded(int x, int y, int w, int h, int r, uint32_t c, const w98_rect_t* clip) {
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+    int alpha = (int)(c >> 24);
+    if (r <= 1) { if (alpha == 255) fill_clipped(x, y, w, h, c, clip); else blend_clipped(x, y, w, h, c, clip); return; }
+    /* middle band + per-row corner spans */
+    if (alpha == 255) fill_clipped(x, y + r, w, h - 2 * r, c, clip); else blend_clipped(x, y + r, w, h - 2 * r, c, clip);
+    for (int i = 0; i < r; i++) {
+        /* row i from the top edge: horizontal inset from the circle */
+        int dy = r - i;                               /* 1..r */
+        int dx = 0;
+        /* find largest dx with dx^2 + (dy-0.5)^2 <= r^2 (integer scaled by 4) */
+        int rr4 = 4 * r * r, dy2 = (2 * dy - 1) * (2 * dy - 1);
+        while ((2 * dx + 1) * (2 * dx + 1) + dy2 <= rr4) dx++;
+        int inset = r - dx; if (inset < 0) inset = 0;
+        if (alpha == 255) { fill_clipped(x + inset, y + i, w - 2 * inset, 1, c, clip); fill_clipped(x + inset, y + h - 1 - i, w - 2 * inset, 1, c, clip); }
+        else { blend_clipped(x + inset, y + i, w - 2 * inset, 1, c, clip); blend_clipped(x + inset, y + h - 1 - i, w - 2 * inset, 1, c, clip); }
+    }
+}
+
+/* 1px rounded outline. */
+static void stroke_rounded(int x, int y, int w, int h, int r, int bw, uint32_t c, const w98_rect_t* clip) {
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+    fill_clipped(x + r, y, w - 2 * r, bw, c, clip);
+    fill_clipped(x + r, y + h - bw, w - 2 * r, bw, c, clip);
+    fill_clipped(x, y + r, bw, h - 2 * r, c, clip);
+    fill_clipped(x + w - bw, y + r, bw, h - 2 * r, c, clip);
+    int rr4 = 4 * r * r;
+    int prev = r;
+    for (int i = 0; i < r; i++) {
+        int dy = r - i, dy2 = (2 * dy - 1) * (2 * dy - 1), dx = 0;
+        while ((2 * dx + 1) * (2 * dx + 1) + dy2 <= rr4) dx++;
+        int inset = r - dx; if (inset < 0) inset = 0;
+        int run = prev - inset + bw; if (run < bw) run = bw;
+        fill_clipped(x + inset, y + i, run, 1, c, clip); fill_clipped(x + w - inset - run, y + i, run, 1, c, clip);
+        fill_clipped(x + inset, y + h - 1 - i, run, 1, c, clip); fill_clipped(x + w - inset - run, y + h - 1 - i, run, 1, c, clip);
+        prev = inset;
+    }
 }
 
 static void fill_clipped(int x, int y, int w, int h, uint32_t c, const w98_rect_t* clip) {
@@ -958,11 +1056,18 @@ static void draw_page(window_t* w) {
         int sx = vx + b->x, sy = vy + b->y - brs.scroll_y;
         if (sy + b->h < vy || sy > vy + vh) continue;
         if (sx > vx + vw) continue;
+        if (b->node && !b->node->style.visible) continue;          /* visibility:hidden keeps its space */
         switch (b->kind) {
         case BR_BOX_RECT:
-            if (b->bg && (b->bg >> 24)) fill_clipped(sx, sy, b->w, b->h, b->bg, &clip);
+            if (b->bg && (b->bg >> 24)) {
+                if (b->radius > 1 && b->w > 2 && b->h > 2) fill_rounded(sx, sy, b->w, b->h, b->radius, b->bg, &clip);
+                else if ((b->bg >> 24) == 0xFF) fill_clipped(sx, sy, b->w, b->h, b->bg, &clip);
+                else blend_clipped(sx, sy, b->w, b->h, b->bg, &clip);
+            }
             if (b->border > 0) {
                 uint32_t bc = b->border_color ? b->border_color : 0xFF808080u;
+                if ((bc >> 24) == 0) break;
+                if (b->radius > 1 && b->bt == b->bb && b->bl == b->br_ && b->bt == b->bl && b->w > 2 && b->h > 2) { stroke_rounded(sx, sy, b->w, b->h, b->radius, b->bt, bc, &clip); break; }
                 if (b->bt > 0) fill_clipped(sx, sy, b->w, b->bt, bc, &clip);
                 if (b->bb > 0) fill_clipped(sx, sy + b->h - b->bb, b->w, b->bb, bc, &clip);
                 if (b->bl > 0) fill_clipped(sx, sy, b->bl, b->h, bc, &clip);
@@ -973,7 +1078,7 @@ static void draw_page(window_t* w) {
             uint32_t fg = b->color ? b->color : 0xFF000000u;
             if (b->link && hover >= 0 && b->link->id == hover) fg = 0xFFEE0000u;
             uint32_t bg = (b->bg && (b->bg >> 24)) ? b->bg : 0;
-            if (bg) fill_clipped(sx, sy - 1, b->w, b->h + 2, bg, &clip);
+            if (bg) { if ((bg >> 24) == 0xFF) fill_clipped(sx, sy - 1, b->w, b->h + 2, bg, &clip); else blend_clipped(sx, sy - 1, b->w, b->h + 2, bg, &clip); }
             int baseline = sy + b->baseline;
             draw_text_run(b, b->text, b->text_len, sx, baseline, fg, &clip);
             if (b->underline || (b->link && hover >= 0 && b->link->id == hover)) fill_clipped(sx, baseline + 2, b->w, 1, fg, &clip);
@@ -1045,6 +1150,23 @@ static void draw_page(window_t* w) {
         case BR_BOX_BUTTON: {
             int pressed = brs.pressed_btn == 100 + i;
             uint32_t face = b->bg ? b->bg : W98_BTNFACE;
+            if (b->radius > 1 || (b->node && b->node->style.background && b->node->style.background != 0xFFC0C0C0u)) {
+                /* author-styled button: flat, rounded, own border */
+                int rr = b->radius > 1 ? b->radius : 0;
+                if ((face >> 24) && (face & 0xFFFFFF) != 0xC0C0C0) fill_rounded(sx + pressed, sy + pressed, b->w, b->h, rr, face, &clip);
+                else fill_clipped(sx, sy, b->w, b->h, face, &clip);
+                if (b->border > 0 && (b->border_color >> 24)) { if (rr > 1) stroke_rounded(sx, sy, b->w, b->h, rr, b->border, b->border_color, &clip); else { fill_clipped(sx, sy, b->w, 1, b->border_color, &clip); fill_clipped(sx, sy + b->h - 1, b->w, 1, b->border_color, &clip); fill_clipped(sx, sy, 1, b->h, b->border_color, &clip); fill_clipped(sx + b->w - 1, sy, 1, b->h, b->border_color, &clip); } }
+                int px2 = b->font_px > 0 ? b->font_px : 13;
+                int tw2 = br_font_text_width(b->face, px2, b->text, b->text_len);
+                w98_rect_t ic2 = { sx + 2, sy + 2, b->w - 4, b->h - 4 };
+                if (ic2.x < clip.x) { ic2.w -= clip.x - ic2.x; ic2.x = clip.x; }
+                if (ic2.y < clip.y) { ic2.h -= clip.y - ic2.y; ic2.y = clip.y; }
+                if (ic2.x + ic2.w > clip.x + clip.w) ic2.w = clip.x + clip.w - ic2.x;
+                if (ic2.y + ic2.h > clip.y + clip.h) ic2.h = clip.y + clip.h - ic2.y;
+                int bl2 = sy + (b->h - (b->baseline + br_font_descent(b->face, px2))) / 2 + b->baseline + pressed;
+                if (ic2.w > 0 && ic2.h > 0) br_font_draw(b->face, px2, b->text, b->text_len, sx + (b->w - tw2) / 2 + pressed, bl2, b->color ? b->color : 0xFF000000u, &ic2);
+                break;
+            }
             fill_clipped(sx, sy, b->w, b->h, face, &clip);
             uint32_t tl = pressed ? 0xFF000000u : 0xFFFFFFFFu, br = pressed ? 0xFFFFFFFFu : 0xFF000000u;
             fill_clipped(sx, sy, b->w, 1, tl, &clip); fill_clipped(sx, sy, 1, b->h, tl, &clip);

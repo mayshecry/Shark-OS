@@ -141,9 +141,11 @@ static uint32_t cache_used = 0;
 static uint32_t cache_tick = 0;
 static int cache_count = 0;
 
+static uint16_t gc_hash[GC_ENTRIES * 4];
 void br_font_cache_flush(void) {
     cache_used = 0; cache_count = 0;
     memset(gcache, 0, sizeof(gcache));
+    memset(gc_hash, 0, sizeof(gc_hash));
 }
 
 void br_font_reset_page(void) {
@@ -478,11 +480,36 @@ static void rasterize(int w, int h, uint8_t* out) {
 
 /* ------------------------------------------------------------ glyph API */
 
+/* Open-addressed hash index over gcache (face, size, glyph) -> slot + 1.
+ * Text measurement calls cache_find for every character of every word on
+ * every layout pass; the old linear scan of up to 1024 entries dominated
+ * layout time on long pages. */
+#define GC_HASH (GC_ENTRIES * 4)
+
+static uint32_t gc_key(int face, int size, int glyph) {
+    uint32_t h = (uint32_t)glyph * 2654435761u ^ ((uint32_t)size * 40503u) ^ ((uint32_t)face * 97u);
+    return (h ^ (h >> 15)) & (GC_HASH - 1);
+}
+
 static glyph_cache_t* cache_find(int face, int size, int glyph) {
-    for (int i = 0; i < cache_count; i++) {
-        if (gcache[i].face == face && gcache[i].size == size && gcache[i].glyph == glyph) { gcache[i].lru = ++cache_tick; return &gcache[i]; }
+    uint32_t h = gc_key(face, size, glyph);
+    for (int probe = 0; probe < GC_HASH; probe++) {
+        uint16_t v = gc_hash[h];
+        if (!v) return NULL;
+        glyph_cache_t* e = &gcache[v - 1];
+        if (e->face == face && e->size == size && e->glyph == glyph) { e->lru = ++cache_tick; return e; }
+        h = (h + 1) & (GC_HASH - 1);
     }
     return NULL;
+}
+
+static void cache_index(int slot) {
+    glyph_cache_t* e = &gcache[slot];
+    uint32_t h = gc_key(e->face, e->size, e->glyph);
+    for (int probe = 0; probe < GC_HASH; probe++) {
+        if (!gc_hash[h]) { gc_hash[h] = (uint16_t)(slot + 1); return; }
+        h = (h + 1) & (GC_HASH - 1);
+    }
 }
 
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -501,7 +528,7 @@ static glyph_cache_t* render_glyph(int face, int size, int glyph) {
     edge_count = 0; g_depth = 0;
     xform_t id = { 0x10000, 0, 0, 0x10000, 0, 0 };
     outline_glyph(f, glyph, &id);
-    if (edge_count == 0) { e->w = e->h = 0; cache_count++; return e; }
+    if (edge_count == 0) { e->w = e->h = 0; cache_index(cache_count); cache_count++; return e; }
     /* bounds in 26.6 */
     int32_t minx = edges[0].x0, maxx = edges[0].x0, miny = edges[0].y0, maxy = edges[0].y0;
     for (int i = 0; i < edge_count; i++) {
@@ -527,6 +554,7 @@ static glyph_cache_t* render_glyph(int face, int size, int glyph) {
     e->bitmap = cache_used;
     rasterize(w, h, cache_pixels + cache_used);
     cache_used += (uint32_t)w * h;
+    cache_index(cache_count);
     cache_count++;
     return e;
 }

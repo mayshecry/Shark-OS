@@ -78,6 +78,7 @@ int br_image_request_sized(const char* src, int want_w, int want_h) {
     char abs[BR_URL_MAX];
     br_resolve_url(brs.url, src, abs, sizeof(abs));
     if (br_streq_prefix(abs, "data:")) { im->failed = 1; return image_count++; }
+    if (!br_subres_allowed()) { im->failed = 1; return image_count++; }
     br_status("Loading image...");
     int n = br_fetch_resource(abs, img_buf, sizeof(img_buf));
     im->failed = 1;
@@ -127,6 +128,8 @@ static br_node_t* link_ancestor(br_node_t* n) {
 /* ------------------------------------------------------ inline flow */
 
 typedef struct {
+    int cont_y, cont_h;    /* containing block for absolute children (cont_h < 0 unknown, valid when has_cont) */
+    int has_cont;
     int x0, x1;            /* content left/right in page coords */
     int y;                 /* top of current line */
     int cur_x;             /* pen position */
@@ -277,9 +280,12 @@ static int fit_chars(const tm_t* m, const char* s, int n, int max_w, int* out_w)
     return i;
 }
 
+static int pseudo_active = 0;      /* generated content available this layout */
+
 static void flow_text(flow_t* f, br_node_t* tn, const br_style_t* st, int pre) {
     const char* s = tn->text;
     tm_t m; text_metrics(st, &m);
+    int nowrap = st->nowrap && !pre && !measuring ? 1 : (st->nowrap && !pre ? 2 : 0);
     int lh = m.lh;
     br_node_t* link = link_ancestor(tn);
     uint32_t color = st->color;
@@ -323,7 +329,7 @@ static void flow_text(flow_t* f, br_node_t* tn, const br_style_t* st, int pre) {
         }
         if (s[i] == ' ') {
             /* a space glues to the previous word; it is dropped at a line start */
-            if (f->cur_x > f->x0 && f->any && f->cur_x + space_w <= f->x1) {
+            if (f->cur_x > f->x0 && f->any && (f->cur_x + space_w <= f->x1 || nowrap)) {
                 if (!text_box(f, tn, &m, &s[i], 1, space_w, color, st, link, st->monospace)) return;
                 if (lh > f->line_h) f->line_h = lh;
                 f->cur_x += space_w;
@@ -335,6 +341,16 @@ static void flow_text(flow_t* f, br_node_t* tn, const br_style_t* st, int pre) {
         while (i < len && s[i] != ' ') i++;
         int wl = i - ws;
         int ww = br_font_text_width(m.face, m.px, &s[ws], wl);
+        if (nowrap && ww <= avail) {
+            /* white-space: nowrap: never break inside the run; words that
+             * would not fit simply overflow (clipped by the viewport) */
+            if (f->any && f->cur_x + ww > f->x1 && f->cur_x > f->x0 && !(box_count > f->line_start_box && boxes[box_count - 1].node == tn)) flow_newline(f);
+            if (lh > f->line_h) f->line_h = lh;
+            f->any = 1;
+            if (!text_box(f, tn, &m, &s[ws], wl, ww, color, st, link, st->monospace)) return;
+            f->cur_x += ww;
+            continue;
+        }
         if (ww <= avail) {
             flow_place(f, ww, lh);
             if (!text_box(f, tn, &m, &s[ws], wl, ww, color, st, link, st->monospace)) return;
@@ -366,6 +382,7 @@ static int is_inline_node(const br_node_t* c) {
     if (c->type == BR_NODE_TEXT) return 1;
     int d = c->style.display;
     if (d == BR_DISPLAY_NONE) return 0;
+    if (c->style.float_dir == 3) return 0;                              /* absolute: overlay, decided by the container */
     if (c->style.float_dir && d != BR_DISPLAY_TABLE) return 1;         /* floats flow like inline-blocks */
     return d == BR_DISPLAY_INLINE || d == BR_DISPLAY_INLINE_BLOCK;
 }
@@ -389,7 +406,63 @@ static int natural_width(const br_node_t* c) {
 
 static int ib_depth = 0;           /* nesting of shrink-to-fit passes (cost guard) */
 
+static int pos_px(int v, int base) { return v <= -100000 ? (-(v) - 100000) * base / 100 : v; }
+
+/* position:absolute child c. Containing block content box = (cx, cy, cw,
+ * ch) with ch < 0 when the container's height is still unknown; (pen_x,
+ * pen_y) is where the element would have been in flow (used for auto
+ * offsets, which is what static positioning gives). The element is laid out
+ * as an overlay: it takes no space and does not move its siblings. Returns
+ * its height. */
+static int layout_absolute(br_node_t* c, int cx, int cy, int cw, int ch, int pen_x, int pen_y) {
+    br_style_t* cs = &c->style;
+    if (box_count >= BR_MAX_BOXES - 4 || ib_depth >= 7) return 0;
+    int ml = cs->margin_l > 0 ? cs->margin_l : 0, mr = cs->margin_r > 0 ? cs->margin_r : 0;
+    int l_auto = cs->pos_l == BR_POS_AUTO, r_auto = cs->pos_r == BR_POS_AUTO;
+    int t_auto = cs->pos_t == BR_POS_AUTO, b_auto = cs->pos_b == BR_POS_AUTO;
+    int bw;
+    if (cs->width > 0) bw = natural_width(c);
+    else if (cs->width < -1) bw = cw * (-(cs->width) - 2) / 100 + ml + mr;
+    else if (!l_auto && !r_auto) bw = cw - pos_px(cs->pos_l, cw) - pos_px(cs->pos_r, cw);
+    else {
+        int save = box_count, was = measuring; measuring = 1; ib_depth++;
+        layout_block(c, cx, cy, cw, 0);
+        bw = natural_width(c);
+        box_count = save; measuring = was; ib_depth--;
+    }
+    if (bw > cw) bw = cw;
+    if (bw < 8) bw = 8;
+    int x = pen_x, y = pen_y;
+    if (!l_auto) x = cx + pos_px(cs->pos_l, cw);
+    else if (!r_auto) x = cx + cw - pos_px(cs->pos_r, cw) - bw;
+    if (!t_auto) y = cy + (cs->pos_t <= -100000 ? (ch >= 0 ? pos_px(cs->pos_t, ch) : 0) : cs->pos_t);
+    int saved_w = cs->width, saved_bb = cs->border_box;
+    if (saved_w < -1) { cs->width = bw - ml - mr; if (cs->width < 8) cs->width = 8; cs->border_box = 1; }
+    if (t_auto && !b_auto && ch >= 0) {
+        /* bottom: needs the height first */
+        int save = box_count, was = measuring; measuring = 1; ib_depth++;
+        int h0 = layout_block(c, x, y, bw, 0);
+        box_count = save; measuring = was; ib_depth--;
+        y = cy + ch - (cs->pos_b <= -100000 ? pos_px(cs->pos_b, ch) : cs->pos_b) - h0;
+    }
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    int h = layout_block(c, x, y, bw, 0);
+    cs->width = saved_w; cs->border_box = saved_bb;
+    return h;
+}
+
 static void flow_inline_block(br_node_t* c, flow_t* f) {
+    if (c->style.float_dir == 3) {
+        int save2 = box_count;
+        int ccy = f->has_cont ? f->cont_y : f->y, cch = f->has_cont ? f->cont_h : -1;
+        layout_absolute(c, f->x0, ccy, f->x1 - f->x0, cch, f->cur_x, f->y);
+        if (box_count > save2) {
+            for (int i = save2; i < box_count; i++) boxes[i].group = save2 + 1;
+            boxes[save2].group_h = 0; boxes[save2].group_base = -1;
+        }
+        return;
+    }
     /* inline-blocks and floats are shrink-to-fit:
      * width = min(max(min-content, available), preferred). Pass 1 lays the
      * block out at the full container width (so nothing wraps that does not
@@ -401,12 +474,16 @@ static void flow_inline_block(br_node_t* c, flow_t* f) {
     int fixed = c->style.width > 0 ? natural_width(c) :
                 c->style.width < -1 ? full * (-(c->style.width) - 2) / 100 + c->style.margin_l + c->style.margin_r : 0;
     if (fixed > full) fixed = full;
+    /* max-width:N% (Bootstrap's .col-*: width:100% + max-width:41.6%) caps
+     * the item at that share of the line */
+    int pct_cap = c->style.max_width < -1 ? full * (-(c->style.max_width) - 2) / 100 : 0;
+    if (pct_cap > 0 && fixed > pct_cap) fixed = pct_cap;
     int avail = f->x1 - f->cur_x;
     int h, bw;
     if (fixed) {
         if (f->any && fixed > avail) { flow_newline(f); avail = f->x1 - f->cur_x; }
         bw = fixed;
-    } else if (ib_depth >= 5) {
+    } else if (ib_depth >= 7) {
         bw = avail;                                   /* absurd nesting: no measuring pass */
     } else {
         /* pass 1: measure the preferred width (alignment off) */
@@ -415,6 +492,7 @@ static void flow_inline_block(br_node_t* c, flow_t* f) {
         layout_block(c, f->cur_x, f->y, full, 0);
         bw = natural_width(c);
         box_count = save;
+        if (pct_cap > 0 && bw > pct_cap) bw = pct_cap;   /* max-width:N% caps the used width; the content wraps inside */
         if (bw > avail && f->any && avail < full) { flow_newline(f); avail = f->x1 - f->cur_x; }
         if (bw > avail) {
             /* wider than the line: wrap the content within it and re-measure */
@@ -432,8 +510,27 @@ static void flow_inline_block(br_node_t* c, flow_t* f) {
         int rx = f->x1 - bw;
         if (rx > f->cur_x) px = rx;
     }
-    /* pass 2: final layout at exactly that width */
+    if (c->style.float_dir == 3) {
+        /* position:absolute: out of flow. Positioned by top/left/right/
+         * bottom inside the containing block (the flow's block), else at
+         * the pen; it neither advances the pen nor grows the line. */
+        int save2 = box_count;
+        int ccy = f->has_cont ? f->cont_y : f->y, cch = f->has_cont ? f->cont_h : -1;
+        h = layout_absolute(c, f->x0, ccy, f->x1 - f->x0, cch, f->cur_x, f->y);
+        if (box_count > save2) {
+            for (int i = save2; i < box_count; i++) boxes[i].group = save2 + 1;
+            boxes[save2].group_h = 0; boxes[save2].group_base = -1;
+        }
+        (void)h;
+        return;
+    }
+    /* pass 2: final layout at exactly that width (a percentage width has
+     * already been resolved against the line: do not apply it again) */
+    int saved_w = c->style.width, saved_bb = c->style.border_box, saved_mw = c->style.max_width;
+    if (saved_w < -1) { c->style.width = bw - c->style.margin_l - c->style.margin_r; if (c->style.width < 8) c->style.width = 8; c->style.border_box = 1; }
+    if (saved_mw < -1) c->style.max_width = -1;          /* percentage max-width: already resolved against the line */
     h = layout_block(c, px, f->y, bw, 0);
+    c->style.width = saved_w; c->style.border_box = saved_bb; c->style.max_width = saved_mw;
     if (px > f->cur_x) {
         /* right float: it does not advance the pen, but it does shorten the
          * line for whatever follows on it, and it stays at the line top */
@@ -470,9 +567,11 @@ static void flow_image(br_node_t* c, flow_t* f) {
     if (wa) w = br_atoi(wa);
     if (ha) h = br_atoi(ha);
     if (c->style.width > 0) w = c->style.width;
+    else if (c->style.width < -1) { w = (f->x1 - f->x0) * (-(c->style.width) - 2) / 100; if (h && !wa) h = 0; }   /* width:100%: keep the aspect ratio */
     if (c->style.height > 0) h = c->style.height;
     int idx = -1;
     int maxw0 = f->x1 - f->x0;
+    if (c->style.max_width > 0 && maxw0 > c->style.max_width) maxw0 = c->style.max_width;
     if (src && src[0]) idx = br_image_request_sized(src, w > maxw0 ? maxw0 : w, w > maxw0 ? 0 : h);
     br_image_t* im = br_image_get(idx);
     if (im && im->pixels) {
@@ -480,6 +579,9 @@ static void flow_image(br_node_t* c, flow_t* f) {
         else if (!w) w = im->w * h / (im->h ? im->h : 1);
         else if (!h) h = im->h * w / (im->w ? im->w : 1);
     } else {
+        /* placeholder: a fixed width alone gives a 3:2 box (a hero photo
+         * that failed to load still reserves its area) */
+        if (w && !h) h = w * 2 / 3;
         if (!w) w = 64;
         if (!h) h = 48;
     }
@@ -521,10 +623,13 @@ static void flow_form_control(br_node_t* c, flow_t* f) {
         label[0] = 0;
         if (br_streq(c->tag, "button")) br_node_text_content(c, label, sizeof(label));
         else { const char* v = br_attr(c, "value"); br_strlcpy(label, v ? v : (type && br_strieq(type, "reset") ? "Reset" : "Submit"), sizeof(label)); }
-        int w = br_font_text_width(m.face, m.px, label, (int)strlen(label)) + 16;
+        int padx = c->style.padding_l + c->style.padding_r, pady = c->style.padding_t + c->style.padding_b;
+        int w = br_font_text_width(m.face, m.px, label, (int)strlen(label)) + (padx > 4 ? padx + 4 : 16);
         if (c->style.width > 0) w = c->style.width;
-        if (w < 40) w = 40;
-        int h = m.ascent + m.descent + 8;
+        if (w < 24) w = 24;
+        int maxbw = f->x1 - f->x0; if (w > maxbw) w = maxbw;
+        int h = m.ascent + m.descent + (pady > 4 ? pady + 2 : 8);
+        if (c->style.height > 0 && c->style.height > h) h = c->style.height;
         flow_place(f, w + 2, h);
         br_box_t* b = new_box(BR_BOX_BUTTON, c);
         if (!b) return;
@@ -533,6 +638,8 @@ static void flow_form_control(br_node_t* c, flow_t* f) {
         b->text = br_strdup(label); b->text_len = (int)strlen(b->text);
         b->bg = c->style.background ? c->style.background : 0xFFC0C0C0u;
         b->color = c->style.color;
+        b->radius = c->style.radius;
+        b->border = c->style.border; b->border_color = c->style.border_color;
         c->lx = b->x; c->ly = b->y; c->lw = w; c->lh = h;
         f->cur_x += w + 2;
         return;
@@ -557,8 +664,27 @@ static void flow_form_control(br_node_t* c, flow_t* f) {
     f->cur_x += w + 2;
 }
 
+/* ::before / ::after text: flowed as if it were a text child of n. */
+static void flow_pseudo(br_node_t* n, flow_t* f, int after) {
+    if (!pseudo_active) return;
+    br_style_t pst;
+    const char* txt = br_css_pseudo_content(n, after, &pst);
+    if (!txt) return;
+    br_node_t tmp;                      /* transient text node (never stored) */
+    memset(&tmp, 0, sizeof(tmp));
+    tmp.type = BR_NODE_TEXT; tmp.text = br_strdup(txt); tmp.parent = n; tmp.id = n->id;
+    if (pst.padding_l > 0 && pst.padding_l < 200) f->cur_x += pst.padding_l;
+    if (pst.margin_l > 0 && pst.margin_l < 200) f->cur_x += pst.margin_l;
+    flow_text(f, &tmp, &pst, 0);
+    if (pst.padding_r > 0 && pst.padding_r < 200) f->cur_x += pst.padding_r;
+    if (pst.margin_r > 0 && pst.margin_r < 200) f->cur_x += pst.margin_r;
+    /* boxes must not point at the stack node */
+    for (int i = 0; i < box_count; i++) if (boxes[i].node == &tmp) boxes[i].node = n;
+}
+
 static void layout_inline_children(br_node_t* n, flow_t* f, int pre) {
     if (br_stack_headroom() < BR_STACK_MIN) return;
+    flow_pseudo(n, f, 0);
     for (br_node_t* c = n->first_child; c; c = c->next) {
         if (c->type == BR_NODE_TEXT) {
             flow_text(f, c, &n->style, pre);
@@ -570,6 +696,7 @@ static void layout_inline_children(br_node_t* n, flow_t* f, int pre) {
         if (br_streq(c->tag, "img")) { flow_image(c, f); continue; }
         if (br_streq(c->tag, "input") || br_streq(c->tag, "button")) { flow_form_control(c, f); continue; }
         if (br_streq(c->tag, "select") || br_streq(c->tag, "textarea")) { flow_form_control(c, f); continue; }
+        if (c->style.float_dir == 3) { flow_inline_block(c, f); continue; }      /* absolute: overlay at the pen */
         if (c->style.display == BR_DISPLAY_INLINE_BLOCK || c->style.float_dir) { flow_inline_block(c, f); continue; }
         if (!is_inline_node(c)) {
             /* A block inside inline content: break the line, lay out the
@@ -582,27 +709,37 @@ static void layout_inline_children(br_node_t* n, flow_t* f, int pre) {
             f->cur_x = f->x0; f->line_h = 0; f->line_start_box = box_count; f->any = 0;
             continue;
         }
-        /* inline element: background highlight for <mark>/<code> etc. */
+        /* inline element: horizontal margins/padding advance the pen (the
+         * "nav a { margin-left: 16px }" idiom), background highlights the
+         * text runs (<mark>/<code>), vertical padding is ignored as in CSS */
         int save = box_count;
+        int lead = 0, trail = 0;
+        if (c->style.margin_l > 0 && c->style.margin_l < 400) lead += c->style.margin_l;
+        if (c->style.padding_l > 0 && c->style.padding_l < 400) lead += c->style.padding_l;
+        if (c->style.margin_r > 0 && c->style.margin_r < 400) trail += c->style.margin_r;
+        if (c->style.padding_r > 0 && c->style.padding_r < 400) trail += c->style.padding_r;
+        if (lead && f->cur_x + lead < f->x1) f->cur_x += lead;
         int sx = f->cur_x, sy = f->y;
         c->lx = sx; c->ly = sy;
         layout_inline_children(c, f, pre || br_streq(c->tag, "pre"));
+        if (trail && f->cur_x > sx && f->cur_x + trail < f->x1) f->cur_x += trail;
         if (c->style.background) {
             for (int i = save; i < box_count; i++) if (boxes[i].kind == BR_BOX_TEXT && boxes[i].node && boxes[i].node->parent) boxes[i].bg = c->style.background;
-        }
-        if (c->style.border && box_count > save) {
-            /* a bordered inline span: draw a rect behind its first line */
-            (void)0;
         }
         c->lw = (f->cur_x > sx) ? f->cur_x - sx : f->x1 - sx;
         c->lh = f->y + (f->line_h ? f->line_h : 19) - sy;
     }
+    flow_pseudo(n, f, 1);
 }
 
 static int has_inline_content(const br_node_t* n) {
     for (const br_node_t* c = n->first_child; c; c = c->next) {
         if (c->type == BR_NODE_TEXT) return 1;
-        if (c->type == BR_NODE_ELEMENT && c->style.display != BR_DISPLAY_NONE && is_inline_node(c)) return 1;
+        if (c->type == BR_NODE_ELEMENT && c->style.display != BR_DISPLAY_NONE && c->style.float_dir != 3 && is_inline_node(c)) return 1;
+    }
+    if (pseudo_active && !n->first_child) {
+        br_style_t pst;
+        if (br_css_pseudo_content((br_node_t*)n, 0, &pst) || br_css_pseudo_content((br_node_t*)n, 1, &pst)) return 1;
     }
     return 0;
 }
@@ -610,13 +747,22 @@ static int has_inline_content(const br_node_t* n) {
 static int layout_table(br_node_t* t, int x, int y, int width) {
     /* Count columns from the widest row. */
     int cols = 0;
-    br_node_t* rows[64]; int nrows = 0;
+    /* row pointers live in a static pool shared by nested tables (the
+     * kernel stack is precious): each table takes a slice */
+    static br_node_t* row_pool[1024];
+    static int row_pool_used = 0;
+    if (ib_depth == 0 && t->parent && !measuring) { /* top-level entry point resets nothing: slices are released below */ }
+    int pool_base = row_pool_used;
+    int room = 1024 - pool_base;
+    if (room < 8) return 0;
+    br_node_t** rows = &row_pool[pool_base]; int nrows = 0;
+    int max_rows = room < 512 ? room : 512;
     /* rows may be under thead/tbody */
-    for (br_node_t* s = t->first_child; s && nrows < 64; s = s->next) {
+    for (br_node_t* s = t->first_child; s && nrows < max_rows; s = s->next) {
         if (s->type != BR_NODE_ELEMENT) continue;
         if (br_streq(s->tag, "tr")) rows[nrows++] = s;
         else if (br_streq(s->tag, "thead") || br_streq(s->tag, "tbody") || br_streq(s->tag, "tfoot")) {
-            for (br_node_t* r = s->first_child; r && nrows < 64; r = r->next) if (r->type == BR_NODE_ELEMENT && br_streq(r->tag, "tr")) rows[nrows++] = r;
+            for (br_node_t* r = s->first_child; r && nrows < max_rows; r = r->next) if (r->type == BR_NODE_ELEMENT && br_streq(r->tag, "tr")) rows[nrows++] = r;
         } else if (br_streq(s->tag, "caption")) {
             y += layout_block(s, x, y, width, 0);
         }
@@ -633,6 +779,7 @@ static int layout_table(br_node_t* t, int x, int y, int width) {
     }
     if (cols == 0) return 0;
     if (cols > 16) cols = 16;
+    row_pool_used = pool_base + nrows;          /* nested tables allocate above us */
     int border = t->style.border;
     int spacing = 2;
     int tw = t->style.width > 0 ? t->style.width : (t->style.width < -1 ? width * (-(t->style.width) - 2) / 100 : width);
@@ -645,11 +792,12 @@ static int layout_table(br_node_t* t, int x, int y, int width) {
      *   3. otherwise the free space is spread over the unpinned columns
      *      in proportion to their natural widths, and if the naturals do
      *      not fit, columns are squeezed proportionally instead. */
-    int colnat[16], colfix[16], colw[16];
-    for (int i = 0; i < 16; i++) { colnat[i] = 0; colfix[i] = 0; colw[i] = 0; }
+    int colnat[16], colfix[16], colw[16], colmin[16];
+    for (int i = 0; i < 16; i++) { colnat[i] = 0; colfix[i] = 0; colw[i] = 0; colmin[i] = 0; }
     {
         int save = box_count, was = measuring; measuring = 1;
-        for (int r = 0; r < nrows && ib_depth < 4; r++) {
+        for (int r = 0; r < nrows && ib_depth < 6; r++) {
+            if (r >= 200 && nrows > 240) { r = nrows - 40; }   /* huge tables: sample head and tail rows */
             int col = 0;
             for (br_node_t* cell = rows[r]->first_child; cell && col < cols; cell = cell->next) {
                 if (cell->type != BR_NODE_ELEMENT || !(br_streq(cell->tag, "td") || br_streq(cell->tag, "th"))) continue;
@@ -665,6 +813,13 @@ static int layout_table(br_node_t* t, int x, int y, int width) {
                 ib_depth--;
                 int nw = natural_width(cell);
                 if (span == 1 && nw > colnat[col]) colnat[col] = nw;
+                /* min-content: the widest single box (word/image) of the cell */
+                if (span == 1) {
+                    int mw = 0;
+                    for (int b = save; b < box_count; b++) if (boxes[b].kind != BR_BOX_RECT && boxes[b].w > mw) mw = boxes[b].w;
+                    mw += cell->style.padding_l + cell->style.padding_r + cell->style.border_l + cell->style.border_r;
+                    if (mw > colmin[col]) colmin[col] = mw;
+                }
                 col += span;
                 box_count = save;
             }
@@ -687,10 +842,22 @@ static int layout_table(br_node_t* t, int x, int y, int width) {
             int tot = 0; for (int i = 0; i < cols; i++) tot += colfix[i] > colnat[i] ? colfix[i] : colnat[i];
             if (tot < 1) tot = 1;
             for (int i = 0; i < cols; i++) colw[i] = inner * (colfix[i] > colnat[i] ? colfix[i] : colnat[i]) / tot;
+        } else if (auto_nat > 0 && for_auto >= auto_nat) {
+            /* everything fits: natural + a share of the slack */
+            for (int i = 0; i < cols; i++) colw[i] = colfix[i] ? colfix[i] : colnat[i] + (for_auto - auto_nat) * colnat[i] / auto_nat;
         } else {
+            /* the naturals do not fit: columns keep their min-content width
+             * (longest word) and only the excess is squeezed proportionally,
+             * so a narrow "1." column never wraps because its neighbour has a
+             * long headline */
+            int min_sum = 0, excess = 0;
+            for (int i = 0; i < cols; i++) if (!colfix[i]) { int mn = colmin[i] < colnat[i] ? colmin[i] : colnat[i]; min_sum += mn; excess += colnat[i] - mn; }
+            int spare = for_auto - min_sum;
             for (int i = 0; i < cols; i++) {
-                if (colfix[i]) colw[i] = colfix[i];
-                else colw[i] = auto_nat > 0 ? for_auto * colnat[i] / auto_nat : for_auto / nauto;
+                if (colfix[i]) { colw[i] = colfix[i]; continue; }
+                int mn = colmin[i] < colnat[i] ? colmin[i] : colnat[i];
+                if (spare <= 0) colw[i] = auto_nat > 0 ? for_auto * colnat[i] / auto_nat : for_auto / nauto;   /* not even the words fit */
+                else colw[i] = mn + (excess > 0 ? spare * (colnat[i] - mn) / excess : spare / nauto);
             }
         }
         for (int i = 0; i < cols; i++) if (colw[i] < 8) colw[i] = 8;
@@ -738,6 +905,7 @@ static int layout_table(br_node_t* t, int x, int y, int width) {
     }
     if (tb) boxes[table_box].h = cy - y;
     t->lx = x; t->ly = y; t->lw = tw; t->lh = cy - y;
+    row_pool_used = pool_base;                  /* release our slice */
     return cy - y;
 }
 
@@ -758,10 +926,12 @@ static int layout_block(br_node_t* n, int x, int y, int width, int list_index) {
     if (mt < 0) mt = 0;
     if (mb < 0) mb = 0;
     int bx = x + ml, by = y + mt;
+    int first_box = box_count;
     int outer_w = width - ml - mr;
-    if (st->width > 0) outer_w = st->width;
+    if (st->width > 0) outer_w = st->border_box ? st->width : st->width + bl + brr + st->padding_l + st->padding_r;
     else if (st->width < -1) outer_w = (width - ml - mr) * (-(st->width) - 2) / 100;
     if (st->max_width > 0 && outer_w > st->max_width) outer_w = st->max_width;
+    else if (st->max_width < -1) { int mw = (width - ml - mr) * (-(st->max_width) - 2) / 100; if (outer_w > mw) outer_w = mw; }
     if (outer_w > width - ml - mr) outer_w = width - ml - mr;
     if (outer_w < 8) outer_w = 8;
     /* margin:auto centring (or a fixed-width block inside text-align:center) */
@@ -788,6 +958,7 @@ static int layout_block(br_node_t* n, int x, int y, int width, int list_index) {
             b->x = bx; b->y = by; b->w = outer_w; b->h = 0;
             b->bg = st->background; b->border = bw; b->border_color = st->border_color;
             b->bt = bt; b->bb = bb; b->bl = bl; b->br_ = brr;
+            b->radius = st->radius;
         }
     }
 
@@ -844,26 +1015,142 @@ static int layout_block(br_node_t* n, int x, int y, int width, int list_index) {
     }
 
     int inner_h = 0;
+    int content_start_box = box_count;
     int pre = br_streq(n->tag, "pre") || br_streq(n->tag, "textarea");
-    if (st->display == BR_DISPLAY_FLEX && !st->flex_col && !has_inline_content(n)) {
-        /* flex row: children side by side (shrink-to-fit), wrapping when full */
-        flow_t f;
-        memset(&f, 0, sizeof(f));
-        f.x0 = cx; f.x1 = cx + cw; f.y = cy; f.cur_x = cx; f.align = st->text_align;
-        f.line_start_box = box_count;
+    if (st->display == BR_DISPLAY_FLEX && st->grid_cols != 0 && !has_inline_content(n)) {
+        /* grid: N equal columns (or as many minmax(px) columns as fit),
+         * items placed row by row; a row is as tall as its tallest item */
+        int cols = st->grid_cols;
+        int gap = st->gap > 0 ? st->gap : 0;
+        if (cols < 0) { int mn = -cols; cols = (cw + gap) / (mn + gap); if (cols < 1) cols = 1; if (cols > 12) cols = 12; }
+        int colw = (cw - gap * (cols - 1)) / cols;
+        if (colw < 20) { colw = 20; cols = 1; }
+        int yy = cy, col = 0, row_h = 0;
         for (br_node_t* c = n->first_child; c; c = c->next) {
             if (c->type != BR_NODE_ELEMENT || c->style.display == BR_DISPLAY_NONE) continue;
-            flow_inline_block(c, &f);
-            if (st->gap > 0 && f.cur_x + st->gap < f.x1) f.cur_x += st->gap;
+            int h2 = layout_block(c, cx + col * (colw + gap), yy, colw, 0);
+            if (h2 > row_h) row_h = h2;
+            col++;
+            if (col >= cols) { col = 0; yy += row_h + gap; row_h = 0; }
         }
+        if (col) yy += row_h;
+        else if (yy > cy) yy -= gap;
+        inner_h = yy - cy;
+        n->used_w = cw;
+    } else if (st->display == BR_DISPLAY_FLEX && !st->flex_col) {
+        /* flex row: children side by side (shrink-to-fit), wrapping when
+         * full; then justify-content / flex-grow distribute the free space
+         * of each line and align-items centres or bottoms the items */
+        flow_t f;
+        memset(&f, 0, sizeof(f));
+        f.x0 = cx; f.x1 = cx + cw; f.y = cy; f.cur_x = cx; f.align = 0;
+        f.line_start_box = box_count;
+        f.has_cont = 1; f.cont_y = cy; f.cont_h = st->height > 0 ? st->height : -1;
+        int item_start[48], item_end[48], item_w[48], item_h[48], item_grow[48], nitems = 0;
+        br_node_t* item_node[48];
+        int line_y = cy;
+        int gap = st->gap > 0 ? st->gap : 0;
+        for (br_node_t* c = n->first_child; c; c = c->next) {
+            if (c->type == BR_NODE_TEXT) { flow_text(&f, c, st, 0); continue; }
+            if (c->type != BR_NODE_ELEMENT || c->style.display == BR_DISPLAY_NONE) continue;
+            if (c->style.float_dir == 3) { flow_inline_block(c, &f); continue; }
+            if (br_streq(c->tag, "br")) continue;
+            if (br_streq(c->tag, "img")) { flow_image(c, &f); if (gap > 0 && f.cur_x + gap < f.x1) f.cur_x += gap; continue; }
+            if (br_streq(c->tag, "input") || br_streq(c->tag, "button") || br_streq(c->tag, "select") || br_streq(c->tag, "textarea")) { flow_form_control(c, &f); if (gap > 0 && f.cur_x + gap < f.x1) f.cur_x += gap; continue; }
+            int b0 = box_count;
+            int before_y = f.y;
+            flow_inline_block(c, &f);
+            if (nitems < 48) {
+                item_start[nitems] = b0; item_end[nitems] = box_count; item_node[nitems] = c;
+                item_w[nitems] = c->lw + (c->style.margin_l > 0 ? c->style.margin_l : 0) + (c->style.margin_r > 0 ? c->style.margin_r : 0);
+                item_h[nitems] = c->lh; item_grow[nitems] = c->style.flex_grow;
+                /* a wrapped line: previous items are final for their line */
+                if (f.y != before_y) line_y = f.y;
+                nitems++;
+            }
+            if (gap > 0 && f.cur_x + gap < f.x1) f.cur_x += gap;
+        }
+        (void)line_y;
         if (f.any || f.line_h) flow_newline(&f);
         inner_h = f.y - cy;
         n->used_w = f.max_x;
+        if (!measuring && nitems > 0 && (st->justify || st->align_items || cw > 0)) {
+            /* group items into lines by their y */
+            int i = 0;
+            while (i < nitems) {
+                int j = i, used = 0, grow = 0;
+                int ly = item_node[i]->ly - (item_node[i]->style.margin_t > 0 ? item_node[i]->style.margin_t : 0);
+                int line_h2 = 0;
+                while (j < nitems && item_node[j]->ly - (item_node[j]->style.margin_t > 0 ? item_node[j]->style.margin_t : 0) == ly) {
+                    used += item_w[j]; grow += item_grow[j];
+                    int hh = item_h[j] + (item_node[j]->style.margin_t > 0 ? item_node[j]->style.margin_t : 0) + (item_node[j]->style.margin_b > 0 ? item_node[j]->style.margin_b : 0);
+                    if (hh > line_h2) line_h2 = hh;
+                    j++;
+                }
+                int count = j - i;
+                int free_px = cw - used - gap * (count - 1);
+                if (free_px < 0) free_px = 0;
+                /* horizontal: flex-grow widens (approximated by shifting the
+                 * following items: content is not re-laid out), else justify */
+                int shift = 0, step = 0, extra_first = 0;
+                if (grow > 0 && free_px > 0) {
+                    int acc = 0;
+                    for (int k = i; k < j; k++) {
+                        int add = item_grow[k] * free_px / grow;
+                        if (acc) for (int b = item_start[k]; b < item_end[k]; b++) boxes[b].x += acc;
+                        if (acc) { item_node[k]->lx += acc; }
+                        /* a grown item with centred text: centre its content in the new width */
+                        if (add > 0 && item_node[k]->style.text_align == 1) { for (int b = item_start[k]; b < item_end[k]; b++) if (boxes[b].kind != BR_BOX_RECT) boxes[b].x += add / 2; }
+                        if (add > 0) { for (int b = item_start[k]; b < item_end[k]; b++) if (boxes[b].kind == BR_BOX_RECT && boxes[b].node == item_node[k]) boxes[b].w += add; item_node[k]->lw += add; }
+                        acc += add;
+                    }
+                } else if (free_px > 0 && st->justify) {
+                    if (st->justify == 1) shift = free_px / 2;
+                    else if (st->justify == 2) shift = free_px;
+                    else if (st->justify == 3 && count > 1) step = free_px / (count - 1);
+                    else if (st->justify == 4) { step = free_px / count; shift = step / 2; }
+                    else if (st->justify == 5) { step = free_px / (count + 1); shift = step; }
+                    (void)extra_first;
+                    int acc = shift;
+                    for (int k = i; k < j; k++) {
+                        if (acc) { for (int b = item_start[k]; b < item_end[k]; b++) boxes[b].x += acc; item_node[k]->lx += acc; }
+                        acc += step;
+                    }
+                }
+                /* vertical: align-items center / end within the line */
+                if (st->align_items) {
+                    for (int k = i; k < j; k++) {
+                        int hh = item_h[k];
+                        int dy = st->align_items == 1 ? (line_h2 - hh) / 2 : line_h2 - hh;
+                        if (dy > 0) { for (int b = item_start[k]; b < item_end[k]; b++) boxes[b].y += dy; item_node[k]->ly += dy; }
+                    }
+                }
+                i = j;
+            }
+        }
+    } else if (st->display == BR_DISPLAY_FLEX && st->flex_col && st->align_items == 1 && !has_inline_content(n)) {
+        /* flex column with centred items: stack, each item centred */
+        int yy = cy;
+        for (br_node_t* c = n->first_child; c; c = c->next) {
+            if (c->type != BR_NODE_ELEMENT || c->style.display == BR_DISPLAY_NONE) continue;
+            int b0 = box_count;
+            int save = box_count, was = measuring; measuring = 1;
+            layout_block(c, cx, yy, cw, 0);
+            int nw = natural_width(c);
+            box_count = save; measuring = was;
+            if (nw > cw) nw = cw;
+            int h2 = layout_block(c, cx + (cw - nw) / 2, yy, nw, 0);
+            (void)b0;
+            yy += h2 + (st->gap > 0 ? st->gap : 0);
+            if (nw > n->used_w) n->used_w = nw;
+        }
+        inner_h = yy - cy;
     } else if (has_inline_content(n)) {
         flow_t f;
         memset(&f, 0, sizeof(f));
         f.x0 = cx; f.x1 = cx + cw; f.y = cy; f.cur_x = cx; f.align = st->text_align;
         f.line_start_box = box_count;
+        f.has_cont = 1; f.cont_y = cy; f.cont_h = st->height > 0 ? st->height : -1;
         layout_inline_children(n, &f, pre);
         if (f.any || f.line_h) flow_newline(&f);
         inner_h = f.y - cy;
@@ -878,6 +1165,11 @@ static int layout_block(br_node_t* n, int x, int y, int width, int list_index) {
         for (br_node_t* c = n->first_child; c; c = c->next) {
             if (c->type != BR_NODE_ELEMENT) continue;
             if (c->style.display == BR_DISPLAY_NONE) continue;
+            if (c->style.float_dir == 3) {
+                /* position:absolute in a block container: overlay, no space */
+                layout_absolute(c, cx, cy, cw, st->height > 0 ? st->height : -1, cx, yy);
+                continue;
+            }
             /* margin collapsing between vertical siblings */
             int cmt = c->style.margin_t;
             int collapse = first ? 0 : (cmt < prev_mb ? cmt : prev_mb);
@@ -887,6 +1179,7 @@ static int layout_block(br_node_t* n, int x, int y, int width, int list_index) {
             }
             int h = layout_block(c, cx, yy, cw, li);
             yy += h;
+            if (st->display == BR_DISPLAY_FLEX && st->gap > 0) yy += st->gap;
             int nw = natural_width(c);
             if (nw > n->used_w) n->used_w = nw;
             prev_mb = c->style.margin_b;
@@ -895,16 +1188,66 @@ static int layout_block(br_node_t* n, int x, int y, int width, int list_index) {
         }
         inner_h = yy - cy;
     }
-    if (st->height > 0 && inner_h < st->height) inner_h = st->height;
+    if (st->height > 0) {
+        int want = st->height - (st->border_box ? st->padding_t + st->padding_b + bt + bb : 0);
+        if (inner_h < want) inner_h = want;
+    }
+    if (st->max_height >= 0 && inner_h > st->max_height && st->overflow_hidden) {
+        /* overflow:hidden with a max-height: drop the boxes below the edge */
+        int limit = cy + st->max_height;
+        int w2 = content_start_box;
+        for (int i = content_start_box; i < box_count; i++) {
+            if (boxes[i].y >= limit) continue;
+            if (boxes[i].y + boxes[i].h > limit) boxes[i].h = limit - boxes[i].y;
+            boxes[w2++] = boxes[i];
+        }
+        box_count = w2;
+        inner_h = st->max_height;
+    }
+    if (st->overflow_hidden && !measuring && st->width > 0) {
+        /* overflow:hidden with a fixed width: clip boxes to the right edge */
+        int limit = cx + cw;
+        int w2 = content_start_box;
+        for (int i = content_start_box; i < box_count; i++) {
+            if (boxes[i].x >= limit) { if (boxes[i].kind == BR_BOX_RECT || boxes[i].group) boxes[w2++] = boxes[i]; continue; }
+            if (boxes[i].x + boxes[i].w > limit) {
+                if (boxes[i].kind == BR_BOX_TEXT) {
+                    /* cut the run at the last glyph that fits */
+                    int fit = boxes[i].text_len;
+                    while (fit > 0 && boxes[i].x + br_font_text_width(boxes[i].face, boxes[i].font_px, boxes[i].text, fit) > limit) fit--;
+                    if (fit <= 0) continue;
+                    boxes[i].text_len = fit;
+                    boxes[i].w = br_font_text_width(boxes[i].face, boxes[i].font_px, boxes[i].text, fit);
+                } else boxes[i].w = limit - boxes[i].x;
+            }
+            boxes[w2++] = boxes[i];
+        }
+        box_count = w2;
+    }
     int h = inner_h + st->padding_t + st->padding_b + bt + bb;
     n->lh = h;
     if (rect_idx >= 0) boxes[rect_idx].h = h;
+    if (st->relative && !measuring) {
+        /* position:relative: offset the rendered boxes, keep the flow */
+        int dx = 0, dy = 0;
+        if (st->pos_l != BR_POS_AUTO) dx = pos_px(st->pos_l, width);
+        else if (st->pos_r != BR_POS_AUTO) dx = -pos_px(st->pos_r, width);
+        if (st->pos_t != BR_POS_AUTO && st->pos_t > -100000) dy = st->pos_t;
+        else if (st->pos_b != BR_POS_AUTO && st->pos_b > -100000) dy = -st->pos_b;
+        if (dx > 2000 || dx < -2000) dx = 0;
+        if (dy > 2000 || dy < -2000) dy = 0;
+        if (dx || dy) {
+            for (int i = first_box; i < box_count; i++) { boxes[i].x += dx; boxes[i].y += dy; }
+            n->lx += dx; n->ly += dy;
+        }
+    }
     return mt + h + mb;
 }
 
 void br_layout(br_node_t* doc, int width) {
     box_count = 0;
     if (!doc) { brs.page_h = 0; return; }
+    pseudo_active = br_css_has_pseudo_content();
     /* clear stale geometry */
     for (int i = 0; i < br_dom_node_count(); i++) { br_node_t* n = br_dom_node(i); n->lx = n->ly = n->lw = n->lh = 0; }
     br_node_t* body = doc->body;

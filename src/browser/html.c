@@ -168,7 +168,7 @@ static int is_void_tag(const char* t) {
 }
 
 int br_is_block_tag(const char* t) {
-    static const char* b[] = {"html", "body", "div", "p", "h1", "h2", "h3", "h4", "h5", "h6",
+    static const char* b[] = {"html", "body", "div", "p", "h1", "h2", "h3", "h4", "h5", "h6", "dialog", "hgroup", "search", "menu",
                               "ul", "ol", "li", "table", "tr", "td", "th", "thead", "tbody",
                               "blockquote", "pre", "hr", "form", "section", "article",
                               "header", "footer", "nav", "main", "aside", "center", "dl",
@@ -208,6 +208,33 @@ static int decode_entity(const char* s, int* consumed, char* out) {
         {"ccedil", 0xE7}, {"ntilde", 0xF1}, {"iacute", 0xED}, {"oacute", 0xF3}, {"uacute", 0xFA}, {"Eacute", 0xC9},
         {"aring", 0xE5}, {"oslash", 0xF8}, {"aelig", 0xE6}, {"iexcl", 0xA1}, {"iquest", 0xBF}, {"ordm", 0xBA}, {"ordf", 0xAA},
         {"dagger", 0x2020}, {"prime", 0x2032}, {"infin", 0x221E}, {"star", 0x2606}, {"starf", 0x2605},
+        {"lrm", 0x200E}, {"rlm", 0x200F}, {"sbquo", 0x201A}, {"bdquo", 0x201E}, {"lsaquo", 0x2039}, {"rsaquo", 0x203A},
+        {"permil", 0x2030}, {"loz", 0x25CA}, {"spades", 0x2660}, {"clubs", 0x2663}, {"diams", 0x2666}, {"harr", 0x2194},
+        {"crarr", 0x21B5}, {"lArr", 0x21D0}, {"rArr", 0x21D2}, {"hArr", 0x21D4}, {"forall", 0x2200}, {"exist", 0x2203},
+        {"empty", 0x2205}, {"nabla", 0x2207}, {"isin", 0x2208}, {"notin", 0x2209}, {"sum", 0x2211}, {"prod", 0x220F},
+        {"radic", 0x221A}, {"prop", 0x221D}, {"and", 0x2227}, {"or", 0x2228}, {"cap", 0x2229}, {"cup", 0x222A}, {"int", 0x222B},
+        {"there4", 0x2234}, {"sim", 0x223C}, {"cong", 0x2245}, {"asymp", 0x2248}, {"equiv", 0x2261}, {"sub", 0x2282}, {"sup", 0x2283},
+        {"oplus", 0x2295}, {"otimes", 0x2297}, {"perp", 0x22A5}, {"sdot", 0x22C5}, {"lceil", 0x2308}, {"rceil", 0x2309},
+        {"lfloor", 0x230A}, {"rfloor", 0x230B}, {"lang", 0x2329}, {"rang", 0x232A}, {"alpha", 0x3B1}, {"beta", 0x3B2}, {"gamma", 0x3B3},
+        {"delta", 0x3B4}, {"epsilon", 0x3B5}, {"theta", 0x3B8}, {"lambda", 0x3BB}, {"mu", 0x3BC}, {"pi", 0x3C0}, {"sigma", 0x3C3},
+        {"tau", 0x3C4}, {"phi", 0x3C6}, {"omega", 0x3C9}, {"Delta", 0x394}, {"Omega", 0x3A9}, {"Sigma", 0x3A3}, {"Pi", 0x3A0},
+        {"uml", 0xA8}, {"macr", 0xAF}, {"acute", 0xB4}, {"cedil", 0xB8}, {"sup1", 0xB9}, {"sup2", 0xB2}, {"sup3", 0xB3}, {"frac34", 0xBE},
+        {"not", 0xAC}, {"brvbar", 0xA6}, {"curren", 0xA4}, {"Agrave", 0xC0}, {"Aacute", 0xC1}, {"Acirc", 0xC2}, {"Atilde", 0xC3}, {"Aring", 0xC5},
+        {"AElig", 0xC6}, {"Ccedil", 0xC7}, {"Egrave", 0xC8}, {"Ecirc", 0xCA}, {"Euml", 0xCB}, {"Igrave", 0xCC}, {"Iacute", 0xCD}, {"Icirc", 0xCE},
+        {"Iuml", 0xCF}, {"ETH", 0xD0}, {"Ntilde", 0xD1}, {"Ograve", 0xD2}, {"Oacute", 0xD3}, {"Ocirc", 0xD4}, {"Otilde", 0xD5}, {"Oslash", 0xD8},
+        {"Ugrave", 0xD9}, {"Uacute", 0xDA}, {"Ucirc", 0xDB}, {"Yacute", 0xDD}, {"THORN", 0xDE}, {"atilde", 0xE3}, {"euml", 0xEB}, {"igrave", 0xEC},
+        {"icirc", 0xEE}, {"iuml", 0xEF}, {"eth", 0xF0}, {"ograve", 0xF2}, {"ocirc", 0xF4}, {"otilde", 0xF5}, {"ugrave", 0xF9}, {"ucirc", 0xFB},
+        {"yacute", 0xFD}, {"thorn", 0xFE}, {"yuml", 0xFF}, {"OElig", 0x152}, {"oelig", 0x153}, {"Scaron", 0x160}, {"scaron", 0x161}, {"Yuml", 0x178},
+        {"fnof", 0x192}, {"circ", 0x2C6}, {"tilde", 0x2DC}, {"zwsp", 0x200B}, {"NewLine", '\n'}, {"Tab", '\t'}, {"nbsp", 0xA0}, {"emsp13", 0x2004},
+        {"numsp", 0x2007}, {"puncsp", 0x2008}, {"hairsp", 0x200A}, {"ZeroWidthSpace", 0x200B}, {"NoBreak", 0x2060}, {"colon", ':'}, {"comma", ','},
+        {"period", '.'}, {"excl", '!'}, {"quest", '?'}, {"num", '#'}, {"dollar", '$'}, {"percnt", '%'}, {"lpar", '('}, {"rpar", ')'}, {"ast", '*'},
+        {"plus", '+'}, {"sol", '/'}, {"semi", ';'}, {"equals", '='}, {"commat", '@'}, {"lsqb", '['}, {"bsol", '\\'}, {"rsqb", ']'}, {"Hat", '^'},
+        {"lowbar", '_'}, {"grave", '`'}, {"lcub", '{'}, {"verbar", '|'}, {"rcub", '}'}, {"vert", '|'}, {"hyphen", 0x2010}, {"dash", 0x2010},
+        {"horbar", 0x2015}, {"Vert", 0x2016}, {"caret", 0x2041}, {"tprime", 0x2034}, {"bprime", 0x2035}, {"oline", 0x203E}, {"frasl", 0x2044},
+        {"weierp", 0x2118}, {"image", 0x2111}, {"real", 0x211C}, {"alefsym", 0x2135}, {"phone", 0x260E}, {"female", 0x2640}, {"male", 0x2642},
+        {"sung", 0x266A}, {"flat", 0x266D}, {"natural", 0x266E}, {"sharp", 0x266F}, {"checkmark", 0x2713}, {"cross", 0x2717}, {"malt", 0x2720},
+        {"sext", 0x2736}, {"VerticalSeparator", 0x2758}, {"lbbrk", 0x2772}, {"rbbrk", 0x2773}, {"bull", 0x2022}, {"bullet", 0x2022}, {"nbsp", 0xA0},
+        {"quot", '"'}, {"QUOT", '"'}, {"AMP", '&'}, {"LT", '<'}, {"GT", '>'}, {"COPY", 0xA9}, {"REG", 0xAE}, {"TRADE", 0x2122},
         {NULL, 0}
     };
     if (s[0] == '#') {
@@ -331,6 +358,17 @@ static int has_open(parser_t* p, const char* tag) {
     for (int i = p->depth - 1; i >= 1; i--) if (br_streq(p->stack[i]->tag, tag)) return 1;
     return 0;
 }
+/* like has_open, but the search stops at an enclosing table scope so a
+ * <tr> inside a nested table never closes the outer table's row */
+static int has_open_in_table(parser_t* p, const char* tag) {
+    for (int i = p->depth - 1; i >= 1; i--) {
+        const char* t = p->stack[i]->tag;
+        if (br_streq(t, tag)) return 1;
+        if (br_streq(t, "table")) return 0;
+        if (!br_streq(tag, "tr") && br_streq(t, "tr")) return 0;      /* td/th: stop at the row */
+    }
+    return 0;
+}
 
 static void flush_text(parser_t* p, int start, int end) {
     if (end <= start) return;
@@ -365,9 +403,9 @@ static void implied_end_tags(parser_t* p, const char* tag) {
         if (has_open(p, "dd")) pop_to(p, "dd"); else if (has_open(p, "dt")) pop_to(p, "dt");
         return;
     }
-    if (br_streq(tag, "tr")) { if (has_open(p, "tr")) pop_to(p, "tr"); return; }
+    if (br_streq(tag, "tr")) { if (has_open_in_table(p, "tr")) pop_to(p, "tr"); return; }
     if (br_streq(tag, "td") || br_streq(tag, "th")) {
-        if (has_open(p, "td")) pop_to(p, "td"); else if (has_open(p, "th")) pop_to(p, "th");
+        if (has_open_in_table(p, "td")) pop_to(p, "td"); else if (has_open_in_table(p, "th")) pop_to(p, "th");
         return;
     }
     if (br_streq(tag, "option")) { if (has_open(p, "option")) pop_to(p, "option"); return; }
@@ -506,6 +544,15 @@ br_node_t* br_html_parse(const char* html, int len) {
         parse_attrs(p, n);
         int self_closing = 0;
         if (p->pos > 0 && s[p->pos - 1] == '/') self_closing = 1;
+        if (self_closing && !is_void_tag(tag)) {
+            /* HTML5 ignores the slash on ordinary elements (<tr/> opens a
+             * row); it is only honoured for unknown/custom tags, where it
+             * is usually meant */
+            static const char* const plain[] = { "tr", "td", "th", "div", "span", "p", "a", "li", "ul", "ol", "table", "tbody", "thead", "tfoot",
+                "section", "article", "nav", "header", "footer", "main", "aside", "b", "i", "em", "strong", "small", "label", "form",
+                "h1", "h2", "h3", "h4", "h5", "h6", "button", "select", "option", "iframe", "textarea", "script", "style", "title", NULL };
+            for (int k = 0; plain[k]; k++) if (br_streq(tag, plain[k])) { self_closing = 0; break; }
+        }
         /* parse_attrs stops at '>' */
         if (p->pos < len && s[p->pos] == '>') p->pos++;
         text_start = p->pos;
@@ -533,6 +580,29 @@ br_node_t* br_html_parse(const char* html, int len) {
             br_node_append(cur(p), n);
         }
 
+        /* <template> content is inert, inline <svg> is not rendered (it only
+         * keeps its box) and <math>: skip their subtrees entirely so their
+         * text never leaks into the page and they cost no nodes. */
+        if (br_streq(tag, "template") || br_streq(tag, "svg") || br_streq(tag, "math")) {
+            if (self_closing) continue;
+            int depth = 1, e = p->pos;
+            int tl = (int)strlen(tag);
+            while (e < len && depth > 0) {
+                if (s[e] == '<') {
+                    if (s[e + 1] == '/' && match_ci(&s[e + 2], len - e - 2, tag) && (s[e + 2 + tl] == '>' || is_space(s[e + 2 + tl]))) depth--;
+                    else if (match_ci(&s[e + 1], len - e - 1, tag) && (s[e + 1 + tl] == '>' || is_space(s[e + 1 + tl]) || s[e + 1 + tl] == '/')) {
+                        /* nested same tag (unless self-closing) */
+                        int q = e + 1; while (q < len && s[q] != '>') q++;
+                        if (!(q > 0 && s[q - 1] == '/')) depth++;
+                    }
+                }
+                e++;
+            }
+            while (e < len && s[e] != '>') e++;
+            p->pos = e + 1;
+            text_start = p->pos;
+            continue;
+        }
         /* Raw text elements swallow everything up to their end tag. */
         if (br_streq(tag, "script") || br_streq(tag, "style") || br_streq(tag, "textarea") || br_streq(tag, "title")) {
             int e = p->pos;
