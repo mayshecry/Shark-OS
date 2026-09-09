@@ -10,21 +10,25 @@
 
 /* ------------------------------------------------------------- limits */
 
-#define BR_MAX_NODES      2000      /* DOM nodes per document                 */
-#define BR_TEXT_POOL      (384 * 1024)
-#define BR_MAX_ATTRS      12
+#define BR_MAX_NODES      3000      /* DOM nodes per document                 */
+#define BR_TEXT_POOL      (512 * 1024)
+#define BR_MAX_ATTRS      16
 #define BR_MAX_DEPTH      48
 #define BR_MAX_TEXT_RUN   4096
-#define BR_MAX_RULES      600       /* CSS rules                              */
-#define BR_MAX_SELPARTS   4         /* descendant selector depth              */
+#define BR_MAX_RULES      8000      /* CSS rules (Bootstrap ~3000 + icon fonts) */
+#define BR_MAX_SELPARTS   5         /* descendant selector depth              */
 #define BR_MAX_DECLS      24        /* declarations per rule                  */
+#define BR_MAX_DECL_POOL  40000     /* declarations across all rules          */
+#define BR_MAX_PART_POOL  16000     /* selector compounds across all rules    */
 #define BR_MAX_FONTFACES  6         /* @font-face rules per page              */
-#define BR_CSS_BUF        (128 * 1024)  /* external stylesheets (all, per page) */
-#define BR_MAX_BOXES      4000      /* layout boxes                           */
-#define BR_PAGE_MAX       (256 * 1024) /* fetched document size (google.com is ~85 KB) */
+#define BR_CSS_BUF        (256 * 1024)  /* external stylesheets (all, per page) */
+#define BR_MAX_BOXES      6000      /* layout boxes                           */
+#define BR_PAGE_MAX       (512 * 1024) /* fetched document size (google.com is ~85 KB) */
 #define BR_URL_MAX        512       /* bing result links are ~330 bytes */
 #define BR_HISTORY_MAX    24
 #define BR_MAX_IMAGES     32
+#define BR_MAX_VARS       1024      /* CSS custom properties in scope        */
+#define BR_MAX_SHEETS     12        /* external stylesheets fetched per page */
 #define BR_IMG_MAX_BYTES  (160 * 1024)         /* largest fetched image file */
 #define BR_IMG_ARENA_PIXELS (640 * 1024)       /* decoded pixels per page (2.5 MB) */
 #define BR_IMG_SCRATCH_BYTES (640 * 1024)      /* inflate / JPEG plane work area */
@@ -68,7 +72,18 @@ typedef struct br_style {
     int      float_dir;         /* 0 none, 1 left, 2 right (rendered as inline-block) */
     int      letter_spacing;
     int      text_transform;    /* 0 none, 1 uppercase, 2 lowercase, 3 capitalize */
+    int      nowrap;            /* white-space: nowrap / pre                 */
+    int      radius;            /* border-radius px                          */
+    int      justify;           /* flex: 0 start 1 center 2 end 3 between 4 around 5 evenly */
+    int      align_items;       /* flex: 0 start/stretch 1 center 2 end      */
+    int      flex_grow;
+    int      grid_cols;         /* grid: >0 column count, <0 -(minmax px) for auto-fill */
+    int      max_height;        /* -1 none */
+    int      overflow_hidden;
+    int      pos_t, pos_r, pos_b, pos_l;   /* top/right/bottom/left: px, -(100000+pct) for %, BR_POS_AUTO */
+    int      relative;          /* position: relative/sticky (offsets shift the box) */
 } br_style_t;
+#define BR_POS_AUTO 0x7FFFFFFF
 
 enum { BR_DISPLAY_INLINE = 0, BR_DISPLAY_BLOCK, BR_DISPLAY_NONE, BR_DISPLAY_LIST_ITEM,
        BR_DISPLAY_TABLE, BR_DISPLAY_TABLE_ROW, BR_DISPLAY_TABLE_CELL, BR_DISPLAY_INLINE_BLOCK,
@@ -132,13 +147,15 @@ typedef struct {
 } br_fontface_t;
 
 typedef struct {
-    br_selpart_t parts[BR_MAX_SELPARTS];   /* parts[0] = rightmost (subject) */
+    br_selpart_t* parts;        /* part_count compounds in the shared pool; parts[0] = rightmost (subject) */
     int part_count;
-    br_decl_t decls[BR_MAX_DECLS];
+    br_decl_t* decls;           /* decl_count declarations in the shared pool */
     int decl_count;
+    int var_first, var_count;   /* custom properties (--x) of this rule in the shared var_decls[] */
     int specificity;
     int order;
 } br_rule_t;
+#define BR_MAX_VAR_DECLS 4096   /* --x declarations across all rules of a page */
 
 /* ------------------------------------------------------------- layout */
 
@@ -164,6 +181,7 @@ typedef struct {
     int border;
     int bt, br_, bb, bl;        /* BR_BOX_RECT: per-side border widths   */
     uint32_t border_color;
+    int radius;                 /* BR_BOX_RECT: corner radius            */
     int img_index;              /* BR_BOX_IMAGE */
 } br_box_t;
 
@@ -267,6 +285,9 @@ int br_css_noscript_visible(void);
 void br_css_compute(br_node_t* doc);
 void br_css_apply_inline(br_node_t* n, const char* css);
 uint32_t br_css_parse_color(const char* s, int* ok);
+const char* br_css_pseudo_content(br_node_t* n, int after, br_style_t* st);
+int br_subres_allowed(void);                 /* browser.c: sub-resource time budget not exhausted */
+int br_css_has_pseudo_content(void);
 int br_css_match_selector_string(br_node_t* n, const char* sel);
 
 /* layout.c */
