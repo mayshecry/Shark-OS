@@ -39,7 +39,8 @@ static uint8_t bcd_to_bin(uint8_t val) {
 
 
 void rtc_read_time(void) {
-    while (rtc_is_updating());
+    int guard = 10000;
+    while (rtc_is_updating() && --guard > 0);
 
     uint8_t seconds = rtc_read(RTC_SECONDS);
     uint8_t minutes = rtc_read(RTC_MINUTES);
@@ -47,12 +48,12 @@ void rtc_read_time(void) {
     uint8_t day = rtc_read(RTC_DAY);
     uint8_t month = rtc_read(RTC_MONTH);
     uint8_t year = rtc_read(RTC_YEAR);
-    
-    
+
     uint8_t status_b = rtc_read(0x0B);
     bool bcd_mode = !(status_b & 0x04);
-    
-    
+    bool twelve_hour = !(status_b & 0x02);
+    bool is_pm = twelve_hour && (hours & 0x80) != 0;
+
     if (bcd_mode) {
         seconds = bcd_to_bin(seconds);
         minutes = bcd_to_bin(minutes);
@@ -60,13 +61,13 @@ void rtc_read_time(void) {
         day = bcd_to_bin(day);
         month = bcd_to_bin(month);
         year = bcd_to_bin(year);
+    } else {
+        hours &= 0x7F;
     }
-    
-    
-    if (!(status_b & 0x02) && (hours & 0x80)) {
-        hours = ((hours & 0x7F) + 12) % 24;
-    }
-    
+
+    if (is_pm && hours < 12) hours += 12;
+    if (!is_pm && hours == 12) hours = 0;
+    if (hours > 23) hours = 0;
     
     rtc_seconds = seconds;
     rtc_minutes = minutes;

@@ -270,9 +270,11 @@ void int_to_string(uint32_t value, char* buffer);
 void delay_ms(uint32_t ms);
 
 void init_descriptor_tables(void);
-void pmm_init(uint64_t mem_size);
+void pmm_init(uint32_t mmap_addr, uint32_t mmap_len, uint64_t mem_size);
+void pmm_reserve(uintptr_t base, size_t len);
 void* kmalloc(size_t size);
 void kfree(void* ptr);
+size_t ksize(void* ptr);
 uintptr_t virt_to_phys(void* addr);
 
 uint32_t pci_config_read(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);

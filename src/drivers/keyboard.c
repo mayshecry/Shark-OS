@@ -50,7 +50,6 @@ void keyboard_handler(uint8_t scancode) {
             key_head = next;
         }
     }
-    outb(0x20, 0x20);
 }
 
 char keyboard_getchar() {

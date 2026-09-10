@@ -12,16 +12,20 @@ void pci_config_write(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, u
     outl(0xCFC, value);
 }
 
+uint32_t pci_read_header_type(uint8_t bus, uint8_t slot, uint8_t func) {
+    return pci_config_read(bus, slot, func, 0x0C) & 0xFF;
+}
+
 void pci_list_devices() {
-    char buffer[11];
     int count = 0;
     for (uint32_t bus = 0; bus < 256; bus++) {
         for (uint32_t slot = 0; slot < 32; slot++) {
-            for (uint32_t func = 0; func < 8; func++) {
-                uint32_t pci_data = pci_config_read(bus, slot, func, 0);
-                if (pci_data == 0xFFFFFFFF) continue;
-                uint16_t vendor = pci_data & 0xFFFF;
-                uint16_t device = (pci_data >> 16) & 0xFFFF;
+            uint32_t id0 = pci_config_read(bus, slot, 0, 0);
+            if (id0 == 0xFFFFFFFF) continue;
+            count++;
+            if (!(pci_read_header_type(bus, slot, 0) & 0x80)) continue;
+            for (uint32_t func = 1; func < 8; func++) {
+                if (pci_config_read(bus, slot, func, 0) == 0xFFFFFFFF) continue;
                 count++;
             }
         }
