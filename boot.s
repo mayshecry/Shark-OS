@@ -25,9 +25,16 @@
 
 .section .bss
 .align 4096
-.align 16
+# Kernel stack. The shell's execute_command() alone needs ~8.7 KB of frame,
+# and it is called from inside the desktop key handler, so the old 8 KB stack
+# overflowed straight into .data (gdt, mouse/rtc state, window-manager
+# globals) and the desktop crashed on the next full render. 256 KB gives
+# every nested path (IRQ frames included) plenty of headroom, and the
+# browser's recursive interpreter/layout code checks the remaining headroom
+# at run time (br_stack_headroom) instead of trusting frame-size estimates.
+.global stack_bottom
 stack_bottom:
-.skip 8192
+.skip 262144
 .global stack_top
 stack_top:
 
