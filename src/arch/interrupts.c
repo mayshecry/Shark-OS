@@ -1,25 +1,23 @@
 #include "kernel.h"
 
 void irq_handler(struct registers* r) {
-    uint32_t irq = r->int_no - 32;
+    if (r->int_no >= 40) outb(0xA0, 0x20);
+    outb(0x20, 0x20);
 
-    if (r->int_no == 32) {
-        uptime_ticks++;
-    } else if (r->int_no == 33) {
+    if (r->int_no == 33) {
         uint8_t scancode = inb(0x60);
         keyboard_handler(scancode);
-    } else if (r->int_no == 39) {
-        uint8_t isr = inb(0x20);
-        if (!(isr & 0x80)) return;
-    } else if (r->int_no == 44 && mouse_enabled) {
-        mouse_handler();
-    } else if (r->int_no == 47) {
-        uint8_t isr = inb(0xA0);
-        if (!(isr & 0x80)) return;
     }
-
-    if (irq >= 8) outb(0xA0, 0x20);
-    outb(0x20, 0x20);
+    if (r->int_no == 44 && mouse_enabled) {
+        mouse_handler();
+    }
+    if (r->int_no == 32) {
+        uptime_ticks++;
+    }
+    
+    if (r->int_no >= 40) {
+        outb(0x20, 0x20);
+    }
 }
 
 void syscall_handler(struct registers* r) {

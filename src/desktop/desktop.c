@@ -219,14 +219,6 @@ static void desktop_wallpaper_rebuild_cache(int w, int h) {
     uint32_t ww = (uint32_t)WALLPAPER_WIDTH;
     uint32_t wh = (uint32_t)WALLPAPER_HEIGHT;
 
-    uint16_t* xmap = (uint16_t*)kmalloc((size_t)w * sizeof(uint16_t));
-    if (!xmap) return;
-    for (int x = 0; x < w; x++) {
-        uint32_t sx = ((uint32_t)x * ww) / (uint32_t)w;
-        if (sx >= ww) sx = ww - 1;
-        xmap[x] = (uint16_t)sx;
-    }
-
     for (int y = 0; y < h; y++) {
         uint32_t sy = 0;
         if (wh) sy = ((uint32_t)y * wh) / (uint32_t)h;
@@ -234,10 +226,11 @@ static void desktop_wallpaper_rebuild_cache(int w, int h) {
         const uint32_t* srow = &wallpaper_pixels[sy * ww];
         uint32_t* drow = &wallpaper_cache[y * w];
         for (int x = 0; x < w; x++) {
-            drow[x] = 0xFF000000u | (srow[xmap[x]] & 0x00FFFFFFu);
+            uint32_t sx = ((uint32_t)x * ww) / (uint32_t)w;
+            if (sx >= ww) sx = ww - 1;
+            drow[x] = 0xFF000000u | (srow[sx] & 0x00FFFFFFu);
         }
     }
-    kfree(xmap);
 }
 
 void desktop_draw_wallpaper(void) {

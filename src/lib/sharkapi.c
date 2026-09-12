@@ -70,20 +70,13 @@ void* sharkapi_malloc(size_t size) {
 }
 
 void sharkapi_free(void* ptr) {
-    kfree(ptr);
 }
 
 void* sharkapi_realloc(void* ptr, size_t size) {
-    if (!ptr) return kmalloc(size);
-    if (size == 0) {
-        kfree(ptr);
-        return NULL;
-    }
-    size_t old = ksize(ptr);
     void* new_ptr = kmalloc(size);
-    if (!new_ptr) return NULL;
-    memcpy(new_ptr, ptr, old < size ? old : size);
-    kfree(ptr);
+    if (new_ptr && ptr) {
+        memcpy(new_ptr, ptr, size);
+    }
     return new_ptr;
 }
 

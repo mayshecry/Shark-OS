@@ -52,15 +52,11 @@ void w98_fill_dither(int x, int y, int w, int h) {
      * to absolute screen coordinates so it stays put while windows move. */
     for (int py = y0; py < y1; py++) {
         uint32_t* row = &lfbptr[(uint32_t)py * stride];
-        uint32_t even = (py & 1) ? W98_DESKTOP_DARK : W98_DESKTOP;
-        uint32_t odd  = (py & 1) ? W98_DESKTOP : W98_DESKTOP_DARK;
-        int px = x0;
-        if (px & 1) row[px++] = odd;
-        for (; px + 2 <= x1; px += 2) {
-            row[px] = even;
-            row[px + 1] = odd;
+        uint32_t first = (py & 1) ? W98_DESKTOP_DARK : W98_DESKTOP;
+        uint32_t second = (py & 1) ? W98_DESKTOP : W98_DESKTOP_DARK;
+        for (int px = x0; px < x1; px++) {
+            row[px] = (px & 1) ? second : first;
         }
-        if (px < x1) row[px] = even;
     }
 }
 
@@ -229,54 +225,28 @@ static void w98_glyph_cell(char c, int x, int y, uint32_t fg, uint32_t bg,
                            int scale, const w98_rect_t* clip) {
     if (c < 32 || c > 126) return;
 
+    uint8_t glyph[8];
+    for (int r = 0; r < 8; r++) glyph[r] = font8x8[c - 32][r];
+
     int x0, y0, x1, y1;
     if (!w98_clip(clip, x, y, 8 * scale, 8 * scale, &x0, &y0, &x1, &y1)) return;
 
-    const uint8_t* glyph = font8x8[c - 32];
     uint32_t stride = screen_pitch / 4;
 
-    if (scale == 1) {
-        int g0 = x0 - x;
-        int g1 = x1 - x;
-        for (int py = y0; py < y1; py++) {
-            uint8_t bits = glyph[py - y];
-            uint32_t* row = &lfbptr[(uint32_t)py * stride];
-            int px = x0;
-            for (int g = g0; g < g1; g++, px++) {
-                row[px] = ((bits >> (7 - g)) & 1) ? fg : bg;
-            }
-        }
-        return;
-    }
-
-    int grow = (y0 - y) / scale;
-    int gy = (y0 - y) - grow * scale;
-
     for (int py = y0; py < y1; py++) {
-        if (grow > 7) break;
-        uint8_t bits = (grow >= 0) ? glyph[grow] : 0;
+        int grow = (py - y) / scale;
+        if (grow < 0 || grow > 7) continue;
+        uint8_t bits = glyph[grow];
         uint32_t* row = &lfbptr[(uint32_t)py * stride];
-
-        int gcol = (x0 - x) / scale;
-        int gx = (x0 - x) - gcol * scale;
-        int px = x0;
-
-        while (px < x1) {
-            uint32_t color = (gcol < 0 || gcol > 7)
-                             ? bg
-                             : (((bits >> (7 - gcol)) & 1) ? fg : bg);
-            int run = scale - gx;
-            if (px + run > x1) run = x1 - px;
-            uint32_t* rp = &row[px];
-            for (int k = 0; k < run; k++) rp[k] = color;
-            px += run;
-            gx = 0;
-            gcol++;
-        }
-
-        if (++gy == scale) {
-            gy = 0;
-            grow++;
+        for (int px = x0; px < x1; px++) {
+            int gcol = (px - x) / scale;
+            uint32_t color;
+            if (gcol < 0 || gcol > 7) {
+                color = bg;                       /* padding column */
+            } else {
+                color = ((bits >> (7 - gcol)) & 1) ? fg : bg;
+            }
+            row[px] = color;
         }
     }
 }

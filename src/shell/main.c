@@ -108,18 +108,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         total_system_memory = 2147483648;
     }
     
-    uint32_t mmap_a = 0, mmap_l = 0;
-    if (mb_info->flags & (1 << 6)) {
-        mmap_a = mb_info->mmap_addr;
-        mmap_l = mb_info->mmap_length;
-    }
-    pmm_init(mmap_a, mmap_l, total_system_memory);
-    if (mb_info->framebuffer_addr_lo) {
-        size_t fb_bytes = (size_t)mb_info->framebuffer_pitch * mb_info->framebuffer_height;
-        if (fb_bytes) {
-            pmm_reserve((uintptr_t)mb_info->framebuffer_addr_lo, fb_bytes);
-        }
-    }
+    pmm_init(total_system_memory);
     ui_init_metrics();
 
     pane_count = 1;

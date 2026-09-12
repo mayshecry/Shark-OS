@@ -1,23 +1,35 @@
 #include "kernel.h"
 
+static uint8_t rtc_read(uint8_t reg) {
+    outb(0x70, reg);
+    return inb(0x71);
+}
+
 static void rtc_get_datetime(char* buf, int buflen) {
     (void)buflen;
-    uint32_t sec = rtc_seconds;
-    uint32_t min = rtc_minutes;
-    uint32_t hour = rtc_hours;
-    uint32_t day = rtc_day;
-    uint32_t month = rtc_month;
-    uint32_t year = rtc_year;
+    uint8_t sec = rtc_read(0x00);
+    uint8_t min = rtc_read(0x02);
+    uint8_t hour = rtc_read(0x04);
+    uint8_t day = rtc_read(0x07);
+    uint8_t month = rtc_read(0x08);
+    uint8_t year = rtc_read(0x09);
+
+    uint8_t reg_b = rtc_read(0x0B);
+    if (!(reg_b & 0x04)) {
+        sec = (sec & 0x0F) + ((sec >> 4) * 10);
+        min = (min & 0x0F) + ((min >> 4) * 10);
+        hour = (hour & 0x0F) + ((hour >> 4) * 10);
+        day = (day & 0x0F) + ((day >> 4) * 10);
+        month = (month & 0x0F) + ((month >> 4) * 10);
+        year = (year & 0x0F) + ((year >> 4) * 10);
+    }
 
     int pos = 0;
     int_to_string(day, buf + pos); pos = strlen(buf);
     buf[pos++] = '/';
     int_to_string(month, buf + pos); pos = strlen(buf);
     buf[pos++] = '/';
-    buf[pos++] = '0' + ((year / 1000) % 10);
-    buf[pos++] = '0' + ((year / 100) % 10);
-    buf[pos++] = '0' + ((year / 10) % 10);
-    buf[pos++] = '0' + (year % 10);
+    buf[pos++] = '2'; buf[pos++] = '0'; buf[pos++] = '0' + ((year / 10) % 10); buf[pos++] = '0' + (year % 10);
     buf[pos++] = ' ';
     int_to_string(hour, buf + pos); pos = strlen(buf);
     buf[pos++] = ':';
@@ -53,11 +65,14 @@ static void ui_draw_gradient_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h
     uint8_t r_t = (color_top >> 16) & 0xFF, g_t = (color_top >> 8) & 0xFF, b_t = color_top & 0xFF;
     uint8_t r_b = (color_bot >> 16) & 0xFF, g_b = (color_bot >> 8) & 0xFF, b_b = color_bot & 0xFF;
     for (uint32_t dy = 0; dy < h; dy++) {
-        uint8_t r = (uint8_t)(r_t + (uint32_t)((r_b - r_t) * dy / h));
-        uint8_t g = (uint8_t)(g_t + (uint32_t)((g_b - g_t) * dy / h));
-        uint8_t b = (uint8_t)(b_t + (uint32_t)((b_b - b_t) * dy / h));
+        uint8_t r = r_t + (r_b - r_t) * dy / h;
+        uint8_t g = g_t + (g_b - g_t) * dy / h;
+        uint8_t b = b_t + (b_b - b_t) * dy / h;
         uint32_t row_color = 0xFF000000 | (r << 16) | (g << 8) | b;
-        fill32(&lfbptr[(y + dy) * stride + x], row_color, w);
+        for (uint32_t dx = 0; dx < w; dx++) {
+            uint32_t* pixel = &lfbptr[(y + dy) * stride + (x + dx)];
+            *pixel = row_color;
+        }
     }
 }
 
