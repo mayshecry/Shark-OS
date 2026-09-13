@@ -1,13 +1,4 @@
-/* desktop.c - Win98-style desktop environment for SharkOS.
- *
- * Rendering model: desktop_render() composes wallpaper -> icons -> windows ->
- * start menu -> taskbar -> mouse cursor into the lfbptr back buffer and then
- * flushes once. Nothing in this file writes to hw_lfbptr directly.
- *
- * The wallpaper image used to be rescaled (736x460 -> fullscreen) on every
- * frame with per-pixel fixed point math. It is now scaled once into a cached
- * buffer and blitted with memcpy per row.
- */
+
 
 #include "kernel.h"
 #include "desktop.h"
@@ -30,7 +21,6 @@ static int wallpaper_cache_w = 0;
 static int wallpaper_cache_h = 0;
 static bool wallpaper_dirty = true;
 
-/* Double-click: 400ms. uptime_ticks runs at 1000 Hz. */
 #define DOUBLE_CLICK_TICKS 400
 
 void desktop_set_wallpaper_color(uint32_t top, uint32_t bottom) {
@@ -56,11 +46,6 @@ void desktop_icons_clear_selection(void) {
     if (changed) desktop.dirty = true;
 }
 
-/* ------------------------------------------------------------ icon layout */
-
-/* Explorer layout: top-to-bottom, then next column. The old grid ran left to
- * right across the screen, which wastes the tall desktop and looks nothing
- * like Win98. */
 void desktop_layout_icons(void) {
     int cell_w = W98_ICON_CELL_W;
     int cell_h = W98_ICON_CELL_H;
@@ -101,10 +86,9 @@ void desktop_icon_remove(int idx) {
 }
 
 static int desktop_icon_label_rows(const char* label) {
-    return ((int)strlen(label) + 11) / 12;      /* 12 chars per row at 6px */
+    return ((int)strlen(label) + 11) / 12;
 }
 
-/* Hit area = the 32x32 glyph plus its label band, like Explorer. */
 int desktop_icon_hit_test(int mx, int my) {
     for (int i = 0; i < desktop.icon_count; i++) {
         desktop_icon_t* icon = &desktop.icons[i];
@@ -132,7 +116,7 @@ void desktop_icon_launch_offset(window_type_t type, const char* title) {
     } else if (type == WINDOW_TYPE_FAQ) {
         win_w = 480; win_h = 420;
     } else if (type == WINDOW_TYPE_BROWSER) {
-        /* One browser at a time: the engine has a single document. */
+
         for (int i = 0; i < desktop.window_count; i++) {
             if (desktop.windows[i].type == WINDOW_TYPE_BROWSER) {
                 if (desktop.windows[i].state == WINDOW_STATE_MINIMIZED) window_restore(i);
@@ -194,8 +178,6 @@ void desktop_icon_launch(int idx) {
     desktop_icon_launch_offset(desktop.icons[idx].type, desktop.icons[idx].label);
 }
 
-/* ---------------------------------------------------------------- wallpaper */
-
 static void desktop_wallpaper_rebuild_cache(int w, int h) {
     if (w <= 0 || h <= 0) return;
 
@@ -248,7 +230,7 @@ void desktop_draw_wallpaper(void) {
         return;
     }
 
-    /* Image mode. Rescale once, then blit one row at a time. */
+
     if (wallpaper_dirty || !wallpaper_cache ||
         wallpaper_cache_w != w || wallpaper_cache_h != h) {
         desktop_wallpaper_rebuild_cache(w, h);
@@ -264,12 +246,9 @@ void desktop_draw_wallpaper(void) {
         return;
     }
 
-    /* The cache allocation failed; fall back to the dither so the desktop is
-     * never unpainted. */
+
     w98_fill_dither(0, 0, w, h);
 }
-
-/* -------------------------------------------------------------------- icons */
 
 void desktop_draw_icons(void) {
     for (int i = 0; i < desktop.icon_count; i++) {
@@ -278,8 +257,7 @@ void desktop_draw_icons(void) {
         int iy = icon->icon_y;
 
         if (icon->selected) {
-            /* Explorer selection: highlight behind the label only, plus a
-             * dotted outline around the glyph. */
+
             int rows = desktop_icon_label_rows(icon->label);
             int lx = ix - 6;
             int lw = W98_DESKTOP_ICON + 12;
@@ -302,8 +280,7 @@ void desktop_draw_icons(void) {
                           NULL);
         }
 
-        /* Labels wider than the cell wrap onto a second row, like
-         * Explorer, instead of spilling into the neighbour. */
+
         char line1[16], line2[16];
         int len = (int)strlen(icon->label);
         if (len > 12) {
@@ -335,8 +312,6 @@ void desktop_draw_icons(void) {
     }
 }
 
-/* ------------------------------------------------------------------ taskbar */
-
 static int taskbar_button_x(int slot) {
     return W98_STARTBTN_W + 6 + slot * (W98_TASKBTN_W + 2);
 }
@@ -367,12 +342,12 @@ void desktop_draw_taskbar(void) {
     int bar_y = (int)screen_height - TASKBAR_HEIGHT;
     int bar_w = (int)screen_width;
 
-    /* Raised bar, highlight along the top edge only. */
+
     w98_fill(0, bar_y, bar_w, TASKBAR_HEIGHT, W98_BTNFACE);
     draw_rect(0, bar_y, bar_w, 1, W98_BTNHILITE);
     draw_rect(0, bar_y + 1, bar_w, 1, W98_BTNLIGHT);
 
-    /* Start button. */
+
     bool start_pressed = desktop.start_menu.active;
     int sx = 2, sy = bar_y + 2;
     w98_fill(sx, sy, W98_STARTBTN_W, W98_STARTBTN_H, W98_BTNFACE);
@@ -385,12 +360,12 @@ void desktop_draw_taskbar(void) {
     w98_text_bold("Start", sx + 22 + ox, sy + 8 + ox, W98_BTNTEXT,
                   W98_BTNFACE, 1, NULL);
 
-    /* Separator groove after the start button. */
+
     int gx = W98_STARTBTN_W + 3;
     draw_rect(gx, bar_y + 3, 1, TASKBAR_HEIGHT - 6, W98_BTNSHADOW);
     draw_rect(gx + 1, bar_y + 3, 1, TASKBAR_HEIGHT - 6, W98_BTNHILITE);
 
-    /* Task buttons, one per open or minimized window. */
+
     int slot = 0;
     for (int i = 0; i < desktop.window_count; i++) {
         window_t* w = &desktop.windows[i];
@@ -420,7 +395,7 @@ void desktop_draw_taskbar(void) {
                      bx + bw - cx - (active ? 16 : 5), 1);
 
         if (active) {
-            /* Dithered interior marks the focused window, like Win98. */
+
             for (int dx = bx + 3; dx < bx + bw - 3; dx += 2) {
                 for (int dy = bar_y + 5; dy < bar_y + TASKBAR_HEIGHT - 5; dy += 2) {
                     draw_pixel(dx, dy, W98_BTNSHADOW);
@@ -434,7 +409,7 @@ void desktop_draw_taskbar(void) {
         slot++;
     }
 
-    /* Clock tray, sunk on the right. */
+
     char time_str[16];
     int hh = (int)rtc_hours;
     const char* suffix = "";
@@ -459,7 +434,7 @@ void desktop_draw_taskbar(void) {
     int tray_x = bar_w - tray_w - 3;
     int tray_y = bar_y + 3;
 
-    /* Room for the network indicator inside the tray, left of the clock. */
+
     int net_icon_w = 0;
     int has_nic = net_driver_name[0] && net_driver_name[0] != 'n';
     if (has_nic) net_icon_w = 20;
@@ -470,17 +445,15 @@ void desktop_draw_taskbar(void) {
     w98_bevel(tray_x, tray_y, tray_w, W98_TRAY_H, W98_BEVEL_SUNKEN);
 
     if (has_nic) {
-        /* Win98 "two monitors" network icon: 16x12. Screens light up
-         * blue when bound, grey while DHCP is still working, and a red
-         * cross covers them when the link is down. */
+
         int ix = tray_x + 5, iy = tray_y + 5;
         int st = net_dhcp_state();
         uint32_t screen = net_has_link ? (st == 3 ? 0xFF1084D0u : 0xFF808080u) : 0xFF404040u;
         for (int k = 0; k < 2; k++) {
             int ox = ix + k * 7, oy = iy + (k ? 3 : 0);
-            w98_fill(ox, oy, 8, 7, W98_BTNDKSHADOW);          /* bezel */
+            w98_fill(ox, oy, 8, 7, W98_BTNDKSHADOW);
             w98_fill(ox + 1, oy + 1, 6, 5, screen);
-            w98_fill(ox + 3, oy + 7, 2, 1, W98_BTNDKSHADOW);  /* stand */
+            w98_fill(ox + 3, oy + 7, 2, 1, W98_BTNDKSHADOW);
             w98_fill(ox + 2, oy + 8, 4, 1, W98_BTNDKSHADOW);
         }
         if (!net_has_link) {
@@ -495,11 +468,33 @@ void desktop_draw_taskbar(void) {
              W98_BTNFACE, 1, NULL);
 }
 
-/* ----------------------------------------------------------------- render */
-
 extern void mouse_draw_cursor(void);
 
 extern void mouse_restore_under_cursor(void);
+
+void desktop_invalidate_rect(int x0, int y0, int x1, int y1) {
+    int sw = (int)screen_width;
+    int sh = (int)screen_height;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > sw) x1 = sw;
+    if (y1 > sh) y1 = sh;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    if (!desktop.flush_partial) {
+        desktop.flush_x0 = x0;
+        desktop.flush_y0 = y0;
+        desktop.flush_x1 = x1;
+        desktop.flush_y1 = y1;
+        desktop.flush_partial = true;
+    } else {
+        if (x0 < desktop.flush_x0) desktop.flush_x0 = x0;
+        if (y0 < desktop.flush_y0) desktop.flush_y0 = y0;
+        if (x1 > desktop.flush_x1) desktop.flush_x1 = x1;
+        if (y1 > desktop.flush_y1) desktop.flush_y1 = y1;
+    }
+    desktop.dirty = true;
+}
 
 void desktop_render(void) {
     desktop.dirty = false;
@@ -516,17 +511,24 @@ void desktop_render(void) {
         mouse_draw_cursor();
     }
 
-    flush_screen_to_hw();
+    if (desktop.flush_partial) {
+        int y0 = desktop.flush_y0;
+        int y1 = desktop.flush_y1;
+        desktop.flush_partial = false;
+
+
+        if (y1 - y0 > (int)screen_height * 2 / 3) {
+            flush_screen_to_hw();
+        } else {
+            flush_rows_to_hw(y0, y1);
+        }
+    } else {
+        flush_screen_to_hw();
+    }
 }
 
-/* Pointer-only update. A mouse move used to mark the whole desktop dirty,
- * which recomposed wallpaper + icons + every window and pushed the full
- * frame to VRAM - several milliseconds per pixel of movement on a slow
- * machine. Nothing but the pointer changed, so restore the pixels that were
- * under the old arrow, draw it at the new spot and flush only the rows that
- * were touched. */
 void desktop_render_cursor_only(int old_x, int old_y) {
-    (void)old_x;                      /* whole rows are flushed */
+    (void)old_x;
     if (!mouse_enabled) return;
 
     mouse_restore_under_cursor();
@@ -537,12 +539,9 @@ void desktop_render_cursor_only(int old_x, int old_y) {
     flush_rows_to_hw(y0, y1);
 }
 
-/* Some windows redraw depending on where the pointer is (hover highlights in
- * Settings, File Manager and the Start menu). Only those need a real
- * repaint on pointer motion. */
 bool desktop_pointer_needs_repaint(int mx, int my) {
     if (desktop.start_menu.visible) return true;
-    if (desktop_mouse_down) return true;      /* dragging / resizing */
+    if (desktop_mouse_down) return true;
     for (int i = 0; i < desktop.window_count; i++) {
         window_t* w = &desktop.windows[i];
         if (!w->visible || w->state == WINDOW_STATE_MINIMIZED) continue;
@@ -554,8 +553,6 @@ bool desktop_pointer_needs_repaint(int mx, int my) {
     }
     return false;
 }
-
-/* ------------------------------------------------------------------- input */
 
 void desktop_handle_mouse(int mx, int my, int buttons) {
     desktop_mouse_x = mx;
@@ -571,8 +568,7 @@ void desktop_handle_mouse(int mx, int my, int buttons) {
                 desktop.dirty = true;
                 return;
             } else if (taskbar_hit >= 0) {
-                /* Clicking a task button while the menu is open closes the
-                 * menu and swallows the click, like Win98. */
+
                 if (desktop.start_menu.visible) {
                     start_menu_close();
                     desktop.dirty = true;
@@ -599,8 +595,7 @@ void desktop_handle_mouse(int mx, int my, int buttons) {
                     return;
                 }
 
-                /* Click inside a focused window's client area first so its
-                 * mouse_func sees the event before drag logic runs. */
+
                 window_t* focused_click = NULL;
                 int focus_idx = -1;
                 for (int i = desktop.window_count - 1; i >= 0; i--) {
@@ -633,7 +628,7 @@ void desktop_handle_mouse(int mx, int my, int buttons) {
                     window_caption_pressed() < 0) {
                     int icon_idx = desktop_icon_hit_test(mx, my);
                     if (icon_idx >= 0) {
-                        /* Select immediately; launch on double-click. */
+
                         if (desktop.selected_icon != icon_idx) {
                             desktop_icons_clear_selection();
                             desktop.icons[icon_idx].selected = true;
@@ -674,7 +669,7 @@ void desktop_handle_mouse(int mx, int my, int buttons) {
 
 void desktop_handle_keyboard(char c) {
     if (c == 27 && ctrl_pressed) {
-        /* Ctrl+Esc: Task Manager (Win98 had Ctrl+Alt+Del for this). */
+
         for (int i = 0; i < desktop.window_count; i++) {
             if (desktop.windows[i].type == WINDOW_TYPE_TASKMANAGER) {
                 if (desktop.windows[i].state == WINDOW_STATE_MINIMIZED) {
@@ -718,9 +713,7 @@ void desktop_handle_keyboard(char c) {
             desktop.dirty = true;
             return;
         }
-        /* ESC used to close the focused window unconditionally, which made
-         * the escape key useless inside Notepad et al. Only windows without
-         * a keyboard handler (pure info dialogs) close on ESC. */
+
         if (focused && focused->visible &&
             focused->state == WINDOW_STATE_NORMAL &&
             !focused->keyboard_func) {
@@ -729,8 +722,6 @@ void desktop_handle_keyboard(char c) {
         }
     }
 }
-
-/* -------------------------------------------------------------------- init */
 
 void boot_screen_show(void);
 void boot_screen_hide(void);

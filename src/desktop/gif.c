@@ -1,16 +1,13 @@
-/* GIF decoder (GIF87a/GIF89a) for SharkOS: first frame only, global/local
- * palettes, interlacing, transparency via the Graphic Control Extension.
- * LZW with the classic 12-bit code table; integer-only, no allocation
- * beyond caller buffers. Output is 0xAARRGGBB. */
+
 
 #include "kernel.h"
 
 typedef struct {
     const uint8_t* d;
     size_t len, pos;
-    /* sub-block reader */
+
     int block_left;
-    /* bit reader */
+
     uint32_t bitbuf;
     int bitcnt;
     int eof;
@@ -20,7 +17,7 @@ static int gif_byte(gif_rd_t* r) {
     while (r->block_left == 0) {
         if (r->pos >= r->len) { r->eof = 1; return 0; }
         r->block_left = r->d[r->pos++];
-        if (r->block_left == 0) { r->eof = 1; return 0; }        /* block terminator */
+        if (r->block_left == 0) { r->eof = 1; return 0; }
     }
     if (r->pos >= r->len) { r->eof = 1; return 0; }
     r->block_left--;
@@ -38,14 +35,10 @@ static int gif_bits(gif_rd_t* r, int n) {
     return v;
 }
 
-/* LZW tables: prefix/suffix/length, 4096 entries. Kept static (48 KB) so
- * decoding never touches the kernel stack. */
 static uint16_t lzw_prefix[4096];
 static uint8_t  lzw_suffix[4096];
 static uint8_t  lzw_stack[4097];
 
-/* Decodes into idx[w*h] (palette indices; 0xFF..? no: 256 = transparent
- * marker handled by caller via transparent index). Returns 0 on success. */
 static int gif_lzw(gif_rd_t* r, uint8_t* out, uint32_t npix, int min_code) {
     if (min_code < 2 || min_code > 8) return -1;
     int clear = 1 << min_code, eoi = clear + 1;
@@ -62,8 +55,8 @@ static int gif_lzw(gif_rd_t* r, uint8_t* out, uint32_t npix, int min_code) {
         int sp = 0;
         int c = code;
         if (code >= next) {
-            if (prev < 0 || code != next) return o > 0 ? 0 : -1;    /* corrupt: keep what we have */
-            /* KwKwK case: output prev string + its first char */
+            if (prev < 0 || code != next) return o > 0 ? 0 : -1;
+
             c = prev;
             int p = prev; int g2 = 0;
             while (lzw_prefix[p] != 0xFFFF && g2++ < 4096) p = lzw_prefix[p];
@@ -101,18 +94,18 @@ int gif_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
     int transparent = -1;
     while (pos < len) {
         uint8_t b = data[pos++];
-        if (b == 0x21) {                                   /* extension */
+        if (b == 0x21) {
             if (pos >= len) return -1;
             uint8_t label = data[pos++];
             if (label == 0xF9 && pos + 5 < len && data[pos] == 4) {
                 if (data[pos + 1] & 1) transparent = data[pos + 4];
             }
-            /* skip sub-blocks */
+
             while (pos < len) { uint8_t sz = data[pos++]; if (sz == 0) break; pos += sz; }
             continue;
         }
-        if (b == 0x3B) break;                              /* trailer */
-        if (b != 0x2C) return -1;                          /* image descriptor expected */
+        if (b == 0x3B) break;
+        if (b != 0x2C) return -1;
         if (pos + 9 > len) return -1;
         int ix = data[pos] | (data[pos + 1] << 8), iy = data[pos + 2] | (data[pos + 3] << 8);
         int w = data[pos + 4] | (data[pos + 5] << 8), h = data[pos + 6] | (data[pos + 7] << 8);
@@ -139,7 +132,7 @@ int gif_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
         if (gif_lzw(&r, idx, (uint32_t)w * h, min_code) != 0) return -1;
         uint8_t (*pal)[3] = lpal_n ? lpal : gpal;
         int pal_n = lpal_n ? lpal_n : gpal_n;
-        /* de-interlace + palette */
+
         int row_map_pass[4] = { 0, 4, 2, 1 }, row_step[4] = { 8, 8, 4, 2 };
         int src_row = 0;
         if (interlaced) {
@@ -162,7 +155,7 @@ int gif_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
             }
         }
         *out_w = w; *out_h = h;
-        return 0;                                          /* first frame only */
+        return 0;
     }
     return -1;
 }

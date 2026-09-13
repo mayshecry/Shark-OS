@@ -1,9 +1,4 @@
-/* appwindows.c - Win98-styled client areas for the SharkOS desktop apps.
- *
- * Behaviour is unchanged from the previous version (buffers, key handlers,
- * file manager navigation); only the painting now follows the Windows 98
- * system palette. Every colour comes from include/win98_theme.h.
- */
+
 
 #include "kernel.h"
 #include "desktop.h"
@@ -27,24 +22,12 @@ static void kstrcat(char* dst, const char* src) {
     while ((*dst++ = *src++));
 }
 
-/* Label/value rows used by the info-style windows. */
 static void label_value(int lx, int vx, int y, const char* label,
                         const char* value, uint32_t vcolor) {
     w98_text_bold(label, lx, y, W98_BTNTEXT, W98_BTNFACE, 1, NULL);
     w98_text(value, vx, y, vcolor, W98_BTNFACE, 1, NULL);
 }
 
-/* ----------------------------------------------------------------- terminal */
-
-/* The terminal window keeps a scrollback of the last TERM_SCROLLBACK bytes of
- * "$ command" lines and captured command output. Older text falls off the
- * top, and the painter shows the last lines that fit in the client area, so
- * long output (help, neofetch, tree) is no longer cut to one command's worth
- * and never overruns the buffer.
- *
- * Command output is collected with terminal_capture_begin(): every terminal
- * primitive appends to the capture buffer instead of drawing while it is
- * active (see src/ui/terminal.c). */
 #define TERM_SCROLLBACK   8192
 #define TERM_CAPTURE_MAX  4096
 #define TERM_LINE_H       10
@@ -56,7 +39,7 @@ static char terminal_output[TERM_SCROLLBACK] = "";
 static int terminal_output_len = 0;
 static char terminal_capture_store[TERM_CAPTURE_MAX];
 static int terminal_blink = 0;
-static int terminal_history_pos = 0;   /* generation counter for repaints */
+static int terminal_history_pos = 0;
 
 static void terminal_output_append(const char* text, int len) {
     if (len <= 0) return;
@@ -65,7 +48,7 @@ static void terminal_output_append(const char* text, int len) {
         len = TERM_SCROLLBACK - 1;
     }
     if (terminal_output_len + len >= TERM_SCROLLBACK - 1) {
-        /* Drop whole lines from the front until it fits. */
+
         int drop = terminal_output_len + len - (TERM_SCROLLBACK - 1);
         while (drop < terminal_output_len && terminal_output[drop] != '\n') drop++;
         if (drop < terminal_output_len) drop++;
@@ -85,9 +68,6 @@ static void terminal_output_clear(void) {
     terminal_history_pos++;
 }
 
-/* Split the scrollback into display lines (wrapping at `cols`) and return
- * how many there are; when `want` >= 0 the start offset and length of that
- * display line are returned instead. */
 static int terminal_layout_lines(int cols, int want, int* out_start, int* out_len) {
     int count = 0;
     int i = 0;
@@ -141,7 +121,7 @@ void app_window_draw_terminal(window_t* w) {
     w98_rect_t clip;
     clip.x = tx + 2; clip.y = ty + 2; clip.w = tw - 4; clip.h = th - 4;
 
-    /* Prompt + edit line may wrap too. */
+
     int prompt_chars = 2 + terminal_buf_len;
     int prompt_rows = (prompt_chars + cols - 1) / cols;
     if (prompt_rows < 1) prompt_rows = 1;
@@ -160,13 +140,13 @@ void app_window_draw_terminal(window_t* w) {
         if (len > TERM_MAX_COLS) len = TERM_MAX_COLS;
         for (int j = 0; j < len; j++) line_buf[j] = terminal_output[start + j];
         line_buf[len] = '\0';
-        /* Echoed command lines are drawn in the prompt colours. */
+
         uint32_t fg = 0xFFAAAAAA;
         if (len >= 2 && line_buf[0] == '$' && line_buf[1] == ' ') fg = 0xFFFFFF55;
         w98_text(line_buf, tx + 4, ty + 4 + row * TERM_LINE_H, fg, 0xFF000000, 1, &clip);
     }
 
-    /* Prompt and the command being typed. */
+
     int py = ty + 4 + row * TERM_LINE_H;
     w98_text("$ ", tx + 4, py, 0xFF55FF55, 0xFF000000, 1, &clip);
     int col = 2;
@@ -186,9 +166,6 @@ void app_window_draw_terminal(window_t* w) {
     }
 }
 
-/* Commands that take over the whole screen or block waiting for keys can't
- * run from inside the desktop Terminal window (there is no separate task, so
- * they would freeze the desktop). They still work from the Lite console. */
 static bool terminal_cmd_blocked(const char* cmd, char* why, int why_len) {
     static const char* blocked[] = {
         "edit", "guess", "tictactoe", "python", "doom", "flappybird", "smb",
@@ -220,7 +197,7 @@ static bool terminal_cmd_blocked(const char* cmd, char* why, int why_len) {
 static void terminal_run_command(window_t* w) {
     terminal_buffer[terminal_buf_len] = '\0';
 
-    /* Echo the command line into the scrollback. */
+
     terminal_output_append("$ ", 2);
     terminal_output_append(terminal_buffer, terminal_buf_len);
     terminal_output_append("\n", 1);
@@ -231,10 +208,7 @@ static void terminal_run_command(window_t* w) {
     } else if (strcmp(terminal_buffer, "clear") == 0 || strcmp(terminal_buffer, "cls") == 0) {
         terminal_output_clear();
     } else {
-        /* Run the command with all terminal output redirected into
-         * terminal_capture_store. The shell's execute_command() has a
-         * large stack frame; the kernel stack was enlarged (64 KB, now 256 KB) in
-         * boot.s so this nested call is safe. */
+
         uint8_t saved_color = terminal_color;
         terminal_in_desktop_window = true;
         terminal_capture_begin(terminal_capture_store, TERM_CAPTURE_MAX);
@@ -247,11 +221,10 @@ static void terminal_run_command(window_t* w) {
 
         if (cleared) terminal_output_clear();
 
-        /* execute_command() starts every command with a newline; drop it so
-         * output starts right under the echoed command. */
+
         const char* out = terminal_capture_store;
         while (len > 0 && *out == '\n') { out++; len--; }
-        /* Collapse trailing blank lines to a single newline. */
+
         while (len > 1 && out[len - 1] == '\n' && out[len - 2] == '\n') len--;
         if (len > 0) {
             terminal_output_append(out, len);
@@ -264,8 +237,6 @@ static void terminal_run_command(window_t* w) {
     w->needs_redraw = true;
     desktop.dirty = true;
 }
-
-/* ------------------------------------------------------------------- games */
 
 void app_window_draw_doom(window_t* w) {
     doom_set_window_rect(w->rect.client_x, w->rect.client_y,
@@ -293,8 +264,6 @@ void app_window_draw_gdash(window_t* w) {
     gd_draw_frame();
 }
 
-/* ----------------------------------------------------------------- settings */
-
 typedef struct {
     uint32_t color;
     const char* label;
@@ -314,10 +283,8 @@ static const settings_color_opt_t settings_colors[] = {
 
 #define SETTINGS_ROW_H 16
 
-static int settings_hover = -1;   /* 0..2 radio, 10..17 swatch, 99 shutdown */
+static int settings_hover = -1;
 
-/* Shared layout so the painter and the mouse handler agree.
- * Returns the y position of the shutdown button. */
 static int settings_layout(window_t* w, int* radio_y, int* swatch_y,
                            int* btn_y) {
     int cy = w->rect.client_y;
@@ -331,7 +298,7 @@ static int settings_layout(window_t* w, int* radio_y, int* swatch_y,
 
 static void settings_draw_radio(int x, int y, bool on, const char* label,
                                 bool hovered) {
-    /* 12x12 sunken white circle-ish square, black dot when selected. */
+
     w98_surface(x, y, 12, 12, W98_BEVEL_SUNKEN, W98_WINDOW);
     if (on) {
         w98_fill(x + 4, y + 4, 4, 4, W98_BTNTEXT);
@@ -348,8 +315,7 @@ void app_window_draw_settings(window_t* w) {
     int radio_y, swatch_y, btn_y;
     settings_layout(w, &radio_y, &swatch_y, &btn_y);
 
-    /* Hover is derived from the pointer every paint, so it cannot drift from
-     * what the click handler tests. */
+
     settings_hover = -1;
     int mxp = desktop_mouse_x, myp = desktop_mouse_y;
     for (int i = 0; i < 3; i++) {
@@ -375,7 +341,7 @@ void app_window_draw_settings(window_t* w) {
                   W98_BTNTEXT, W98_BTNFACE, 1, NULL);
     w98_bevel(cx + 4, cy + 18, cw - 8, 2, W98_BEVEL_ETCHED);
 
-    /* Wallpaper mode radios. */
+
     w98_text_bold("Wallpaper:", cx + 8, radio_y - 14, W98_BTNTEXT,
                   W98_BTNFACE, 1, NULL);
     const char* modes[3] = { "Teal (dithered)", "Solid colour",
@@ -395,7 +361,7 @@ void app_window_draw_settings(window_t* w) {
         if (settings_hover == 10 + i) {
             w98_fill(cx + 6, ry, cw - 12, SETTINGS_ROW_H - 1, W98_HIGHLIGHT);
         }
-        /* Swatch: flat colour with a sunken ring. */
+
         w98_surface(cx + 10, ry, 16, 14, W98_BEVEL_SUNKEN,
                     settings_colors[i].color);
 
@@ -452,12 +418,6 @@ void app_window_mouse_settings(window_t* w, int mx, int my, int buttons) {
     }
 }
 
-/* --------------------------------------------------------------------- faq */
-
-/* Word-wrap `text` and paint it inside `clip`. `prefix` ("Q: "/"A: ") goes on
- * the first line; continuation lines are indented by `indent` px. Returns the
- * y just below the last line. Nothing is painted past `y_limit`, so a small
- * window shows as much as fits instead of spilling over the frame. */
 static int faq_wrap_text(const char* prefix, const char* text, int x, int y,
                          int max_w, int indent, int y_limit, uint32_t fg,
                          uint32_t bg, bool bold, const w98_rect_t* clip) {
@@ -479,7 +439,7 @@ static int faq_wrap_text(const char* prefix, const char* text, int x, int y,
         if (take > max_chars) {
             take = max_chars;
             int k = take;
-            while (k > 0 && text[p + k] != ' ') k--;   /* keep words whole */
+            while (k > 0 && text[p + k] != ' ') k--;
             if (k > 0) take = k;
         }
         if (take > (int)sizeof(line) - plen - 1) take = (int)sizeof(line) - plen - 1;
@@ -545,7 +505,7 @@ void app_window_draw_faq(window_t* w) {
                   W98_BTNFACE, 1, &clip);
     w98_bevel(cx + 4, cy + 22, cw - 8, 2, W98_BEVEL_ETCHED);
 
-    /* Sunken white panel for the text, like a Win98 help pane. */
+
     int px = cx + 6, py = cy + 30;
     int pw = cw - 12, ph = ch - 36;
     if (pw < 60 || ph < 24) return;
@@ -577,12 +537,6 @@ void app_window_draw_faq(window_t* w) {
     }
 }
 
-/* ------------------------------------------------------------ task manager */
-
-/* Win98-style Task Manager: an Applications list (every desktop window) with
- * End Task / Switch To, a Performance section (CPU load history from the main
- * loop, memory bars, frame rate) and the kernel task table. */
-
 #define TM_ROW_H      13
 
 static void tm_cat(char* dst, const char* src) {
@@ -595,8 +549,8 @@ static void tm_cat(char* dst, const char* src) {
 #define TM_TAB_PROCS  2
 
 static int tm_tab = TM_TAB_APPS;
-static int tm_selected = -1;          /* index into desktop.windows */
-static int tm_selected_z = -1;        /* remembered by z_order so it survives re-sorts */
+static int tm_selected = -1;
+static int tm_selected_z = -1;
 
 typedef struct {
     int tabs_y;
@@ -623,7 +577,7 @@ static void tm_draw_tabs(window_t* w, tm_layout_t* L, const w98_rect_t* clip) {
         bool sel = (i == tm_tab);
         int ty = sel ? L->tabs_y - 2 : L->tabs_y;
         int th = sel ? 20 : 18;
-        /* Tab: raised on top/left/right, open at the bottom. */
+
         w98_fill(tx, ty, tab_w, th, W98_BTNFACE);
         w98_fill(tx, ty, 1, th, W98_BTNHILITE);
         w98_fill(tx + 1, ty, tab_w - 2, 1, W98_BTNHILITE);
@@ -631,7 +585,7 @@ static void tm_draw_tabs(window_t* w, tm_layout_t* L, const w98_rect_t* clip) {
         w98_fill(tx + tab_w - 2, ty + 1, 1, th - 1, W98_BTNSHADOW);
         w98_text(tm_tab_names[i], tx + 8, ty + 6, W98_BTNTEXT, W98_BTNFACE, 1, clip);
     }
-    /* Page border: the selected tab merges into it. */
+
     int page_y = L->tabs_y + 18;
     w98_fill(x, page_y, cw, 1, W98_BTNHILITE);
     int stx = x + tm_tab * tab_w;
@@ -661,7 +615,7 @@ static void tm_draw_applications(window_t* w, tm_layout_t* L, const w98_rect_t* 
     w98_rect_t lc;
     lc.x = x + 2; lc.y = L->list_y + 2; lc.w = cw - 4; lc.h = L->list_h - 4;
 
-    /* Header row */
+
     int hy = L->list_y + 2;
     w98_fill(x + 2, hy, cw - 4, TM_ROW_H, W98_BTNFACE);
     w98_fill(x + 2, hy + TM_ROW_H - 1, cw - 4, 1, W98_BTNSHADOW);
@@ -672,7 +626,7 @@ static void tm_draw_applications(window_t* w, tm_layout_t* L, const w98_rect_t* 
     int rows = (L->list_h - TM_ROW_H - 6) / TM_ROW_H;
     int shown = 0;
 
-    /* Re-resolve the selection: window indices shift when windows close. */
+
     if (tm_selected >= desktop.window_count || tm_selected < 0 ||
         !desktop.windows[tm_selected].visible) {
         tm_selected = -1;
@@ -692,7 +646,7 @@ static void tm_draw_applications(window_t* w, tm_layout_t* L, const w98_rect_t* 
         uint32_t fg = sel ? W98_HIGHLIGHTTEXT : W98_WINDOWTEXT;
         if (sel) w98_fill(x + 2, y, cw - 4, TM_ROW_H, bg);
 
-        /* 16x16 icon scaled from the 32x32 app icon, then the title. */
+
         const uint32_t* icon = desktop_icon_pixels_for_type(t->type);
         if (icon) {
             for (int iy = 0; iy < 12; iy++) {
@@ -716,7 +670,7 @@ static void tm_draw_applications(window_t* w, tm_layout_t* L, const w98_rect_t* 
         w98_text("(no applications running)", x + 8, y + 3, W98_GRAYTEXT, W98_WINDOW, 1, &lc);
     }
 
-    /* Buttons */
+
     int bw = 78, bh = 22;
     int bx = x + cw - bw;
     bool has_sel = tm_selected >= 0 && tm_selected < desktop.window_count &&
@@ -735,7 +689,7 @@ static void tm_draw_bar(int x, int y, int w, int h, int percent, const char* lab
     int by = y + 11;
     w98_surface(x, by, w, h, W98_BEVEL_SUNKEN, W98_WINDOW);
     int fill_w = (w - 4) * percent / 100;
-    /* Win98 progress: chunky blue blocks. */
+
     for (int bx = 0; bx < fill_w; bx += 8) {
         int seg = (fill_w - bx) < 6 ? (fill_w - bx) : 6;
         w98_fill(x + 2 + bx, by + 2, seg, h - 4, W98_HIGHLIGHT);
@@ -748,7 +702,7 @@ static void tm_draw_bar(int x, int y, int w, int h, int percent, const char* lab
 }
 
 static void tm_fmt_kb(uint32_t bytes, char* out) {
-    /* "12.3 MB" / "512 KB" without floats */
+
     if (bytes >= 1024u * 1024u) {
         uint32_t mb10 = bytes / (1024u * 1024u / 10u);
         int_to_string(mb10 / 10, out);
@@ -767,7 +721,7 @@ static void tm_draw_performance(window_t* w, tm_layout_t* L, const w98_rect_t* c
     int y = L->list_y;
     int bottom = L->btn_y + 22;
 
-    /* --- CPU usage history graph ------------------------------------- */
+
     w98_text_bold("CPU Usage History", x, y, W98_BTNTEXT, W98_BTNFACE, 1, clip);
     y += 12;
     int gh = (bottom - y) / 2 - 40;
@@ -775,12 +729,12 @@ static void tm_draw_performance(window_t* w, tm_layout_t* L, const w98_rect_t* c
     if (gh > 110) gh = 110;
     int gw = cw;
     w98_surface(x, y, gw, gh, W98_BEVEL_SUNKEN, 0xFF000000u);
-    /* grid */
+
     for (int gx = x + 2 + 12; gx < x + gw - 2; gx += 12)
         for (int gy = y + 2; gy < y + gh - 2; gy++) draw_pixel(gx, gy, 0xFF004000u);
     for (int gy = y + 2 + 12; gy < y + gh - 2; gy += 12)
         for (int gx = x + 2; gx < x + gw - 2; gx++) draw_pixel(gx, gy, 0xFF004000u);
-    /* history line, newest on the right, one sample per second */
+
     int inner_w = gw - 4;
     int inner_h = gh - 4;
     int step = inner_w / SYS_CPU_HISTORY;
@@ -804,7 +758,7 @@ static void tm_draw_performance(window_t* w, tm_layout_t* L, const w98_rect_t* c
     }
     y += gh + 8;
 
-    /* --- Live numbers --------------------------------------------------- */
+
     char buf[48], num[16];
     int col2 = x + cw / 2;
 
@@ -813,7 +767,7 @@ static void tm_draw_performance(window_t* w, tm_layout_t* L, const w98_rect_t* c
     extern char _kernel_end[];
     uint32_t total = total_system_memory > 0xFFFFFFFFull ? 0xFFFFFFFFu
                                                          : (uint32_t)total_system_memory;
-    /* Kernel image (from 1 MB) plus everything the bump allocator handed out. */
+
     uint32_t used = (uint32_t)(free_memory_start - 0x100000u);
     (void)_kernel_end;
     if (total && used > total) used = total;
@@ -886,7 +840,7 @@ static void tm_draw_processes(window_t* w, tm_layout_t* L, const w98_rect_t* cli
     int shown = 0;
     char num[16];
 
-    /* Row 0: the kernel itself (main loop) */
+
     w98_text("0", x + 8, y + 3, W98_WINDOWTEXT, W98_WINDOW, 1, &lc);
     w98_text("kernel (sharkos)", x + 44, y + 3, W98_WINDOWTEXT, W98_WINDOW, 1, &lc);
     w98_text("Running", x + 160, y + 3, W98_WINDOWTEXT, W98_WINDOW, 1, &lc);
@@ -912,7 +866,7 @@ static void tm_draw_processes(window_t* w, tm_layout_t* L, const w98_rect_t* cli
     }
     spin_unlock(&task_list_lock);
 
-    /* Loaded plugins count as processes too (they are compiled in). */
+
     int pc = 0;
     plugin_t* pl = plugin_get_list(&pc);
     for (int i = 0; i < pc && shown < rows; i++) {
@@ -947,7 +901,7 @@ void app_window_draw_taskmanager(window_t* w) {
         default:           tm_draw_applications(w, &L, &clip); break;
     }
 
-    /* Status line like Win98's: "Processes: N  CPU Usage: X%  Mem: Y" */
+
     char st[80], num[16];
     strcpy(st, "Windows: ");
     int_to_string((uint32_t)tm_count_task_rows(), num); tm_cat(st, num);
@@ -967,7 +921,7 @@ void app_window_mouse_taskmanager(window_t* w, int mx, int my, int buttons) {
     int x = w->rect.client_x + 6;
     int cw = w->rect.client_w - 12;
 
-    /* Tabs */
+
     if (my >= L.tabs_y - 2 && my < L.tabs_y + 18) {
         int i = (mx - x) / 84;
         if (mx >= x && i >= 0 && i < 3) {
@@ -980,7 +934,7 @@ void app_window_mouse_taskmanager(window_t* w, int mx, int my, int buttons) {
 
     if (tm_tab != TM_TAB_APPS) return;
 
-    /* List rows */
+
     int first_row_y = L.list_y + 2 + TM_ROW_H + 1;
     if (mx >= x && mx < x + cw && my >= first_row_y && my < L.list_y + L.list_h - 2) {
         int row = (my - first_row_y) / TM_ROW_H;
@@ -1001,7 +955,7 @@ void app_window_mouse_taskmanager(window_t* w, int mx, int my, int buttons) {
         return;
     }
 
-    /* Buttons */
+
     int bw = 78, bh = 22;
     int bx_end = x + cw - bw;
     int bx_switch = bx_end - bw - 6;
@@ -1023,7 +977,7 @@ void app_window_mouse_taskmanager(window_t* w, int mx, int my, int buttons) {
                 }
             }
         } else if (mx >= bx_refresh && mx < bx_refresh + bw) {
-            /* nothing to do: the redraw below re-reads everything */
+
         }
         for (int i = 0; i < desktop.window_count; i++) desktop.windows[i].needs_redraw = true;
         desktop.dirty = true;
@@ -1033,13 +987,13 @@ void app_window_mouse_taskmanager(window_t* w, int mx, int my, int buttons) {
 void app_window_keyboard_taskmanager(window_t* w, char c) {
     if (c == '\t') {
         tm_tab = (tm_tab + 1) % 3;
-    } else if (c == 127 || c == 8) {      /* Delete / Backspace: End Task */
+    } else if (c == 127 || c == 8) {
         if (tm_tab == TM_TAB_APPS && tm_selected >= 0 &&
             tm_selected < desktop.window_count && &desktop.windows[tm_selected] != w) {
             window_close(tm_selected);
             tm_selected = -1; tm_selected_z = -1;
         }
-    } else if (c == '\n') {               /* Enter: Switch To */
+    } else if (c == '\n') {
         if (tm_tab == TM_TAB_APPS && tm_selected >= 0 && tm_selected < desktop.window_count) {
             if (desktop.windows[tm_selected].state == WINDOW_STATE_MINIMIZED) window_restore(tm_selected);
             else window_focus(tm_selected);
@@ -1051,8 +1005,6 @@ void app_window_keyboard_taskmanager(window_t* w, char c) {
     w->needs_redraw = true;
     desktop.dirty = true;
 }
-
-/* --------------------------------------------------------------- fastfetch */
 
 void app_window_draw_fastfetch(window_t* w) {
     int cx = w->rect.client_x;
@@ -1138,8 +1090,6 @@ void app_window_draw_fastfetch(window_t* w) {
                 W98_BTNTEXT);
 }
 
-/* ----------------------------------------------------------------- notepad */
-
 static char notepad_buffer[4096] = "";
 static int notepad_len = 0;
 static char notepad_path[128] = "";
@@ -1158,7 +1108,7 @@ void app_window_draw_notepad(window_t* w) {
 
     w98_fill(cx, cy, cw, ch, W98_BTNFACE);
 
-    /* Menu strip. */
+
     int mx = cx + 2;
     for (int i = 0; i < 4; i++) {
         int tw = w98_text_width(notepad_menus[i], 1) + 10;
@@ -1175,7 +1125,7 @@ void app_window_draw_notepad(window_t* w) {
     w98_text(title, cx + cw - w98_text_width(title, 1) - 6, cy + 4,
              W98_GRAYTEXT, W98_BTNFACE, 1, NULL);
 
-    /* White sunken text area. */
+
     int ta_x = cx + 2, ta_y = cy + NOTEPAD_MENU_H + 2;
     int ta_w = cw - 4, ta_h = ch - NOTEPAD_MENU_H - 6;
     w98_surface(ta_x, ta_y, ta_w, ta_h, W98_BEVEL_SUNKEN, W98_WINDOW);
@@ -1256,8 +1206,6 @@ void app_window_keyboard_notepad(window_t* w, char c) {
     w->needs_redraw = true;
 }
 
-/* ------------------------------------------------------------ file manager */
-
 static struct fs_node* fm_current_dir = NULL;
 static int fm_hovered_item = -1;
 static int fm_items_y[21];
@@ -1274,7 +1222,7 @@ void app_window_draw_filemanager(window_t* w) {
 
     if (!fm_current_dir) fm_current_dir = root;
 
-    /* Address bar. */
+
     char path[128] = "";
     struct fs_node* tmp = fm_current_dir;
     char parts[8][32];
@@ -1291,7 +1239,7 @@ void app_window_draw_filemanager(window_t* w) {
     w98_surface(cx + 2, cy + 2, cw - 4, 16, W98_BEVEL_SUNKEN, W98_WINDOW);
     w98_text(path, cx + 6, cy + 6, W98_WINDOWTEXT, W98_WINDOW, 1, NULL);
 
-    /* Listview. */
+
     int lv_y = cy + 22;
     int lv_h = ch - 22 - FM_STATUS_H - 4;
     w98_surface(cx + 2, lv_y, cw - 4, lv_h, W98_BEVEL_SUNKEN, W98_WINDOW);
@@ -1302,7 +1250,7 @@ void app_window_draw_filemanager(window_t* w) {
     fm_hovered_item = -1;
     fm_items_y[0] = y;
 
-    /* ".." entry */
+
     bool hov0 = (desktop_mouse_x >= cx + 6 && desktop_mouse_x < cx + cw - 6 &&
                  desktop_mouse_y >= y && desktop_mouse_y < y + 16);
     if (hov0) {
@@ -1339,7 +1287,7 @@ void app_window_draw_filemanager(window_t* w) {
         y += 16;
     }
 
-    /* Status bar. */
+
     int sb_y = cy + ch - FM_STATUS_H - 2;
     w98_bevel(cx + 2, sb_y, cw - 4, FM_STATUS_H, W98_BEVEL_SUNKEN);
     char status[40];
@@ -1377,8 +1325,6 @@ void app_window_keyboard_filemanager(window_t* w, char c) {
     w->needs_redraw = true;
 }
 
-/* ------------------------------------------------------------------- about */
-
 void app_window_draw_about(window_t* w) {
     int cx = w->rect.client_x;
     int cy = w->rect.client_y;
@@ -1401,8 +1347,6 @@ void app_window_draw_about(window_t* w) {
     w98_text("Created by Mayshecry", cx + cw / 2 - 66, cy + 128,
              W98_GRAYTEXT, W98_BTNFACE, 1, NULL);
 }
-
-/* ----------------------------------------------------------------- network */
 
 static void append_u8(char* dst, uint32_t v) {
     char b[16];
@@ -1446,8 +1390,7 @@ void app_window_draw_network(window_t* w) {
                 !has_nic ? W98_BTNTEXT : net_has_link ? 0xFF008000u : 0xFFA00000u);
     y += 14;
 
-    /* DHCP state straight from the client: this is what the user actually
-     * wants to know when "the internet does not work". */
+
     int st = net_dhcp_state();
     const char* st_name = !has_nic ? "no adapter" :
                           st == 3 ? "bound (DHCP)" :
@@ -1487,7 +1430,7 @@ void app_window_draw_network(window_t* w) {
     }
     y += 6;
 
-    /* Renew button: re-runs discovery in the background. */
+
     int bw = 92, bh = 22;
     w98_button(cx + 8, y, bw, bh, "Renew DHCP", false, has_nic && net_has_link, false);
     w98_text(net_dhcp_status(), cx + 8 + bw + 10, y + 7, W98_GRAYTEXT, W98_BTNFACE, 1, &clip);
@@ -1506,7 +1449,7 @@ void app_window_mouse_network(window_t* w, int mx, int my, int buttons) {
     if (!(buttons & 1)) return;
     int cx = w->rect.client_x;
     int cy = w->rect.client_y;
-    /* Same layout arithmetic as the painter: 26 + 14*3 + 18 + 14*4 (+14 lease) + 6 */
+
     int y = cy + 26 + 14 * 3 + 18 + 14 * 4;
     if (net_dhcp_lease_left()) y += 14;
     y += 6;
@@ -1516,8 +1459,6 @@ void app_window_mouse_network(window_t* w, int mx, int my, int buttons) {
         desktop.dirty = true;
     }
 }
-
-/* ---------------------------------------------------------- key forwarding */
 
 void app_window_keyboard_terminal(window_t* w, char c) {
     if (c == 27) return;

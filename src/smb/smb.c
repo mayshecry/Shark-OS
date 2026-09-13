@@ -677,7 +677,7 @@ static void draw_win(void) {
 
 static void blit(void) {
     uint32_t stride = (uint32_t)(screen_pitch / 4);
-    int scale = 2;  /* Fixed scale for 320x200 to 640x400 */
+    int scale = 2;
     if (scale < 1) scale = 1;
 
     for (int y = 0; y < 200 && y * scale < window_h; y++) {
@@ -733,7 +733,7 @@ void smb_run(void) {
 
     while (keyboard_getchar() != 0) yield();
 
-    const uint32_t STEP_INTERVAL = 16; /* 60 FPS */
+    const uint32_t STEP_INTERVAL = 16;
     uint32_t last = uptime_ticks;
 
     while (running) {
@@ -742,11 +742,11 @@ void smb_run(void) {
         int keys_processed = 0;
         while (keys_processed < 4 && (c = keyboard_getchar()) != 0) {
             keys_processed++;
-            if (c == 27) { 
-                running = 0; 
-                game_state = 4; 
+            if (c == 27) {
+                running = 0;
+                game_state = 4;
                 smb_restore_kernel_mode();
-                return; 
+                return;
             }
 
             if (game_state == 0 || game_state == 2 || game_state == 3) {
@@ -801,8 +801,8 @@ void smb_run(void) {
             render();
             last = now;
         }
-        
-        yield(); /* Let multitasking scheduler run other tasks */
+
+        yield();
     }
 
     smb_cleanup();
@@ -848,7 +848,7 @@ void smb_set_kernel_mode(void) {
 
 void smb_tick(void) {
     if (game_state == 4) return;
-    
+
     char c;
     int keys_processed = 0;
     while (keys_processed < 4 && (c = keyboard_getchar()) != 0) {

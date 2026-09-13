@@ -1,4 +1,4 @@
-/* rndr_trig.c - sine table for binary angular measure (rndr/trigonometry) */
+
 #include "rndr_trig.h"
 
 #define SIN_TAB_SIZE 8192

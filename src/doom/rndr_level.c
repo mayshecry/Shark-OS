@@ -1,4 +1,4 @@
-/* rndr_level.c - level data queries */
+
 #include "rndr_level.h"
 
 const rndr_subsector_t *rndr_point_in_subsector(const rndr_level_t *l,

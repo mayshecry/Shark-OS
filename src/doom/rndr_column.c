@@ -1,4 +1,4 @@
-/* rndr_column.c - wall column rendering (rndr/column) */
+
 #include "rndr_column.h"
 #include "rndr_light.h"
 #include "rndr_gamedata.h"

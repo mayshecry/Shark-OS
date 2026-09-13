@@ -1,5 +1,4 @@
-/* rndr_column.h - textured wall column drawing (cpp-doom rndr/column).
- * Draws one screen column of a wall face with world-aligned texture v. */
+
 #ifndef RNDR_COLUMN_H
 #define RNDR_COLUMN_H
 

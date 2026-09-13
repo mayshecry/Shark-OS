@@ -1,5 +1,4 @@
-/* rndr_context.h - render context (cpp-doom rndr/context): everything a
- * frame needs, owned by the game layer and handed to the renderer. */
+
 #ifndef RNDR_CONTEXT_H
 #define RNDR_CONTEXT_H
 

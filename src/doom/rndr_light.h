@@ -1,5 +1,4 @@
-/* rndr_light.h - lighting (cpp-doom rndr/lighting_tables): distance
- * falloff from the sector light level, applied to palette indices. */
+
 #ifndef RNDR_LIGHT_H
 #define RNDR_LIGHT_H
 

@@ -24,12 +24,11 @@ void lite_kmain(void) {
     terminal_initialize();
     terminal_clear();
 
-    /* Same network bring-up as the desktop: DHCP runs in the background and
-     * prints one line when the lease arrives. */
+
     net_init();
     net_stack_init();
-    
-    
+
+
     plugin_manager_init();
     extern int plugin_init_entry(void);
     extern void plugin_cleanup_entry(void);
@@ -55,7 +54,7 @@ void lite_kmain(void) {
     extern void geometrydash_plugin_cleanup(void);
     extern int geometrydash_plugin_command(int argc, char** argv);
     plugin_register_builtin("gdash", geometrydash_plugin_init, geometrydash_plugin_cleanup, geometrydash_plugin_command);
-    
+
     pane_count = 1;
     active_pane = 0;
     panes[0].col_start = 0;
@@ -66,9 +65,9 @@ void lite_kmain(void) {
     panes[0].cmd_index = 0;
     terminal_row = content_first_row;
     terminal_column = 0;
-    
+
     apply_theme(THEME_SHARKOS);
-    
+
     redraw_all_panes();
     print_prompt();
 
@@ -76,7 +75,7 @@ void lite_kmain(void) {
     while (1) {
         if (uptime_ticks - last_net_tick >= 10) {
             last_net_tick = uptime_ticks;
-            net_poll();                 /* RX + DHCP state machine */
+            net_poll();
         }
         char c = keyboard_getchar();
         if (c == 0) { yield(); continue; }

@@ -32,7 +32,7 @@ void mouse_draw_cursor(void) {
 
     uint32_t color = 0xFFFFFFFF;
     uint32_t border_color = 0xFF000000;
-    
+
     static const uint16_t cursor_shape[16] = {
         0b1000000000000000,
         0b1100000000000000,
@@ -115,10 +115,7 @@ void mouse_update_cursor(void) {
 }
 
 void mouse_draw_cursor_only(void) {
-    /* The old implementation indexed font8x8[0x5F][dy] with dy up to 15 while
-     * the font is 8 rows tall, reading past the end of the array. It now
-     * draws the same 16x16 arrow as mouse_draw_cursor(), without saving the
-     * pixels underneath. */
+
     if (!mouse_enabled) return;
     int cx = mouse_cursor_x;
     int cy = mouse_cursor_y;

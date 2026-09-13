@@ -1,19 +1,11 @@
-/* Baseline JPEG decoder for SharkOS (ITU T.81 sequential DCT, Huffman).
- *
- *   - 8-bit precision, 1 (grey) or 3 (YCbCr) components, any sampling
- *     factors up to 2x2 (4:4:4, 4:2:2, 4:2:0, 4:4:0), restart intervals
- *   - integer AAN-style IDCT (no FPU), nearest chroma upsampling
- *   - progressive JPEGs are rejected (-2) and shown as a placeholder
- *
- * Integer only, no allocation: caller provides the pixel buffer and a
- * scratch area for the component planes. Output is 0xFFRRGGBB. */
+
 
 #include "kernel.h"
 
 typedef struct {
     uint8_t  bits[17];
     uint8_t  vals[256];
-    /* fast lookup: code length + value for 9-bit prefixes */
+
     uint16_t maxcode[18];
     int32_t  valptr[17];
     int32_t  mincode[17];
@@ -23,8 +15,8 @@ typedef struct {
 
 typedef struct {
     int id, h, v, tq, td, ta;
-    int bw, bh;             /* blocks per line / column (padded to MCU) */
-    uint8_t* plane;         /* decoded samples, bw*8 x bh*8 */
+    int bw, bh;
+    uint8_t* plane;
     int dc_pred;
 } jcomp_t;
 
@@ -53,12 +45,12 @@ static void build_huff(jhuff_t* h) {
         code += h->bits[l];
         k += h->bits[l];
         h->maxcode[l] = (uint16_t)(h->bits[l] ? code - 1 : 0);
-        if (!h->bits[l]) h->mincode[l] = 0x7FFFFFFF;       /* no codes of this length */
+        if (!h->bits[l]) h->mincode[l] = 0x7FFFFFFF;
         code <<= 1;
     }
     h->maxcode[17] = 0xFFFF;
     memset(h->look_len, 0, sizeof(h->look_len));
-    /* 9-bit lookahead */
+
     code = 0; k = 0;
     for (int l = 1; l <= 9; l++) {
         for (int i = 0; i < h->bits[l]; i++, k++) {
@@ -81,7 +73,7 @@ static void fill_bits(jpeg_t* j) {
             if (b == 0xFF) {
                 uint8_t nxt = j->pos + 1 < j->len ? j->d[j->pos + 1] : 0;
                 if (nxt == 0) { j->pos += 2; }
-                else if (nxt >= 0xD0 && nxt <= 0xD7) { j->hit_marker = 1; b = 0; }   /* RST: stop here */
+                else if (nxt >= 0xD0 && nxt <= 0xD7) { j->hit_marker = 1; b = 0; }
                 else { j->hit_marker = 1; b = 0; }
             } else j->pos++;
         }
@@ -103,8 +95,8 @@ static int decode_huff(jpeg_t* j, const jhuff_t* h) {
     int look = (int)(j->bitbuf >> 23);
     int l = h->look_len[look];
     if (l) { j->bitbuf <<= l; j->bitcnt -= l; return h->look_val[look]; }
-    /* slow path: lengths 10..16 */
-    int code = (int)(j->bitbuf >> 22);           /* 10 bits */
+
+    int code = (int)(j->bitbuf >> 22);
     l = 10;
     while (l <= 16) {
         if (h->mincode[l] != 0x7FFFFFFF && code <= h->maxcode[l] && code >= h->mincode[l]) {
@@ -114,12 +106,11 @@ static int decode_huff(jpeg_t* j, const jhuff_t* h) {
         l++;
         code = (int)(j->bitbuf >> (32 - l));
     }
-    return 0;                                    /* corrupt: behave like EOB */
+    return 0;
 }
 
 static int extend(int v, int t) { return (t == 0) ? 0 : (v < (1 << (t - 1)) ? v - (1 << t) + 1 : v); }
 
-/* Integer IDCT (Chen-Wang style, 13-bit constants). */
 #define W1 2841
 #define W2 2676
 #define W3 2408
@@ -183,7 +174,7 @@ static void decode_block(jpeg_t* j, jcomp_t* c, uint8_t* out, int stride) {
         int r = rs >> 4, s = rs & 15;
         if (s == 0) {
             if (r == 15) { k += 16; continue; }
-            break;                                       /* EOB */
+            break;
         }
         k += r;
         if (k > 63) break;
@@ -198,7 +189,7 @@ static uint32_t rd16be(const uint8_t* p) { return ((uint32_t)p[0] << 8) | p[1]; 
 
 int jpeg_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
                     uint32_t* pixels, size_t max_pixels, uint8_t* scratch, size_t scratch_len) {
-    static jpeg_t J;                                    /* ~10 KB: keep off the stack */
+    static jpeg_t J;
     jpeg_t* j = &J;
     *out_w = 0; *out_h = 0;
     if (!data || len < 4 || data[0] != 0xFF || data[1] != 0xD8) return -1;
@@ -217,7 +208,7 @@ int jpeg_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
         const uint8_t* s = data + j->pos + 2;
         uint32_t sl = seglen - 2;
         switch (m) {
-        case 0xC0: case 0xC1: {                          /* SOF0 baseline / SOF1 extended sequential */
+        case 0xC0: case 0xC1: {
             if (sl < 6) return -1;
             if (s[0] != 8) return -1;
             j->height = (int)rd16be(s + 1); j->width = (int)rd16be(s + 3);
@@ -236,10 +227,10 @@ int jpeg_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
             break;
         }
         case 0xC2: case 0xC6: case 0xCA: case 0xCE:
-            return -2;                                   /* progressive: unsupported */
+            return -2;
         case 0xC3: case 0xC5: case 0xC7: case 0xC9: case 0xCB: case 0xCD: case 0xCF:
-            return -1;                                   /* lossless / hierarchical / arithmetic */
-        case 0xC4: {                                     /* DHT */
+            return -1;
+        case 0xC4: {
             uint32_t p = 0;
             while (p + 17 <= sl) {
                 int tc = s[p] >> 4, th = s[p] & 15;
@@ -255,7 +246,7 @@ int jpeg_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
             }
             break;
         }
-        case 0xDB: {                                     /* DQT */
+        case 0xDB: {
             uint32_t p = 0;
             while (p < sl) {
                 int pq = s[p] >> 4, tq = s[p] & 3;
@@ -265,13 +256,13 @@ int jpeg_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
             }
             break;
         }
-        case 0xDD:                                       /* DRI */
+        case 0xDD:
             if (sl >= 2) j->restart_interval = (int)rd16be(s);
             break;
-        case 0xDA: {                                     /* SOS */
+        case 0xDA: {
             if (!got_sof) return -1;
             int ns = s[0];
-            if (ns != j->ncomp) return -1;               /* non-interleaved baseline: unsupported */
+            if (ns != j->ncomp) return -1;
             for (int i = 0; i < ns; i++) {
                 int cid = s[1 + i * 2], tt = s[2 + i * 2];
                 for (int k = 0; k < j->ncomp; k++) if (j->comp[k].id == cid) { j->comp[k].td = tt >> 4; j->comp[k].ta = tt & 15; }
@@ -279,8 +270,8 @@ int jpeg_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
             got_sos = 1;
             break;
         }
-        case 0xD9: return -1;                            /* EOI before SOS */
-        default: break;                                  /* APPn, COM, ... */
+        case 0xD9: return -1;
+        default: break;
         }
         j->pos += seglen;
     }
@@ -290,7 +281,7 @@ int jpeg_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
     if ((size_t)W * H > max_pixels) return -3;
     int mcuw = 8 * j->hmax, mcuh = 8 * j->vmax;
     int mcux = (W + mcuw - 1) / mcuw, mcuy = (H + mcuh - 1) / mcuh;
-    /* allocate planes from scratch */
+
     size_t used = 0;
     for (int i = 0; i < j->ncomp; i++) {
         jcomp_t* c = &j->comp[i];
@@ -300,7 +291,7 @@ int jpeg_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
         c->plane = scratch + used; used += need;
         c->dc_pred = 0;
     }
-    /* entropy-coded data */
+
     j->bitbuf = 0; j->bitcnt = 0; j->hit_marker = 0;
     int mcu_count = 0, total_mcus = mcux * mcuy;
     for (int my = 0; my < mcuy; my++) {
@@ -315,7 +306,7 @@ int jpeg_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
             }
             mcu_count++;
             if (j->restart_interval && (mcu_count % j->restart_interval) == 0 && mcu_count < total_mcus) {
-                /* byte-align and consume the RSTn marker */
+
                 j->bitbuf = 0; j->bitcnt = 0; j->hit_marker = 0;
                 while (j->pos + 1 < len && !(data[j->pos] == 0xFF && data[j->pos + 1] >= 0xD0 && data[j->pos + 1] <= 0xD7)) j->pos++;
                 if (j->pos + 1 < len) j->pos += 2;
@@ -323,7 +314,7 @@ int jpeg_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
             }
         }
     }
-    /* colour conversion + upsampling */
+
     for (int y = 0; y < H; y++) {
         uint32_t* dst = pixels + (size_t)y * W;
         if (j->ncomp == 1) {
@@ -339,7 +330,7 @@ int jpeg_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
             int Y = yp[x * cy->h / j->hmax];
             int Cb = bp[x * cb->h / j->hmax] - 128;
             int Cr = rp[x * cr->h / j->hmax] - 128;
-            /* R = Y + 1.402 Cr; G = Y - 0.344 Cb - 0.714 Cr; B = Y + 1.772 Cb  (16.16 fixed) */
+
             int r = Y + ((91881 * Cr) >> 16);
             int g = Y - ((22554 * Cb + 46802 * Cr) >> 16);
             int b = Y + ((116130 * Cb) >> 16);

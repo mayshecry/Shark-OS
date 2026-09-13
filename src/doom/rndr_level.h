@@ -1,5 +1,4 @@
-/* rndr_level.h - level data queries (level data structures from
- * cpp-doom's core/wad_types + game_data). */
+
 #ifndef RNDR_LEVEL_H
 #define RNDR_LEVEL_H
 

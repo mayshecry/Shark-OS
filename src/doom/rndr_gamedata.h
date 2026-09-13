@@ -1,5 +1,4 @@
-/* rndr_gamedata.h - renderer-owned texture data (cpp-doom core/game_data).
- * The game layer generates the procedural textures into these arrays. */
+
 #ifndef RNDR_GAMEDATA_H
 #define RNDR_GAMEDATA_H
 

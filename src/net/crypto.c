@@ -1,18 +1,4 @@
-/* Cryptographic primitives for SharkOS TLS: SHA-256, HMAC, HKDF, AES-128,
- * AES-GCM, X25519 and a hash-based DRBG.
- *
- * Plain portable integer C (no libc apart from memcpy/memset, no floating
- * point, no 64-bit division). Compiled both into the kernel and into the host
- * test harness (tools/tlstest.c), which checks every primitive against the
- * published test vectors:
- *   SHA-256 / HMAC   FIPS 180-4, RFC 4231
- *   HKDF             RFC 5869
- *   AES-128          FIPS 197 appendix C
- *   AES-GCM          NIST GCM spec test cases 2-4
- *   X25519           RFC 7748 section 5.2 / 6.1
- *
- * The field arithmetic for X25519 follows TweetNaCl (public domain): 16
- * limbs of 16 bits in int64, which needs nothing but 32x32->64 multiplies. */
+
 
 #include "tls.h"
 
@@ -21,8 +7,6 @@
 #else
 #include "kernel.h"
 #endif
-
-/* ----------------------------------------------------------- SHA-256 */
 
 static const uint32_t K256[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -105,8 +89,6 @@ void sha256(const uint8_t* data, size_t len, uint8_t out[32]) {
     sha256_final(&c, out);
 }
 
-/* -------------------------------------------------------- HMAC / HKDF */
-
 void hmac_sha256(const uint8_t* key, size_t key_len, const uint8_t* data, size_t len, uint8_t out[32]) {
     uint8_t k[64], pad[64], inner[32];
     memset(k, 0, 64);
@@ -143,21 +125,17 @@ void hkdf_expand(const uint8_t prk[32], const uint8_t* info, size_t info_len, ui
     }
 }
 
-/* ------------------------------------------------------------ AES-128 */
-
 static uint8_t sbox[256];
 static int sbox_ready = 0;
 
 #define ROTL8(x, s) ((uint8_t)(((x) << (s)) | ((x) >> (8 - (s)))))
 
-/* Generate the S-box from the GF(2^8) inverse + affine map instead of typing
- * 256 constants. Verified by the FIPS-197 test vector in the harness. */
 static void aes_gen_sbox(void) {
     uint8_t p = 1, q = 1;
     do {
-        p = (uint8_t)(p ^ (p << 1) ^ ((p & 0x80) ? 0x1B : 0));       /* p *= 3 */
+        p = (uint8_t)(p ^ (p << 1) ^ ((p & 0x80) ? 0x1B : 0));
         q ^= (uint8_t)(q << 1); q ^= (uint8_t)(q << 2); q ^= (uint8_t)(q << 4);
-        if (q & 0x80) q ^= 0x09;                                       /* q /= 3 */
+        if (q & 0x80) q ^= 0x09;
         uint8_t x = (uint8_t)(q ^ ROTL8(q, 1) ^ ROTL8(q, 2) ^ ROTL8(q, 3) ^ ROTL8(q, 4));
         sbox[p] = (uint8_t)(x ^ 0x63);
     } while (p != 1);
@@ -173,7 +151,7 @@ void aes128_init(aes128_t* a, const uint8_t key[16]) {
     for (int i = 16; i < 176; i += 4) {
         uint8_t t0 = rk[i - 4], t1 = rk[i - 3], t2 = rk[i - 2], t3 = rk[i - 1];
         if ((i % 16) == 0) {
-            uint8_t u = t0;                                            /* RotWord + SubWord + Rcon */
+            uint8_t u = t0;
             t0 = (uint8_t)(sbox[t1] ^ rcon); t1 = sbox[t2]; t2 = sbox[t3]; t3 = sbox[u];
             rcon = (uint8_t)((rcon << 1) ^ ((rcon & 0x80) ? 0x1B : 0));
         }
@@ -190,12 +168,12 @@ void aes128_encrypt_block(const aes128_t* a, const uint8_t in[16], uint8_t out[1
     for (int i = 0; i < 16; i++) s[i] = in[i] ^ rk[i];
     for (int round = 1; round <= 10; round++) {
         rk += 16;
-        /* SubBytes + ShiftRows: byte at column c, row r comes from column (c+r)%4 */
+
         for (int c = 0; c < 4; c++)
             for (int r = 0; r < 4; r++)
                 t[c * 4 + r] = sbox[s[((c + r) & 3) * 4 + r]];
         if (round != 10) {
-            for (int c = 0; c < 4; c++) {                              /* MixColumns */
+            for (int c = 0; c < 4; c++) {
                 uint8_t a0 = t[c * 4], a1 = t[c * 4 + 1], a2 = t[c * 4 + 2], a3 = t[c * 4 + 3];
                 uint8_t all = (uint8_t)(a0 ^ a1 ^ a2 ^ a3);
                 s[c * 4]     = (uint8_t)(a0 ^ all ^ xtime((uint8_t)(a0 ^ a1)));
@@ -211,9 +189,6 @@ void aes128_encrypt_block(const aes128_t* a, const uint8_t in[16], uint8_t out[1
     memcpy(out, s, 16);
 }
 
-/* ---------------------------------------------------------------- GCM */
-
-/* Shoup's 4-bit table method (as in mbed TLS / Cifra). */
 static const uint64_t gcm_last4[16] = {
     0x0000, 0x1c20, 0x3840, 0x2460, 0x7080, 0x6ca0, 0x48c0, 0x54e0,
     0xe100, 0xfd20, 0xd940, 0xc560, 0x9180, 0x8da0, 0xa9c0, 0xb5e0
@@ -278,11 +253,11 @@ int gcm_crypt(const gcm_t* g, const uint8_t nonce[12], const uint8_t* aad, size_
     memcpy(j0, nonce, 12); j0[12] = 0; j0[13] = 0; j0[14] = 0; j0[15] = 1;
     memset(y, 0, 16);
     ghash_update(g, y, aad, aad_len);
-    if (!encrypt) ghash_update(g, y, in, len);           /* hash the ciphertext before it is overwritten */
+    if (!encrypt) ghash_update(g, y, in, len);
     memcpy(ctr, j0, 16);
     size_t off = 0;
     while (off < len) {
-        /* inc32 */
+
         for (int i = 15; i >= 12; i--) { if (++ctr[i]) break; }
         aes128_encrypt_block(&g->aes, ctr, ks);
         size_t n = len - off < 16 ? len - off : 16;
@@ -300,8 +275,6 @@ int gcm_crypt(const gcm_t* g, const uint8_t nonce[12], const uint8_t* aad, size_
     for (int i = 0; i < 16; i++) diff |= (uint8_t)(t[i] ^ tag[i]);
     return diff == 0;
 }
-
-/* ------------------------------------------------------------- X25519 */
 
 typedef int64_t gf[16];
 static const gf gf_121665 = { 0xDB41, 1 };
@@ -416,8 +389,6 @@ void x25519_base(uint8_t out[32], const uint8_t scalar[32]) {
     x25519(out, scalar, nine);
 }
 
-/* --------------------------------------------------------------- DRBG */
-
 static uint8_t drbg_state[32];
 static uint32_t drbg_counter = 0;
 
@@ -447,7 +418,7 @@ void tls_random(uint8_t* out, size_t len) {
         size_t n = len < 32 ? len : 32;
         memcpy(out, block, n);
         out += n; len -= n;
-        /* ratchet so earlier outputs cannot be recovered from the state */
+
         sha256_init(&c);
         sha256_update(&c, drbg_state, 32);
         sha256_update(&c, (const uint8_t*)"next", 4);

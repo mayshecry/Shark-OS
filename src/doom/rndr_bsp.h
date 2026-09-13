@@ -1,6 +1,4 @@
-/* rndr_bsp.h - BSP traversal renderer (cpp-doom rndr/bsp_renderer,
- * original r_bsp/r_segs): walks the tree front-to-back, projects segs,
- * draws wall columns and records visplane spans and drawsegs. */
+
 #ifndef RNDR_BSP_H
 #define RNDR_BSP_H
 

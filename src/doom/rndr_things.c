@@ -1,4 +1,4 @@
-/* rndr_things.c - sprite projection and drawseg clipping (r_things) */
+
 #include "rndr_things.h"
 
 int rndr_project_sprite(const rndr_context_t *ctx, int32_t wx, int32_t wy,

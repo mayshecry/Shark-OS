@@ -27,7 +27,7 @@ task_t* create_task(const char* name) {
 }
 
 void yield(void) {
-    /* Interrupts must be enabled or hlt never returns. */
+
     asm volatile("sti; hlt");
 }
 
@@ -79,11 +79,11 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     screen_pitch = mb_info->framebuffer_pitch;
     if (screen_width < 320) screen_width = 320;
     if (screen_height < 200) screen_height = 200;
-    
-    /* Calculate total system memory */
+
+
     uint64_t mem_kb = ((uint64_t)mb_info->mem_upper + (uint64_t)mb_info->mem_lower);
     total_system_memory = mem_kb * 1024;
-    
+
     if (mb_info->flags & (1 << 6)) {
         struct multiboot_mmap_entry* mmap = (struct multiboot_mmap_entry*)(uintptr_t)mb_info->mmap_addr;
         uint32_t mmap_len = mb_info->mmap_length;
@@ -103,11 +103,11 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             total_system_memory = highest_addr;
         }
     }
-    
+
     if (total_system_memory > 2147483648) {
         total_system_memory = 2147483648;
     }
-    
+
     pmm_init(total_system_memory);
     ui_init_metrics();
 
@@ -153,7 +153,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     terminal_initialize();
     boot_screen_update("Initializing descriptors...", 15);
     init_descriptor_tables();
-    
+
     outb(0x21, 0x11);
     outb(0xA1, 0x11);
     outb(0x21, 0x20);
@@ -215,9 +215,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     plugin_register_builtin("gdash", geometrydash_plugin_init, geometrydash_plugin_cleanup, geometrydash_plugin_command);
     boot_screen_update("Detecting hardware...", 70);
 
-    /* Probe the NIC and start the DHCP client. The client itself is
-     * non-blocking (it is driven from net_poll() in the main loop), so a
-     * missing cable or absent DHCP server never delays the desktop. */
+
     net_init();
     boot_screen_update(net_has_nic() ? "Configuring network (DHCP)..."
                                      : "No network adapter found", 75);
@@ -232,36 +230,27 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     rtc_init();
     desktop_init();
     boot_screen_update("Ready!", 100);
-    
+
     for (volatile int i = 0; i < 1000000; i++);
     boot_screen_hide();
 
     asm volatile("sti");
 
-    /* Present frames atomically.
-     *
-     * Until here lfbptr pointed at the hardware framebuffer, so every
-     * desktop_render() replayed the whole composite straight into VRAM:
-     * wallpaper first (which erases all windows on screen), then icons,
-     * windows and taskbar. Each mouse move sets desktop.dirty, so moving
-     * the pointer made that partial repaint visible - the flash you saw.
-     *
-     * From now on lfbptr is an offscreen back buffer in system RAM; the
-     * hardware address stays in hw_lfbptr and flush_screen_to_hw() copies
-     * the finished frame across once. Pixel writes also hit RAM instead of
-     * MMIO, which makes the whole desktop an order of magnitude faster. */
+
     hw_lfbptr = lfbptr;
     {
+
+        framebuffer_enable_write_combining((uintptr_t)hw_lfbptr,
+                                           (uint32_t)(screen_pitch * screen_height));
         size_t fb_bytes = (size_t)(screen_pitch * screen_height);
         uint32_t* shadow = (uint32_t*)kmalloc(fb_bytes);
         if (shadow) {
-            memcpy(shadow, lfbptr, fb_bytes);   /* keep boot screen content */
+            memcpy(shadow, lfbptr, fb_bytes);
             lfbptr = shadow;
         }
     }
 
-    /* desktop_render() now composes the pointer itself and flushes once, so
-     * drawing the cursor a second time here only wasted a pass. */
+
     desktop_render();
 
     uint32_t last_clock_tick = uptime_ticks;
@@ -274,9 +263,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     int last_rtc_minute = (int)rtc_minutes;
 
     while (1) {
-        /* Sleep until the next interrupt (timer, keyboard, mouse, NIC).
-         * The old loop spun at 100% CPU; on a laptop or a fanless box that
-         * is heat and battery for nothing. */
+
         yield();
         uint32_t work_start = uptime_ticks;
 
@@ -289,7 +276,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             int my = mouse_cursor_y;
             int buttons = mouse_state.buttons;
 
-            /* Process mouse clicks and releases */
+
             if (buttons != 0 || (buttons == 0 && desktop_mouse_down)) {
                 desktop_handle_mouse(mx, my, buttons);
             }
@@ -297,27 +284,63 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
                 desktop_mouse_x = mx;
                 desktop_mouse_y = my;
                 pointer_moved = true;
-                if (desktop_pointer_needs_repaint(mx, my)) {
-                    desktop.dirty = true;
+
+
+                bool repaint = false;
+                if (desktop.start_menu.visible) {
+                    start_menu_handle_hover(mx, my);
+                    int sx, sy, sw2, sh2;
+                    start_menu_get_rect(&sx, &sy, &sw2, &sh2);
+                    desktop_invalidate_rect(sx, sy, sx + sw2, sy + sh2);
+                    repaint = true;
+                } else if (desktop_mouse_down) {
+                    if (desktop_drag_window < 0 && desktop_resize_window < 0) {
+                        desktop.dirty = true;
+                    } else {
+
+                        repaint = true;
+                    }
+                } else {
+
+                    for (int i = 0; i < desktop.window_count; i++) {
+                        window_t* hw = &desktop.windows[i];
+                        if (!hw->visible || hw->state == WINDOW_STATE_MINIMIZED)
+                            continue;
+                        if (hw->type != WINDOW_TYPE_SETTINGS &&
+                            hw->type != WINDOW_TYPE_FILEMANAGER)
+                            continue;
+                        if (mx >= hw->rect.x && mx < hw->rect.x + hw->rect.width &&
+                            my >= hw->rect.y && my < hw->rect.y + hw->rect.height) {
+                            desktop_invalidate_rect(hw->rect.x, hw->rect.y,
+                                                    hw->rect.x + hw->rect.width,
+                                                    hw->rect.y + hw->rect.height);
+                            repaint = true;
+                        }
+                    }
+                }
+
+                if (repaint) {
+
+                    desktop_invalidate_rect(0, old_my - 16,
+                                            (int)screen_width, old_my + 32);
+                    desktop_invalidate_rect(0, my - 16,
+                                            (int)screen_width, my + 32);
                 }
             }
         }
 
-        /* Drain the whole keyboard queue each pass so typing never lags a
-         * frame behind. */
+
         for (int k = 0; k < 16; k++) {
             char c = keyboard_getchar();
             if (c == 0) break;
             desktop_handle_keyboard(c);
         }
 
-        /* Network polling does not need to run 1000x per second. */
+
         if (uptime_ticks - last_net_tick >= 10) {
             last_net_tick = uptime_ticks;
             net_poll();
-            /* The DHCP client runs inside net_poll(); when its state changes
-             * (offer, bound, link lost) refresh the tray icon and any open
-             * Network window so the user sees it without clicking. */
+
             int ns = net_dhcp_state() * 2 + net_has_link;
             if (ns != last_net_state) {
                 last_net_state = ns;
@@ -330,8 +353,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             }
         }
 
-        /* Taskbar clock: re-read the RTC once a second, repaint only when
-         * the minute changes. */
+
         if (uptime_ticks - last_clock_tick >= 1000) {
             last_clock_tick = uptime_ticks;
             rtc_read_time();
@@ -340,7 +362,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
                 desktop.dirty = true;
             }
 
-            /* Per-second load sample for the Task Manager. */
+
             sys_cpu_percent = busy_ms > 1000 ? 100 : busy_ms / 10;
             sys_cpu_history[sys_cpu_history_pos] = sys_cpu_percent;
             sys_cpu_history_pos = (sys_cpu_history_pos + 1) % SYS_CPU_HISTORY;
@@ -348,7 +370,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             busy_ms = 0;
             frames_this_sec = 0;
 
-            /* A visible Task Manager refreshes its numbers once a second. */
+
             for (int i = 0; i < desktop.window_count; i++) {
                 window_t* tw = &desktop.windows[i];
                 if (tw->type == WINDOW_TYPE_TASKMANAGER && tw->visible &&
@@ -359,8 +381,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             }
         }
 
-        /* Cursor blink for the focused text app (Terminal/Notepad): a
-         * repaint every ~500 ms only while such a window has focus. */
+
         window_t* focused = window_get_focused();
         if (focused && !focused->game_tick &&
             (focused->type == WINDOW_TYPE_TERMINAL || focused->type == WINDOW_TYPE_NOTEPAD) &&
@@ -370,17 +391,14 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             desktop.dirty = true;
         }
 
-        /* Game tick for the focused game window, capped at ~60 Hz. The
-         * games draw into the back buffer, so the frame has to be presented
-         * afterwards - previously it only became visible on the next
-         * unrelated repaint (i.e. when the mouse moved). */
+
         if (focused && focused->game_tick && uptime_ticks - last_game_tick >= 16) {
             last_game_tick = uptime_ticks;
             focused->game_tick();
             desktop.dirty = true;
         }
 
-        /* Browser: button releases, link hover, JS timers, caret blink. */
+
         browser_tick();
 
         if (desktop.dirty) {

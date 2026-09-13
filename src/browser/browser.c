@@ -1,8 +1,4 @@
-/* Shark Navigator: the browser window (chrome, navigation, painting, input).
- *
- * Everything else (HTML/CSS/layout/JS) lives in the sibling files; this one
- * owns the browser state, fetches documents and turns layout boxes into
- * pixels inside a Win98 window. */
+
 
 #include "browser_internal.h"
 #include "tls.h"
@@ -12,7 +8,6 @@ br_node_t* br_doc = NULL;
 char br_page_src[BR_PAGE_MAX];
 int br_page_len = 0;
 
-/* Chrome geometry (client coordinates) */
 #define BR_TOOLBAR_H   30
 #define BR_ADDR_H      26
 #define BR_STATUS_H    18
@@ -22,7 +17,6 @@ int br_page_len = 0;
 #define BR_MENU_W      230
 #define BR_LINE_STEP   24
 
-/* Bookmarks shown in the drop-down menu */
 static const struct { const char* title; const char* url; } bookmarks[] = {
     { "Home page",            "about:home" },
     { "Demo page (JS + CSS)", "about:demo" },
@@ -36,8 +30,6 @@ static const struct { const char* title; const char* url; } bookmarks[] = {
     { "View page source",     "about:source" },
 };
 #define BR_BOOKMARK_COUNT ((int)(sizeof(bookmarks) / sizeof(bookmarks[0])))
-
-/* ------------------------------------------------------------ helpers */
 
 void br_itoa(int v, char* out) {
     char tmp[12]; int t = 0, o = 0;
@@ -95,13 +87,10 @@ void br_alert(const char* msg) {
     br_request_repaint();
 }
 
-/* Scripts changed the tree: recompute style + layout before the next paint. */
 void br_js_dom_changed(void) {
     if (brs.needs_layout < 1) brs.needs_layout = 1;
     br_request_repaint();
 }
-
-/* ---------------------------------------------------------------- URLs */
 
 static int is_net_url(const char* u) { return br_streq_prefix(u, "http://") || br_streq_prefix(u, "https://"); }
 static int scheme_len(const char* u) { return br_streq_prefix(u, "https://") ? 8 : 7; }
@@ -109,18 +98,18 @@ static int scheme_len(const char* u) { return br_streq_prefix(u, "https://") ? 8
 void br_resolve_url(const char* base, const char* rel, char* out, int max) {
     if (!rel) { br_strlcpy(out, base, max); return; }
     while (*rel == ' ') rel++;
-    /* absolute? */
+
     const char* p = rel;
     while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '+' || *p == '-' || *p == '.') p++;
     if (p > rel && *p == ':' ) { br_strlcpy(out, rel, max); return; }
     if (rel[0] == '/' && rel[1] == '/') { br_strlcpy(out, br_streq_prefix(base, "https://") ? "https:" : "http:", max); br_strlcat(out, rel, max); return; }
     if (!is_net_url(base)) {
-        /* about:/file: bases: relative names stay relative to the scheme */
+
         if (br_streq_prefix(base, "file:")) { br_strlcpy(out, "file:", max); br_strlcat(out, rel, max); return; }
         br_strlcpy(out, rel, max);
         return;
     }
-    /* http(s)://host[:port]/path */
+
     const char* host_start = base + scheme_len(base);
     const char* path_start = host_start;
     while (*path_start && *path_start != '/') path_start++;
@@ -131,7 +120,7 @@ void br_resolve_url(const char* base, const char* rel, char* out, int max) {
     origin[ol] = 0;
     if (rel[0] == '/') { br_strlcpy(out, origin, max); br_strlcat(out, rel, max); return; }
     if (rel[0] == '#' || rel[0] == '?') {
-        /* keep base path, replace query/fragment */
+
         br_strlcpy(out, base, max);
         char* q = out; while (*q && *q != (rel[0] == '#' ? '#' : '?')) q++;
         if (rel[0] == '?') { char* h = out; while (*h && *h != '#') h++; if (h < q) q = h; }
@@ -139,7 +128,7 @@ void br_resolve_url(const char* base, const char* rel, char* out, int max) {
         br_strlcat(out, rel, max);
         return;
     }
-    /* relative path: directory of base path + rel */
+
     const char* path_end = path_start;
     while (*path_end && *path_end != '?' && *path_end != '#') path_end++;
     const char* last_slash = NULL;
@@ -150,7 +139,7 @@ void br_resolve_url(const char* base, const char* rel, char* out, int max) {
         for (const char* s = path_start; s <= last_slash && l < max - 1; s++) out[l++] = *s;
         out[l] = 0;
     } else br_strlcat(out, "/", max);
-    /* resolve ./ and ../ */
+
     while (br_streq_prefix(rel, "./")) rel += 2;
     while (br_streq_prefix(rel, "../")) {
         rel += 3;
@@ -163,14 +152,10 @@ void br_resolve_url(const char* base, const char* rel, char* out, int max) {
     br_strlcat(out, rel, max);
 }
 
-/* ------------------------------------------------------------- fetch */
-
-/* Fetches a resource into out; returns byte count or -1. Handles http:,
- * file: and about: URLs. */
 int br_fetch_resource(const char* url, uint8_t* out, int max) {
     if (is_net_url(url)) {
         if (!net_configured) return -1;
-        int n = net_http_get(url, out, (uint32_t)max);   /* http:// and https:// (TLS 1.3) */
+        int n = net_http_get(url, out, (uint32_t)max);
         return n;
     }
     if (br_streq_prefix(url, "file:")) {
@@ -185,8 +170,6 @@ int br_fetch_resource(const char* url, uint8_t* out, int max) {
     }
     return -1;
 }
-
-/* ------------------------------------------------------- built-in pages */
 
 static const char home_page[] =
     "<html><head><title>Shark Navigator</title>"
@@ -326,7 +309,7 @@ static void build_console_page(void) {
         "<h2>JavaScript console</h2><p>Last console.log() / error lines from the previous page:</p><pre style=\"background:#000;color:#0f0;padding:6px\">", BR_PAGE_MAX);
     if (brs.js_console_lines == 0) br_strlcat(br_page_src, "(empty)", BR_PAGE_MAX);
     for (int i = 0; i < brs.js_console_lines; i++) {
-        /* escape < and & */
+
         const char* s = brs.js_console[i];
         char line[200]; int o = 0;
         for (int k = 0; s[k] && o < 190; k++) {
@@ -346,7 +329,7 @@ static char source_copy[BR_PAGE_MAX];
 static int source_copy_len = 0;
 
 static void build_source_page(void) {
-    /* HTML-escape the previous page source into a <pre> */
+
     br_page_src[0] = 0;
     br_strlcat(br_page_src, "<html><head><title>Page source</title></head><body style=\"background:#fff;margin:8px\"><pre style=\"font-size:80%\">", BR_PAGE_MAX);
     int o = (int)strlen(br_page_src);
@@ -361,8 +344,6 @@ static void build_source_page(void) {
     br_page_len = (int)strlen(br_page_src);
 }
 
-/* ---------------------------------------------------------- navigation */
-
 static void set_window_title(void) {
     if (!brs.win) return;
     char t[WINDOW_TITLE_MAX];
@@ -374,10 +355,6 @@ static void set_window_title(void) {
     br_strlcpy(brs.win->title, t, WINDOW_TITLE_MAX);
 }
 
-/* External stylesheets: fetched into a static buffer (never the stack), then
- * parsed. @import inside a fetched sheet is followed one level deep. Only
- * the current page's sheets are cached (by URL) so a reload/relayout of the
- * same document does not refetch them. */
 static uint8_t css_buf[BR_CSS_BUF];
 #define CSS_CACHE_SLOTS BR_MAX_SHEETS
 static struct { char url[BR_URL_MAX]; int off, len; } css_cache[CSS_CACHE_SLOTS];
@@ -386,15 +363,12 @@ static int sheets_fetched = 0;
 
 static void css_cache_reset(void) { css_cache_n = 0; css_cache_used = 0; sheets_fetched = 0; }
 
-/* Sub-resources (stylesheets, web fonts, images) share one time budget per
- * page load, so a page referencing dozens of files still appears within a
- * bounded time; whatever did not make it is simply left out. */
 static uint32_t subres_deadline = 0;
 #define BR_SUBRES_BUDGET_MS 30000
-static int subres_abort = 0;                 /* Esc pressed while loading */
+static int subres_abort = 0;
 int br_subres_allowed(void) {
     if (subres_abort) return 0;
-    /* Esc during a long load: skip the remaining sub-resources */
+
     char c;
     while ((c = keyboard_getchar()) != 0) if (c == 27) subres_abort = 1;
     if (subres_abort) { br_status("Stopped - loading the remaining resources was skipped"); return 0; }
@@ -415,7 +389,7 @@ static void load_sheet(const char* abs, int depth) {
     sheets_fetched++;
     int len = br_fetch_resource(abs, css_buf + css_cache_used, room);
     if (len <= 0) return;
-    /* a "stylesheet" that is really an HTML error page: skip */
+
     if (len > 14 && (my_strstr_ci((const char*)css_buf + css_cache_used, "<!doctype") == (const char*)css_buf + css_cache_used || my_strstr_ci((const char*)css_buf + css_cache_used, "<html") == (const char*)css_buf + css_cache_used)) return;
     css_buf[css_cache_used + len] = 0;
     br_strlcpy(css_cache[css_cache_n].url, abs, BR_URL_MAX);
@@ -425,7 +399,7 @@ static void load_sheet(const char* abs, int depth) {
     int before = br_css_import_count();
     br_css_parse_sheet((const char*)css_buf + css_cache_used, len);
     css_cache_used += len + 1;
-    /* nested imports (resolved against the sheet's own URL) */
+
     int after = br_css_import_count();
     for (int i = before; i < after && i < 4; i++) {
         char sub[BR_URL_MAX];
@@ -437,7 +411,7 @@ static void load_sheet(const char* abs, int depth) {
 static void collect_styles(br_node_t* n) {
     if (!n || br_stack_headroom() < BR_STACK_MIN) return;
     if (n->type == BR_NODE_ELEMENT) {
-        if (br_streq(n->tag, "noscript") && !br_css_noscript_visible()) return;   /* like a scripting browser */
+        if (br_streq(n->tag, "noscript") && !br_css_noscript_visible()) return;
         if (br_streq(n->tag, "style") && n->first_child && n->first_child->type == BR_NODE_TEXT) {
             const char* media = br_attr(n, "media");
             if (!media || !my_strstr_ci(media, "print")) {
@@ -454,8 +428,7 @@ static void collect_styles(br_node_t* n) {
             const char* rel = br_attr(n, "rel");
             const char* href = br_attr(n, "href");
             const char* media = br_attr(n, "media");
-            /* alternate colour themes (GitHub ships light/dark/high-contrast/
-             * colour-blind variants as separate sheets) are skipped by name */
+
             int theme_variant = href && (my_strstr_ci(href, "dark") || my_strstr_ci(href, "high_contrast") || my_strstr_ci(href, "colorblind") || my_strstr_ci(href, "tritanopia") || my_strstr_ci(href, "print"));
             if (rel && href && my_strstr_ci(rel, "stylesheet") && !my_strstr_ci(rel, "alternate") && is_net_url(brs.url) && !theme_variant &&
                 !(media && (my_strstr_ci(media, "print") || my_strstr_ci(media, "dark")))) {
@@ -468,8 +441,6 @@ static void collect_styles(br_node_t* n) {
     for (br_node_t* c = n->first_child; c; c = c->next) collect_styles(c);
 }
 
-/* @font-face: fetch each declared TrueType/OpenType file (once per page)
- * straight into the font arena and register it under its family name. */
 static void load_web_fonts(void) {
     if (!is_net_url(brs.url)) return;
     int n = br_css_fontface_count();
@@ -477,8 +448,8 @@ static void load_web_fonts(void) {
         br_fontface_t* ff = br_css_fontface(i);
         if (ff->loaded) continue;
         ff->loaded = -1;
-        if (br_font_web_has(ff->family, ff->bold)) continue;              /* same weight already loaded (unicode-range duplicates) */
-        if (ff->italic && br_font_find_web(ff->family, 0) >= 0) continue;  /* italic is synthesised from the upright face */
+        if (br_font_web_has(ff->family, ff->bold)) continue;
+        if (ff->italic && br_font_find_web(ff->family, 0) >= 0) continue;
         char abs[BR_URL_MAX];
         br_resolve_url(brs.url, ff->url, abs, sizeof(abs));
         if (!is_net_url(abs)) continue;
@@ -489,7 +460,7 @@ static void load_web_fonts(void) {
         br_status("Loading font...");
         int len = br_fetch_resource(abs, dst, (int)avail);
         if (len <= 12) continue;
-        if (len >= (int)avail) continue;                 /* truncated: unusable */
+        if (len >= (int)avail) continue;
         int id = br_font_add_web(ff->family, ff->bold, ff->italic, dst, (uint32_t)len);
         if (id >= 0) { ff->loaded = 1; ff->family_id = id; }
     }
@@ -501,7 +472,7 @@ static void extract_title(void) {
     if (t) {
         char buf[200];
         br_node_text_content(t, buf, sizeof(buf));
-        /* collapse whitespace/newlines */
+
         int o = 0, sp = 1;
         for (int i = 0; buf[i] && o < (int)sizeof(brs.title) - 1; i++) {
             char c = buf[i];
@@ -528,7 +499,6 @@ static void layout_now(void) {
     brs.needs_layout = 0;
 }
 
-/* Re-run only the cascade + layout (DOM mutated by script, hover change). */
 static void relayout_cheap(void) {
     if (!br_doc) return;
     br_css_compute(br_doc);
@@ -539,8 +509,6 @@ static void relayout_cheap(void) {
     brs.needs_layout = 0;
 }
 
-/* No visible text, picture or form control at all? Then the page relies on
- * scripts we could not run (an app shell, Google's result page, ...). */
 static int page_is_blank(void) {
     int n = br_box_count();
     for (int i = 0; i < n; i++) {
@@ -548,11 +516,11 @@ static int page_is_blank(void) {
         if (b->kind == BR_BOX_TEXT) {
             for (int k = 0; k < b->text_len; k++) {
                 uint8_t c = (uint8_t)b->text[k];
-                if (c == 0xC2 && k + 1 < b->text_len && (uint8_t)b->text[k + 1] == 0xA0) { k++; continue; }   /* nbsp */
+                if (c == 0xC2 && k + 1 < b->text_len && (uint8_t)b->text[k + 1] == 0xA0) { k++; continue; }
                 if (c > ' ') return 0;
             }
         } else if (b->kind == BR_BOX_IMAGE) {
-            if (b->w >= 8 && b->h >= 8) return 0;      /* tracking pixels do not count */
+            if (b->w >= 8 && b->h >= 8) return 0;
         } else if (b->kind == BR_BOX_INPUT || b->kind == BR_BOX_BUTTON || b->kind == BR_BOX_CHECKBOX) return 0;
     }
     return 1;
@@ -565,11 +533,10 @@ static int inside_hidden_noscript(br_node_t* n) {
     return 0;
 }
 
-static int auto_nav_chain = 0;    /* consecutive script/meta navigations without user input */
-static int nav_is_auto = 0;       /* the next br_navigate() was not requested by the user */
-static int page_needs_js = 0;     /* last page rendered empty and has scripts but no <noscript> */
+static int auto_nav_chain = 0;
+static int nav_is_auto = 0;
+static int page_needs_js = 0;
 
-/* <meta http-equiv="refresh" content="N;url=..."> - schedule the navigation. */
 static void check_meta_refresh(void) {
     if (!br_doc) return;
     for (int i = 0; i < br_dom_node_count(); i++) {
@@ -604,7 +571,7 @@ static void check_meta_refresh(void) {
         char abs[BR_URL_MAX];
         br_resolve_url(brs.url, target, abs, sizeof(abs));
         if (!is_net_url(abs) && !br_streq_prefix(abs, "file:") && !br_streq_prefix(abs, "about:")) continue;
-        if (delay == 0 && br_streq(abs, brs.url)) continue;              /* would loop forever */
+        if (delay == 0 && br_streq(abs, brs.url)) continue;
         br_strlcpy(brs.refresh_url, abs, sizeof(brs.refresh_url));
         brs.refresh_at = uptime_ticks + (uint32_t)delay * TICKS_PER_SEC;
         brs.refresh_auto = (delay == 0);
@@ -627,21 +594,20 @@ static void parse_and_show(void) {
     extract_title();
     set_window_title();
     layout_now();
-    /* Scripts run after the first layout so offsetWidth etc. have values. */
+
     brs.js_console_lines = 0;
     br_js_reset();
     br_status("Running scripts...");
     br_js_run_document(br_doc);
-    /* the title may have been changed by script */
-    int pending_nav = brs.needs_layout >= 2 ? brs.needs_layout : 0;   /* location.replace()/history.back() while loading */
-    if (pending_nav == 2 && br_streq(brs.address, brs.url)) { pending_nav = 0; brs.needs_layout = 1; }   /* reload() during load: ignore */
+
+    int pending_nav = brs.needs_layout >= 2 ? brs.needs_layout : 0;
+    if (pending_nav == 2 && br_streq(brs.address, brs.url)) { pending_nav = 0; brs.needs_layout = 1; }
     if (brs.needs_layout) { extract_title(); set_window_title(); relayout_cheap(); }
     else { set_window_title(); }
     page_needs_js = 0;
     if (!pending_nav && page_is_blank()) {
         if (br_find_first(br_doc, "noscript")) {
-            /* Nothing visible: fall back to the <noscript> content like a
-             * browser with scripting turned off would show it. */
+
             br_css_set_noscript(1);
             layout_now();
             br_js_console("page is empty without JavaScript - showing its <noscript> content");
@@ -651,8 +617,8 @@ static void parse_and_show(void) {
         }
     }
     if (!pending_nav) check_meta_refresh();
-    else brs.needs_layout = pending_nav;          /* executed by the next draw (run_pending_nav) */
-    /* fragment */
+    else brs.needs_layout = pending_nav;
+
     const char* hash = brs.url;
     while (*hash && *hash != '#') hash++;
     if (*hash == '#' && hash[1]) {
@@ -666,7 +632,7 @@ static int redirect_depth = 0;
 void br_navigate(const char* url_in, int push_history) {
     char url[BR_URL_MAX];
     br_strlcpy(url, url_in, sizeof(url));
-    /* trim */
+
     int l = (int)strlen(url);
     while (l > 0 && (url[l - 1] == ' ' || url[l - 1] == '\n')) url[--l] = 0;
     const char* u = url;
@@ -686,13 +652,12 @@ void br_navigate(const char* url_in, int push_history) {
         br_strlcat(full, u, sizeof(full));
     }
 
-    /* push_history: 1 = new entry (user navigation), 0 = keep (back/forward,
-     * reload), 2 = replace the current entry (script/meta redirects). */
+
     int automatic = nav_is_auto;
     nav_is_auto = 0;
     brs.refresh_pending = 0;
     if (automatic) {
-        /* pages bouncing between each other via script or <meta refresh> */
+
         if (++auto_nav_chain > 8) { br_status("Redirect loop stopped"); br_js_console("automatic redirect chain too long, stopped"); return; }
     } else auto_nav_chain = 0;
     if (push_history == 2 && brs.history_len == 0) push_history = 1;
@@ -703,9 +668,9 @@ void br_navigate(const char* url_in, int push_history) {
     brs.menu_open = 0;
     brs.address_focus = 0;
     br_status("Connecting...");
-    if (brs.win) { brs.win->needs_redraw = true; desktop_render(); }   /* show status immediately */
+    if (brs.win) { brs.win->needs_redraw = true; desktop_render(); }
 
-    /* keep source for about:source before overwriting */
+
     if (!br_streq(full, "about:source")) { source_copy_len = br_page_len; memcpy(source_copy, br_page_src, (size_t)br_page_len); }
 
     int ok = 1;
@@ -728,7 +693,7 @@ void br_navigate(const char* url_in, int push_history) {
         if (n < 0) { build_error_page(full, "File not found in the SharkOS file system (looked in the current directory and /System/Bin)."); ok = 0; }
         else {
             br_page_src[n] = 0; br_page_len = n;
-            /* plain text files: wrap in <pre> unless they look like HTML */
+
             int looks_html = my_strstr_ci(br_page_src, "<html") || my_strstr_ci(br_page_src, "<body") || my_strstr_ci(br_page_src, "<p") || my_strstr_ci(br_page_src, "<div") || my_strstr_ci(br_page_src, "<h1");
             if (!looks_html) {
                 static char tmp[BR_PAGE_MAX];
@@ -761,13 +726,13 @@ void br_navigate(const char* url_in, int push_history) {
             int is_https = br_streq_prefix(full, "https://");
             int status = is_http ? net_http_last_status : 200;
             if (is_http && status >= 300 && status <= 399 && net_http_last_location[0]) {
-                /* HTTP redirect (301/302/303/307/308): follow the Location header */
+
                 char loc[BR_URL_MAX];
                 br_resolve_url(full, net_http_last_location, loc, sizeof(loc));
                 if (is_net_url(loc) && redirect_depth < 5) {
                     redirect_depth++;
                     br_strlcpy(brs.url, full, sizeof(brs.url));
-                    if (automatic) auto_nav_chain--;      /* HTTP hops of one automatic navigation count once */
+                    if (automatic) auto_nav_chain--;
                     nav_is_auto = automatic;
                     br_navigate(loc, push_history);
                     redirect_depth--;
@@ -803,7 +768,7 @@ void br_navigate(const char* url_in, int push_history) {
     if (push_history == 2) {
         br_strlcpy(brs.history[brs.history_pos], full, BR_URL_MAX);
     } else if (push_history) {
-        /* drop forward history */
+
         if (brs.history_pos < brs.history_len - 1) brs.history_len = brs.history_pos + 1;
         if (brs.history_len >= BR_HISTORY_MAX) {
             for (int i = 1; i < BR_HISTORY_MAX; i++) memcpy(brs.history[i - 1], brs.history[i], BR_URL_MAX);
@@ -813,7 +778,7 @@ void br_navigate(const char* url_in, int push_history) {
         brs.history_pos = brs.history_len;
         brs.history_len++;
     }
-    int page_status = net_http_last_status;            /* before sub-resources overwrite it */
+    int page_status = net_http_last_status;
     uint32_t t_parse = uptime_ticks;
     subres_budget_start();
     parse_and_show();
@@ -831,7 +796,7 @@ void br_navigate(const char* url_in, int push_history) {
         if (is_net_url(full) && page_status && page_status != 200) {
             br_strlcat(st, " (HTTP ", sizeof(st)); br_itoa(page_status, num); br_strlcat(st, num, sizeof(st)); br_strlcat(st, ")", sizeof(st));
         }
-        /* render time: parse + cascade + layout + scripts (sub-resource fetches included) */
+
         br_strlcat(st, ", ", sizeof(st));
         br_itoa((int)((t_done - t_parse) * 1000 / TICKS_PER_SEC), num); br_strlcat(st, num, sizeof(st));
         br_strlcat(st, " ms", sizeof(st));
@@ -853,8 +818,6 @@ static void go_forward(void) {
     if (brs.history_pos < brs.history_len - 1) { brs.history_pos++; br_navigate(brs.history[brs.history_pos], 0); }
 }
 
-/* Scripts/forms ask for navigation by setting needs_layout = 2 (3 = back);
- * it is executed here, outside the interpreter. */
 static void run_pending_nav(int automatic) {
     if (brs.needs_layout == 2) {
         int mode = brs.nav_replace ? 2 : 1;
@@ -868,8 +831,6 @@ static void run_pending_nav(int automatic) {
     }
     nav_is_auto = 0;
 }
-
-/* --------------------------------------------------------------- state */
 
 static void br_reset_state(window_t* w) {
     br_font_init();
@@ -891,10 +852,6 @@ static int max_scroll(window_t* w) {
     return m < 0 ? 0 : m;
 }
 
-/* ---------------------------------------------------------------- paint */
-
-/* Text runs are TrueType glyphs alpha-blended straight onto whatever is
- * already painted, so no background colour is needed. */
 static void draw_text_run(const br_box_t* b, const char* s, int len, int x, int baseline_y, uint32_t fg, const w98_rect_t* clip) {
     int face = b->face, px = b->font_px > 0 ? b->font_px : 16;
     int flags = 0;
@@ -903,7 +860,6 @@ static void draw_text_run(const br_box_t* b, const char* s, int len, int x, int 
     br_font_draw_ex(face, px, s, len, x, baseline_y, fg, clip, flags);
 }
 
-/* Blend colour c (with alpha) over the back buffer inside clip. */
 static void blend_clipped(int x, int y, int w, int h, uint32_t c, const w98_rect_t* clip) {
     int x0 = x, y0 = y, x1 = x + w, y1 = y + h;
     if (x0 < clip->x) x0 = clip->x;
@@ -930,19 +886,18 @@ static void blend_clipped(int x, int y, int w, int h, uint32_t c, const w98_rect
 
 static void fill_clipped(int x, int y, int w, int h, uint32_t c, const w98_rect_t* clip);
 
-/* Filled rectangle with rounded corners (radius r), alpha aware. */
 static void fill_rounded(int x, int y, int w, int h, int r, uint32_t c, const w98_rect_t* clip) {
     if (r > w / 2) r = w / 2;
     if (r > h / 2) r = h / 2;
     int alpha = (int)(c >> 24);
     if (r <= 1) { if (alpha == 255) fill_clipped(x, y, w, h, c, clip); else blend_clipped(x, y, w, h, c, clip); return; }
-    /* middle band + per-row corner spans */
+
     if (alpha == 255) fill_clipped(x, y + r, w, h - 2 * r, c, clip); else blend_clipped(x, y + r, w, h - 2 * r, c, clip);
     for (int i = 0; i < r; i++) {
-        /* row i from the top edge: horizontal inset from the circle */
-        int dy = r - i;                               /* 1..r */
+
+        int dy = r - i;
         int dx = 0;
-        /* find largest dx with dx^2 + (dy-0.5)^2 <= r^2 (integer scaled by 4) */
+
         int rr4 = 4 * r * r, dy2 = (2 * dy - 1) * (2 * dy - 1);
         while ((2 * dx + 1) * (2 * dx + 1) + dy2 <= rr4) dx++;
         int inset = r - dx; if (inset < 0) inset = 0;
@@ -951,7 +906,6 @@ static void fill_rounded(int x, int y, int w, int h, int r, uint32_t c, const w9
     }
 }
 
-/* 1px rounded outline. */
 static void stroke_rounded(int x, int y, int w, int h, int r, int bw, uint32_t c, const w98_rect_t* clip) {
     if (r > w / 2) r = w / 2;
     if (r > h / 2) r = h / 2;
@@ -985,7 +939,7 @@ static void fill_clipped(int x, int y, int w, int h, uint32_t c, const w98_rect_
 static void draw_image_box(br_box_t* b, int sx, int sy, const w98_rect_t* clip) {
     br_image_t* im = br_image_get(b->img_index);
     if (im && im->pixels) {
-        /* nearest-neighbour scale into the box */
+
         int x0 = sx, y0 = sy, x1 = sx + b->w, y1 = sy + b->h;
         if (x0 < clip->x) x0 = clip->x;
         if (y0 < clip->y) y0 = clip->y;
@@ -1002,7 +956,7 @@ static void draw_image_box(br_box_t* b, int sx, int sy, const w98_rect_t* clip) 
                 int ix = (px - sx) * im->w / (b->w ? b->w : 1);
                 if (ix >= im->w) ix = im->w - 1;
                 uint32_t p = src[ix];
-                if ((p >> 24) < 0x80) continue;             /* transparent */
+                if ((p >> 24) < 0x80) continue;
                 row[px] = p | 0xFF000000u;
             }
         }
@@ -1016,13 +970,13 @@ static void draw_image_box(br_box_t* b, int sx, int sy, const w98_rect_t* clip) 
         }
         return;
     }
-    /* placeholder: bordered box with alt text */
+
     fill_clipped(sx, sy, b->w, b->h, 0xFFF0F0F0u, clip);
     fill_clipped(sx, sy, b->w, 1, 0xFF808080u, clip);
     fill_clipped(sx, sy + b->h - 1, b->w, 1, 0xFF808080u, clip);
     fill_clipped(sx, sy, 1, b->h, 0xFF808080u, clip);
     fill_clipped(sx + b->w - 1, sy, 1, b->h, 0xFF808080u, clip);
-    /* little "broken image" glyph */
+
     fill_clipped(sx + 3, sy + 3, 10, 10, 0xFF4080C0u, clip);
     fill_clipped(sx + 5, sy + 5, 3, 3, 0xFFFFFF00u, clip);
     if (b->text_len > 0 && b->w > 30 && b->h > 14) {
@@ -1033,7 +987,7 @@ static void draw_image_box(br_box_t* b, int sx, int sy, const w98_rect_t* clip) 
         if (ic.y + ic.h > clip->y + clip->h) ic.h = clip->y + clip->h - ic.y;
         if (ic.w > 0 && ic.h > 0) {
             int face = br_font_face(FONT_FAMILY_SANS, 0);
-            /* alt text, clipped to the box */
+
             int n = b->text_len;
             while (n > 1 && br_font_text_width(face, 11, b->text, n) > b->w - 20) n--;
             br_font_draw(face, 11, b->text, n, sx + 16, sy + 4 + br_font_ascent(face, 11), 0xFF404040u, &ic);
@@ -1056,7 +1010,7 @@ static void draw_page(window_t* w) {
         int sx = vx + b->x, sy = vy + b->y - brs.scroll_y;
         if (sy + b->h < vy || sy > vy + vh) continue;
         if (sx > vx + vw) continue;
-        if (b->node && !b->node->style.visible) continue;          /* visibility:hidden keeps its space */
+        if (b->node && !b->node->style.visible) continue;
         switch (b->kind) {
         case BR_BOX_RECT:
             if (b->bg && (b->bg >> 24)) {
@@ -1100,7 +1054,7 @@ static void draw_page(window_t* w) {
             uint32_t fg = b->color ? b->color : 0xFF000000u;
             if (b->text) draw_text_run(b, b->text, b->text_len, sx, sy + b->baseline, fg, &clip);
             else {
-                /* disc centred on the x-height middle */
+
                 int px = b->font_px > 0 ? b->font_px : 16;
                 int r = px >= 20 ? 4 : px >= 13 ? 3 : 2;
                 int cyy = sy + b->baseline - px * 3 / 10;
@@ -1115,7 +1069,7 @@ static void draw_page(window_t* w) {
         case BR_BOX_INPUT: {
             int focused = b->node && brs.focus_input == b->node->id;
             fill_clipped(sx, sy, b->w, b->h, 0xFFFFFFFFu, &clip);
-            /* sunken edge */
+
             fill_clipped(sx, sy, b->w, 1, 0xFF808080u, &clip); fill_clipped(sx, sy, 1, b->h, 0xFF808080u, &clip);
             fill_clipped(sx, sy + b->h - 1, b->w, 1, 0xFFFFFFFFu, &clip); fill_clipped(sx + b->w - 1, sy, 1, b->h, 0xFFFFFFFFu, &clip);
             fill_clipped(sx + 1, sy + 1, b->w - 2, 1, 0xFF000000u, &clip); fill_clipped(sx + 1, sy + 1, 1, b->h - 2, 0xFF000000u, &clip);
@@ -1125,7 +1079,7 @@ static void draw_page(window_t* w) {
             if (type && br_strieq(type, "password")) { int l = (int)strlen(v); if (l > 63) l = 63; for (int k = 0; k < l; k++) masked[k] = '*'; masked[l] = 0; v = masked; }
             int vl = (int)strlen(v);
             int px = b->font_px > 0 ? b->font_px : 13;
-            /* show the tail of the value if it is wider than the field */
+
             int start = 0;
             while (start < vl && br_font_text_width(b->face, px, v + start, vl - start) > b->w - 8) start++;
             w98_rect_t ic = { sx + 2, sy + 2, b->w - 4, b->h - 4 };
@@ -1151,7 +1105,7 @@ static void draw_page(window_t* w) {
             int pressed = brs.pressed_btn == 100 + i;
             uint32_t face = b->bg ? b->bg : W98_BTNFACE;
             if (b->radius > 1 || (b->node && b->node->style.background && b->node->style.background != 0xFFC0C0C0u)) {
-                /* author-styled button: flat, rounded, own border */
+
                 int rr = b->radius > 1 ? b->radius : 0;
                 if ((face >> 24) && (face & 0xFFFFFF) != 0xC0C0C0) fill_rounded(sx + pressed, sy + pressed, b->w, b->h, rr, face, &clip);
                 else fill_clipped(sx, sy, b->w, b->h, face, &clip);
@@ -1193,7 +1147,7 @@ static void draw_page(window_t* w) {
             if (checked) {
                 if (type && br_strieq(type, "radio")) fill_clipped(sx + 4, sy + 4, b->w - 8, b->h - 8, 0xFF000000u, &clip);
                 else {
-                    /* check mark */
+
                     for (int k = 0; k < 3; k++) fill_clipped(sx + 3 + k, sy + 6 + k, 1, 3, 0xFF000000u, &clip);
                     for (int k = 0; k < 5; k++) fill_clipped(sx + 6 + k, sy + 8 - k, 1, 3, 0xFF000000u, &clip);
                 }
@@ -1207,13 +1161,13 @@ static void draw_page(window_t* w) {
 static void draw_scrollbar(window_t* w) {
     int x = w->rect.client_x + w->rect.client_w - BR_SCROLL_W;
     int y = viewport_top(w), h = viewport_h(w);
-    /* track */
+
     for (int py = y; py < y + h; py++) for (int px = x; px < x + BR_SCROLL_W; px++) draw_pixel(px, py, ((px + py) & 1) ? W98_BTNFACE : W98_BTNHILITE);
-    /* arrows */
+
     w98_button(x, y, BR_SCROLL_W, 16, "", brs.pressed_btn == 1, 1, 0);
     w98_button(x, y + h - 16, BR_SCROLL_W, 16, "", brs.pressed_btn == 2, 1, 0);
     for (int k = 0; k < 4; k++) { w98_fill(x + 7 - k, y + 5 + k, 1 + 2 * k, 1, W98_BTNTEXT); w98_fill(x + 7 - k, y + h - 6 - k, 1 + 2 * k, 1, W98_BTNTEXT); }
-    /* thumb */
+
     int track = h - 32;
     int ms = max_scroll(w);
     int total = brs.page_h + 8 > h ? brs.page_h + 8 : h;
@@ -1235,17 +1189,17 @@ static void draw_toolbar(window_t* w) {
     w98_button(bx, by, BR_BTN_W, BR_BTN_H, "Reload", brs.pressed_btn == 12, 1, 0); bx += BR_BTN_W + 2;
     w98_button(bx, by, BR_BTN_W, BR_BTN_H, "Home", brs.pressed_btn == 13, 1, 0); bx += BR_BTN_W + 2;
     w98_button(bx, by, BR_BTN_W, BR_BTN_H, "Links v", brs.pressed_btn == 14, 1, 0); bx += BR_BTN_W + 2;
-    /* throbber / logo */
+
     int lx = x + cw - 26, ly = y + 4;
     w98_fill(lx, ly, 22, 22, W98_ACTIVE_TITLE);
     if (brs.loading) w98_fill(lx + 6, ly + 6, 10, 10, 0xFFFFFF00u);
     else { w98_fill(lx + 4, ly + 9, 14, 5, 0xFF60A0E0u); w98_fill(lx + 8, ly + 5, 4, 4, 0xFF60A0E0u); w98_fill(lx + 15, ly + 6, 3, 3, 0xFF60A0E0u); }
     w98_bevel(lx, ly, 22, 22, W98_BEVEL_SUNKEN);
-    /* separator */
+
     w98_fill(x, y + BR_TOOLBAR_H - 1, cw, 1, W98_BTNSHADOW);
     w98_fill(x, y + BR_TOOLBAR_H, cw, 1, W98_BTNHILITE);
 
-    /* address bar */
+
     int ay = y + BR_TOOLBAR_H + 3;
     w98_text("Address", x + 6, ay + 5, W98_BTNTEXT, W98_BTNFACE, 1, NULL);
     int ax = x + 56, aw = cw - 56 - 44 - 6, ah = 20;
@@ -1289,7 +1243,7 @@ static void draw_status(window_t* w) {
     int maxc = (cw - 100) / 6; if (maxc < 10) maxc = 10;
     if ((int)strlen(s) > maxc) s[maxc] = 0;
     w98_text(s, x + 6, y + 5, W98_BTNTEXT, W98_BTNFACE, 1, &clip);
-    /* right: zone indicator */
+
     const char* zone = br_streq_prefix(brs.url, "https://") ? "Internet (TLS)" : br_streq_prefix(brs.url, "http://") ? "Internet" : br_streq_prefix(brs.url, "file:") ? "Local file" : "Built-in";
     int zw = w98_text_width(zone, 1) + 10;
     w98_fill(x + cw - zw - 4, y + 1, 1, BR_STATUS_H - 2, W98_BTNSHADOW);
@@ -1318,7 +1272,7 @@ static void draw_alert(window_t* w) {
     w98_bevel(x, y, aw, ah, W98_BEVEL_RAISED);
     w98_fill(x + 3, y + 3, aw - 6, 18, W98_ACTIVE_TITLE);
     w98_text_bold("Shark Navigator", x + 8, y + 8, W98_TITLETEXT, W98_ACTIVE_TITLE, 1, NULL);
-    /* wrap alert text into up to 3 lines of 46 chars */
+
     const char* s = brs.alert_text;
     int line = 0, i = 0, len = (int)strlen(s);
     while (i < len && line < 3) {
@@ -1336,7 +1290,7 @@ static void draw_alert(window_t* w) {
 
 void app_window_draw_browser(window_t* w) {
     if (brs.win != w) {
-        /* first draw for this window (or window struct moved by close): (re)bind */
+
         if (!brs.win || brs.win->type != WINDOW_TYPE_BROWSER || brs.history_len == 0) {
             br_reset_state(w);
             br_navigate(brs.address, 1);
@@ -1344,7 +1298,7 @@ void app_window_draw_browser(window_t* w) {
             brs.win = w;
         }
     }
-    /* resize: layout width follows the window */
+
     int lw = w->rect.client_w - BR_SCROLL_W - 2;
     if (lw != brs.layout_width) { brs.layout_width = lw; brs.needs_layout = 1; }
     if (brs.needs_layout >= 2) run_pending_nav(1);
@@ -1358,16 +1312,14 @@ void app_window_draw_browser(window_t* w) {
     if (brs.alert_open) draw_alert(w);
 }
 
-/* ---------------------------------------------------------------- input */
-
 static br_box_t* box_at(window_t* w, int mx, int my) {
     int px = mx - w->rect.client_x, py = my - viewport_top(w) + brs.scroll_y;
-    /* topmost = last painted */
+
     for (int i = br_box_count() - 1; i >= 0; i--) {
         br_box_t* b = br_box(i);
         if (px >= b->x && px < b->x + b->w && py >= b->y && py < b->y + b->h) {
             if (b->kind == BR_BOX_RECT && !(b->node && b->node->type == BR_NODE_ELEMENT && (br_streq(b->node->tag, "a") || br_attr(b->node, "onclick")))) {
-                /* plain background rects don't swallow clicks unless the node is interactive */
+
                 br_node_t* n = b->node; int interactive = 0;
                 for (br_node_t* p = n; p; p = p->parent) if (p->type == BR_NODE_ELEMENT && (br_streq(p->tag, "a") || br_attr(p, "onclick") || (p->js_obj >= 0))) { interactive = 1; break; }
                 if (!interactive) continue;
@@ -1386,7 +1338,6 @@ static br_node_t* link_at(window_t* w, int mx, int my) {
     return NULL;
 }
 
-/* Called on every pointer move over the window (from browser_tick). */
 static void update_hover(window_t* w, int mx, int my) {
     int vy = viewport_top(w);
     int hover = -1;
@@ -1437,8 +1388,8 @@ static void activate_button(int id) {
 
 void app_window_mouse_browser(window_t* w, int mx, int my, int buttons) {
     if (brs.win != w) return;
-    if (buttons) auto_nav_chain = 0;         /* a click ends any redirect chain */
-    if (!(buttons & 1)) return;              /* presses only; releases handled in tick */
+    if (buttons) auto_nav_chain = 0;
+    if (!(buttons & 1)) return;
     int x = w->rect.client_x, y = w->rect.client_y;
 
     if (brs.alert_open) {
@@ -1458,11 +1409,11 @@ void app_window_mouse_browser(window_t* w, int mx, int my, int buttons) {
         }
         brs.menu_open = 0;
         br_request_repaint();
-        /* fall through: the click also acts normally, except on the Links button */
+
         if (toolbar_button_at(w, mx, my) == 14) return;
     }
 
-    /* toolbar buttons: press now, act on release (see browser_tick) */
+
     int tb = toolbar_button_at(w, mx, my);
     if (tb >= 0) {
         if ((tb == 10 && brs.history_pos <= 0) || (tb == 11 && brs.history_pos >= brs.history_len - 1)) return;
@@ -1471,7 +1422,7 @@ void app_window_mouse_browser(window_t* w, int mx, int my, int buttons) {
         br_request_repaint();
         return;
     }
-    /* address bar */
+
     int ay = y + BR_TOOLBAR_H + 3;
     int ax = x + 56, aw = w->rect.client_w - 56 - 44 - 6;
     if (my >= ay && my < ay + 20 && mx >= ax && mx < ax + aw) {
@@ -1491,7 +1442,7 @@ void app_window_mouse_browser(window_t* w, int mx, int my, int buttons) {
     }
     if (my >= y && my < y + BR_TOOLBAR_H + BR_ADDR_H) { brs.address_focus = 0; br_request_repaint(); return; }
 
-    /* scrollbar */
+
     int sx = x + w->rect.client_w - BR_SCROLL_W;
     int vy = viewport_top(w), vh = viewport_h(w);
     if (mx >= sx && my >= vy && my < vy + vh) {
@@ -1499,7 +1450,7 @@ void app_window_mouse_browser(window_t* w, int mx, int my, int buttons) {
         if (my < vy + 16) { brs.pressed_btn = 1; scroll_by(w, -BR_LINE_STEP); }
         else if (my >= vy + vh - 16) { brs.pressed_btn = 2; scroll_by(w, BR_LINE_STEP); }
         else {
-            /* page up/down or thumb drag start */
+
             int track = vh - 32;
             int ms = max_scroll(w);
             int total = brs.page_h + 8 > vh ? brs.page_h + 8 : vh;
@@ -1507,12 +1458,12 @@ void app_window_mouse_browser(window_t* w, int mx, int my, int buttons) {
             int ty = vy + 16 + (ms > 0 ? (track - th) * brs.scroll_y / ms : 0);
             if (my < ty) scroll_by(w, -(vh - BR_LINE_STEP));
             else if (my >= ty + th) scroll_by(w, vh - BR_LINE_STEP);
-            else { brs.pressed_btn = 3; brs.js_console_lines = brs.js_console_lines; /* thumb drag */ }
+            else { brs.pressed_btn = 3; brs.js_console_lines = brs.js_console_lines;  }
         }
         return;
     }
 
-    /* page click */
+
     if (my >= vy && my < vy + vh && mx >= x && mx < sx) {
         brs.address_focus = 0;
         br_box_t* b = box_at(w, mx, my);
@@ -1520,7 +1471,7 @@ void app_window_mouse_browser(window_t* w, int mx, int my, int buttons) {
         br_node_t* n = b->node;
         if (b->kind == BR_BOX_INPUT) {
             brs.focus_input = n ? n->id : -1;
-            /* clicking a select cycles its options */
+
             if (n && br_streq(n->tag, "select")) { br_js_dispatch_click(n); }
             br_request_repaint();
             return;
@@ -1534,7 +1485,7 @@ void app_window_mouse_browser(window_t* w, int mx, int my, int buttons) {
             return;
         }
         if (b->kind == BR_BOX_CHECKBOX) { br_js_dispatch_click(n); br_request_repaint(); return; }
-        /* any other box: click the innermost element (text -> parent element) */
+
         br_node_t* target = n;
         if (target && target->type == BR_NODE_TEXT) target = target->parent;
         if (b->link && !target) target = b->link;
@@ -1556,11 +1507,11 @@ static void address_insert(char c) {
 }
 
 void app_window_keyboard_browser(window_t* w, char c) {
-    auto_nav_chain = 0;                     /* user input ends any redirect chain */
+    auto_nav_chain = 0;
     if (brs.win != w) return;
     if (brs.alert_open) { if (c == '\n' || c == 27 || c == ' ') { brs.alert_open = 0; br_request_repaint(); } return; }
     if (brs.menu_open && c == 27) { brs.menu_open = 0; br_request_repaint(); return; }
-    /* Ctrl+L focuses the address bar, Ctrl+R reloads, Ctrl+H home */
+
     if (ctrl_pressed) {
         if (c == 'l' || c == 'L' || c == 12) { brs.address_focus = 1; brs.address_select_all = 1; brs.address_cursor = (int)strlen(brs.address); brs.focus_input = -1; br_request_repaint(); return; }
         if (c == 'r' || c == 'R' || c == 18) { br_navigate(brs.url, 0); return; }
@@ -1581,7 +1532,7 @@ void app_window_keyboard_browser(window_t* w, char c) {
             br_request_repaint();
             return;
         }
-        if (c == 0x10) { brs.address_cursor = 0; brs.address_select_all = 0; br_request_repaint(); return; }       /* Up: home */
+        if (c == 0x10) { brs.address_cursor = 0; brs.address_select_all = 0; br_request_repaint(); return; }
         if (c == 0x11) { brs.address_cursor = (int)strlen(brs.address); brs.address_select_all = 0; br_request_repaint(); return; }
         if (c == '\t') { brs.address_focus = 0; br_request_repaint(); return; }
         if (c >= 32 && c < 127) { address_insert(c); br_request_repaint(); }
@@ -1591,11 +1542,11 @@ void app_window_keyboard_browser(window_t* w, char c) {
         br_node_t* n = br_dom_node(brs.focus_input);
         if (!n) { brs.focus_input = -1; return; }
         if (c == 27) { brs.focus_input = -1; br_request_repaint(); return; }
-        /* arrow keys always scroll the page (there is no caret movement) */
+
         if (c == 0x10) { scroll_by(w, -BR_LINE_STEP); return; }
         if (c == 0x11) { scroll_by(w, BR_LINE_STEP); return; }
         if (c == '\t') {
-            /* next input */
+
             int found = 0;
             for (int i = n->id + 1; i < br_dom_node_count(); i++) { br_node_t* k = br_dom_node(i); if (k->type == BR_NODE_ELEMENT && br_streq(k->tag, "input") && k->lw > 0) { const char* t = br_attr(k, "type"); if (!t || br_strieq(t, "text") || br_strieq(t, "password") || br_strieq(t, "search") || br_strieq(t, "email") || br_strieq(t, "number") || br_strieq(t, "url")) { brs.focus_input = k->id; found = 1; break; } } }
             if (!found) brs.focus_input = -1;
@@ -1622,20 +1573,20 @@ void app_window_keyboard_browser(window_t* w, char c) {
         }
         return;
     }
-    /* page navigation keys */
+
     if (c == 0x10) { scroll_by(w, -BR_LINE_STEP); return; }
     if (c == 0x11) { scroll_by(w, BR_LINE_STEP); return; }
     if (c == ' ') { scroll_by(w, shift_pressed ? -(viewport_h(w) - BR_LINE_STEP) : viewport_h(w) - BR_LINE_STEP); return; }
     if (c == '\b') { go_back(); return; }
-    if (c == 27) { brs.menu_open = 0; brs.refresh_pending = 0; br_status("Stopped"); return; }   /* Esc also cancels a pending <meta refresh> */
+    if (c == 27) { brs.menu_open = 0; brs.refresh_pending = 0; br_status("Stopped"); return; }
     if (c == '/' ) { brs.address_focus = 1; brs.address_select_all = 1; brs.address_cursor = (int)strlen(brs.address); br_request_repaint(); return; }
     if (c == '\t') {
-        /* focus first text input */
+
         for (int i = 0; i < br_dom_node_count(); i++) { br_node_t* k = br_dom_node(i); if (k->type == BR_NODE_ELEMENT && br_streq(k->tag, "input") && k->lw > 0) { const char* t = br_attr(k, "type"); if (!t || br_strieq(t, "text") || br_strieq(t, "password") || br_strieq(t, "search")) { brs.focus_input = k->id; break; } } }
         br_request_repaint();
         return;
     }
-    /* typed text with nothing focused starts editing the address bar (like typing in IE) */
+
     if (c >= 32 && c < 127) {
         brs.address_focus = 1; brs.address_select_all = 1; brs.address_cursor = (int)strlen(brs.address);
         address_insert(c);
@@ -1649,8 +1600,6 @@ void browser_close(void) {
     brs.alert_open = 0;
     brs.menu_open = 0;
 }
-
-/* ---------------------------------------------------------------- tick */
 
 static int last_mouse_buttons = 0;
 static int last_tick_mx = -1, last_tick_my = -1;
@@ -1669,15 +1618,15 @@ void browser_tick(void) {
     window_t* w = find_browser_window();
     if (!w) { if (brs.win) browser_close(); return; }
     if (brs.win != w) {
-        /* window array shifted (another window closed): follow it */
+
         if (brs.win && brs.history_len > 0) brs.win = w;
-        else return;                      /* draw_func will initialise */
+        else return;
     }
     if (w->state == WINDOW_STATE_MINIMIZED) return;
 
     int mx = mouse_cursor_x, my = mouse_cursor_y, buttons = mouse_state.buttons;
 
-    /* releases: toolbar & page buttons act on release, scrollbar drag ends */
+
     if (last_mouse_buttons & 1 && !(buttons & 1)) {
         int pb = brs.pressed_btn;
         brs.pressed_btn = 0;
@@ -1709,31 +1658,31 @@ void browser_tick(void) {
             if (ny != brs.scroll_y) { brs.scroll_y = ny; br_request_repaint(); }
         }
     } else if (brs.pressed_btn != 3) { drag_start_y = 0; drag_start_scroll = 0; }
-    /* auto-repeat scroll arrows while held */
+
     if ((buttons & 1) && (brs.pressed_btn == 1 || brs.pressed_btn == 2) && (uptime_ticks % 80) == 0) scroll_by(w, brs.pressed_btn == 1 ? -BR_LINE_STEP : BR_LINE_STEP);
     last_mouse_buttons = buttons;
 
-    /* hover */
+
     if (mx != last_tick_mx || my != last_tick_my) {
         last_tick_mx = mx; last_tick_my = my;
         if (w->has_focus) update_hover(w, mx, my);
     }
 
-    /* JS timers (setTimeout/setInterval), throttled to 50 Hz */
+
     if (br_js_has_timers() && uptime_ticks - last_timer_run >= 20) {
         last_timer_run = uptime_ticks;
         br_js_tick();
         run_pending_nav(1);
     }
 
-    /* <meta http-equiv=refresh> */
+
     if (brs.refresh_pending && (int32_t)(uptime_ticks - brs.refresh_at) >= 0) {
         brs.refresh_pending = 0;
         nav_is_auto = brs.refresh_auto;
         br_navigate(brs.refresh_url, brs.refresh_replace ? 2 : 1);
     }
 
-    /* caret blink */
+
     if (w->has_focus && (brs.address_focus || brs.focus_input >= 0) && uptime_ticks - last_blink >= 500) {
         last_blink = uptime_ticks;
         br_request_repaint();

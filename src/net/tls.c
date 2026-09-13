@@ -1,24 +1,4 @@
-/* TLS 1.3 client for SharkOS (RFC 8446).
- *
- * Scope: exactly one cipher suite, TLS_AES_128_GCM_SHA256, with X25519 key
- * exchange - the mandatory-to-implement combination that every TLS 1.3
- * server offers. Enough for https:// pages in the browser.
- *
- * Supported:  ClientHello with SNI / supported_versions / key_share /
- *             signature_algorithms; ServerHello; EncryptedExtensions;
- *             Certificate (parsed for the subject CN, shown in the status
- *             bar); CertificateVerify (skipped, see below); server Finished
- *             (verified with HMAC); client Finished; application data in
- *             both directions; record padding; NewSessionTicket / KeyUpdate
- *             handling; close_notify and fatal alerts.
- * Not done:   certificate chain validation (no root store, no RSA/ECDSA
- *             verification), HelloRetryRequest, 0-RTT, resumption, TLS 1.2.
- *             So this gives you confidentiality and integrity against
- *             passive attackers, not authentication against an active
- *             man-in-the-middle. The browser says so in the status bar.
- *
- * Transport is abstracted through two callbacks, so the same file runs
- * against a real socket in tools/tlstest_net.c on the host. */
+
 
 #include "tls.h"
 
@@ -31,14 +11,12 @@
 #define TLS_LOG(...) do { } while (0)
 #endif
 
-/* ---------------------------------------------------------- helpers */
-
 static int tls_memcmp(const void* a, const void* b, size_t n) {
     const uint8_t* x = a; const uint8_t* y = b; int d = 0;
-    for (size_t i = 0; i < n; i++) d |= x[i] ^ y[i];   /* constant time */
+    for (size_t i = 0; i < n; i++) d |= x[i] ^ y[i];
     return d;
 }
-static void tls_memmove_down(uint8_t* dst, const uint8_t* src, size_t n) {   /* dst < src only */
+static void tls_memmove_down(uint8_t* dst, const uint8_t* src, size_t n) {
     for (size_t i = 0; i < n; i++) dst[i] = src[i];
 }
 
@@ -56,7 +34,6 @@ static int send_all(tls_t* t, const uint8_t* data, int len) {
     return 0;
 }
 
-/* Read exactly n bytes from the transport (blocking with an overall timeout). */
 static int recv_exact(tls_t* t, uint8_t* out, int n, int timeout_ms) {
     int got = 0;
     int waited = 0;
@@ -74,7 +51,6 @@ static int recv_exact(tls_t* t, uint8_t* out, int n, int timeout_ms) {
     return got;
 }
 
-/* HKDF-Expand-Label(secret, label, context, len) */
 static void expand_label(const uint8_t secret[32], const char* label, const uint8_t* ctx, int ctx_len, uint8_t* out, int out_len) {
     uint8_t info[2 + 1 + 6 + 32 + 1 + 64];
     int lab_len = (int)strlen(label);
@@ -94,7 +70,7 @@ static void derive_secret(const uint8_t secret[32], const char* label, const uin
 }
 
 static void transcript_hash(tls_t* t, uint8_t out[32]) {
-    sha256_ctx_t c = t->transcript;       /* copy: the running hash continues */
+    sha256_ctx_t c = t->transcript;
     sha256_final(&c, out);
 }
 
@@ -114,11 +90,8 @@ static void make_nonce(const uint8_t iv[12], uint64_t seq, uint8_t nonce[12]) {
     for (int i = 0; i < 8; i++) nonce[11 - i] ^= (uint8_t)(seq >> (8 * i));
 }
 
-/* ------------------------------------------------------------ records */
-
 static uint8_t out_rec[TLS_MAX_RECORD];
 
-/* Send one record. When encrypted, `type` becomes the inner content type. */
 static int send_record(tls_t* t, uint8_t type, const uint8_t* data, int len) {
     if (len > 16384) return -1;
     if (!t->encrypted) {
@@ -143,8 +116,6 @@ static int send_alert(tls_t* t, uint8_t level, uint8_t desc) {
     return send_record(t, 21, a, 2);
 }
 
-/* Receive and (if needed) decrypt the next record into t->rec; sets
- * rec_type / rec_plain_len / rec_used. Returns 1, 0 on timeout, -1 on error. */
 static int recv_record(tls_t* t, int timeout_ms) {
     int n = recv_exact(t, t->rec, 5, timeout_ms);
     if (n < 0) { t->peer_closed = 1; return -1; }
@@ -157,7 +128,7 @@ static int recv_record(tls_t* t, int timeout_ms) {
     if (n != len) { t->error = TLS_ERR_TRANSPORT; return -1; }
     t->rec_len = 5 + len;
     t->rec_used = 0;
-    if (type == 20) {                       /* change_cipher_spec: middlebox compat, ignore */
+    if (type == 20) {
         t->rec_plain_len = 0; t->rec_type = 20;
         return 1;
     }
@@ -180,7 +151,7 @@ static int recv_record(tls_t* t, int timeout_ms) {
         t->error = TLS_ERR_DECRYPT;
         return -1;
     }
-    /* strip padding: content type is the last non-zero byte */
+
     while (plen > 0 && t->rec[plen - 1] == 0) plen--;
     if (plen == 0) { t->error = TLS_ERR_PROTOCOL; return -1; }
     t->rec_type = t->rec[plen - 1];
@@ -188,21 +159,19 @@ static int recv_record(tls_t* t, int timeout_ms) {
     return 1;
 }
 
-/* ---------------------------------------------------- handshake build */
-
 static int build_client_hello(tls_t* t, uint8_t* out, const uint8_t pub[32], const uint8_t random[32]) {
     uint8_t* p = out;
-    *p++ = 1;                                   /* handshake type: client_hello */
+    *p++ = 1;
     uint8_t* len3 = p; p += 3;
-    put16(p, 0x0303); p += 2;                   /* legacy_version */
+    put16(p, 0x0303); p += 2;
     memcpy(p, random, 32); p += 32;
-    *p++ = 32;                                  /* legacy_session_id: 32 random bytes (middlebox compat) */
+    *p++ = 32;
     tls_random(p, 32); p += 32;
-    put16(p, 2); p += 2;                        /* cipher_suites */
-    put16(p, 0x1301); p += 2;                   /* TLS_AES_128_GCM_SHA256 */
-    *p++ = 1; *p++ = 0;                         /* compression: null */
+    put16(p, 2); p += 2;
+    put16(p, 0x1301); p += 2;
+    *p++ = 1; *p++ = 0;
     uint8_t* ext_len = p; p += 2;
-    /* server_name */
+
     int sn = (int)strlen(t->server_name);
     if (sn > 0) {
         put16(p, 0); p += 2;
@@ -212,31 +181,25 @@ static int build_client_hello(tls_t* t, uint8_t* out, const uint8_t pub[32], con
         put16(p, (uint32_t)sn); p += 2;
         memcpy(p, t->server_name, sn); p += sn;
     }
-    /* supported_versions: 1.3 only */
+
     put16(p, 43); p += 2; put16(p, 3); p += 2; *p++ = 2; put16(p, 0x0304); p += 2;
-    /* supported_groups: x25519 */
+
     put16(p, 10); p += 2; put16(p, 4); p += 2; put16(p, 2); p += 2; put16(p, 0x001d); p += 2;
-    /* signature_algorithms: we accept anything the server likes to sign with
-     * (we do not verify), list the common ones so servers are happy. */
+
     static const uint16_t sigalgs[] = { 0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601, 0x0807, 0x0808 };
     int ns = (int)(sizeof(sigalgs) / sizeof(sigalgs[0]));
     put16(p, 13); p += 2; put16(p, (uint32_t)(2 + 2 * ns)); p += 2; put16(p, (uint32_t)(2 * ns)); p += 2;
     for (int i = 0; i < ns; i++) { put16(p, sigalgs[i]); p += 2; }
-    /* key_share: x25519 */
+
     put16(p, 51); p += 2; put16(p, 38); p += 2; put16(p, 36); p += 2;
     put16(p, 0x001d); p += 2; put16(p, 32); p += 2; memcpy(p, pub, 32); p += 32;
-    /* psk_key_exchange_modes: psk_dhe_ke (required by some servers when tickets are sent) */
+
     put16(p, 45); p += 2; put16(p, 2); p += 2; *p++ = 1; *p++ = 1;
     put16(ext_len, (uint32_t)(p - ext_len - 2));
     put24(len3, (uint32_t)(p - len3 - 3));
     return (int)(p - out);
 }
 
-/* ------------------------------------------------- handshake parsing */
-
-/* Extract the subject CN from a DER certificate (best effort, display only).
- * Walks TBSCertificate: version[0]? serial, sigalg, issuer, validity, subject.
- * Inside subject: SET { SEQUENCE { OID 2.5.4.3, string } } */
 static int der_len(const uint8_t* p, int avail, int* hdr) {
     if (avail < 2) return -1;
     int l = p[1];
@@ -254,14 +217,14 @@ static void parse_cert_cn(const uint8_t* cert, int len, char* out, int out_max) 
     int h, l;
     const uint8_t* p = cert; int avail = len;
     if (*p != 0x30) return;
-    l = der_len(p, avail, &h); if (l < 0) return; p += h; avail = l;            /* Certificate */
+    l = der_len(p, avail, &h); if (l < 0) return; p += h; avail = l;
     if (*p != 0x30) return;
-    l = der_len(p, avail, &h); if (l < 0) return; p += h; avail = l;            /* TBSCertificate */
-    if (*p == 0xa0) { l = der_len(p, avail, &h); if (l < 0) return; p += h + l; avail -= h + l; }   /* version */
-    for (int field = 0; field < 5; field++) {                                    /* serial, sigalg, issuer, validity -> subject */
+    l = der_len(p, avail, &h); if (l < 0) return; p += h; avail = l;
+    if (*p == 0xa0) { l = der_len(p, avail, &h); if (l < 0) return; p += h + l; avail -= h + l; }
+    for (int field = 0; field < 5; field++) {
         l = der_len(p, avail, &h); if (l < 0) return;
         if (field == 4) {
-            /* subject: SEQUENCE OF SET OF SEQUENCE { OID, value } */
+
             const uint8_t* s = p + h; int sl = l;
             while (sl > 0) {
                 int h2, l2 = der_len(s, sl, &h2); if (l2 < 0) return;
@@ -285,8 +248,6 @@ static void parse_cert_cn(const uint8_t* cert, int len, char* out, int out_max) 
     }
 }
 
-/* Pull the next complete handshake message out of incoming records into
- * t->hs. Returns message type, or -1 on error. */
 static int next_handshake_message(tls_t* t, int* msg_len) {
     int need = -1;
     t->hs_len = 0;
@@ -311,7 +272,7 @@ static int next_handshake_message(tls_t* t, int* msg_len) {
         int avail = t->rec_plain_len - t->rec_used;
         int want = need > 0 ? need - t->hs_len : (4 - t->hs_len);
         if (need < 0 && t->hs_len + avail >= 4) {
-            /* take header first to learn the length, then as much body as present */
+
             want = 4 - t->hs_len;
             memcpy(t->hs + t->hs_len, t->rec + t->rec_used, want);
             t->hs_len += want; t->rec_used += want;
@@ -327,7 +288,7 @@ static int next_handshake_message(tls_t* t, int* msg_len) {
 }
 
 static int parse_server_hello(tls_t* t, const uint8_t* m, int len, uint8_t server_pub[32]) {
-    /* m points at the body (after 4-byte header) */
+
     static const uint8_t hrr_random[32] = { 0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11, 0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65, 0xB8, 0x91,
                                             0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E, 0x07, 0x9E, 0x09, 0xE2, 0xC8, 0xA8, 0x33, 0x9C };
     if (len < 38) return TLS_ERR_PROTOCOL;
@@ -337,7 +298,7 @@ static int parse_server_hello(tls_t* t, const uint8_t* m, int len, uint8_t serve
     if (p + 3 > len) return TLS_ERR_PROTOCOL;
     t->cipher = (uint16_t)get16(m + p); p += 2;
     if (t->cipher != 0x1301) return TLS_ERR_CIPHER;
-    p++;                                                /* compression */
+    p++;
     if (p + 2 > len) return TLS_ERR_PROTOCOL;
     int ext_len = (int)get16(m + p); p += 2;
     int end = p + ext_len;
@@ -359,8 +320,6 @@ static int parse_server_hello(tls_t* t, const uint8_t* m, int len, uint8_t serve
     return 0;
 }
 
-/* ---------------------------------------------------------- handshake */
-
 int tls_connect(tls_t* t, const char* server_name, tls_send_fn send, tls_recv_fn recv) {
     memset(t, 0, sizeof(*t));
     t->send = send; t->recv = recv;
@@ -371,19 +330,19 @@ int tls_connect(tls_t* t, const char* server_name, tls_send_fn send, tls_recv_fn
     }
     sha256_init(&t->transcript);
 
-    /* ephemeral key */
+
     uint8_t priv[32], pub[32], random[32], server_pub[32];
     tls_random(priv, 32);
     tls_random(random, 32);
     x25519_base(pub, priv);
 
-    /* ClientHello */
+
     static uint8_t hello[1024];
     int hl = build_client_hello(t, hello, pub, random);
     sha256_update(&t->transcript, hello, (size_t)hl);
     if (send_record(t, 22, hello, hl) < 0) return t->error = TLS_ERR_TRANSPORT;
 
-    /* ServerHello */
+
     int ml;
     int mt = next_handshake_message(t, &ml);
     if (mt < 0) return t->error ? t->error : TLS_ERR_TRANSPORT;
@@ -392,7 +351,7 @@ int tls_connect(tls_t* t, const char* server_name, tls_send_fn send, tls_recv_fn
     if (err) { send_alert(t, 2, err == TLS_ERR_CIPHER ? 40 : 70); return t->error = err; }
     sha256_update(&t->transcript, t->hs, (size_t)ml);
 
-    /* key schedule up to handshake traffic keys */
+
     uint8_t shared[32], early_secret[32], derived[32], empty_hash[32], th[32];
     x25519(shared, priv, server_pub);
     {
@@ -407,15 +366,15 @@ int tls_connect(tls_t* t, const char* server_name, tls_send_fn send, tls_recv_fn
     derive_secret(t->handshake_secret, "s hs traffic", th, t->server_hs_secret);
     set_traffic_keys(t, t->client_hs_secret, t->server_hs_secret);
     t->encrypted = 1;
-    t->rec_used = t->rec_plain_len;               /* anything after ServerHello in that record is invalid anyway */
+    t->rec_used = t->rec_plain_len;
 
-    /* Encrypted server flight: EncryptedExtensions, Certificate, CertificateVerify, Finished */
+
     int got_finished = 0;
     while (!got_finished) {
         mt = next_handshake_message(t, &ml);
         if (mt < 0) return t->error ? t->error : TLS_ERR_TRANSPORT;
         if (mt == 20) {
-            /* verify: HMAC(finished_key, transcript_hash(up to CertificateVerify)) */
+
             uint8_t fkey[32], expect[32];
             expand_label(t->server_hs_secret, "finished", NULL, 0, fkey, 32);
             transcript_hash(t, th);
@@ -423,7 +382,7 @@ int tls_connect(tls_t* t, const char* server_name, tls_send_fn send, tls_recv_fn
             if (ml - 4 != 32 || tls_memcmp(expect, t->hs + 4, 32) != 0) { send_alert(t, 2, 51); return t->error = TLS_ERR_FINISHED; }
             got_finished = 1;
         } else if (mt == 11) {
-            /* Certificate: context<0..255>, list length 3, then entries {len3, cert, ext len2, ext} */
+
             const uint8_t* m = t->hs + 4; int len = ml - 4;
             if (len > 4) {
                 int p = 1 + m[0];
@@ -434,7 +393,7 @@ int tls_connect(tls_t* t, const char* server_name, tls_send_fn send, tls_recv_fn
                 }
             }
         } else if (mt == 8 || mt == 15 || mt == 13) {
-            /* EncryptedExtensions / CertificateVerify / CertificateRequest: nothing to do */
+
         } else {
             send_alert(t, 2, 10);
             return t->error = TLS_ERR_PROTOCOL;
@@ -442,7 +401,7 @@ int tls_connect(tls_t* t, const char* server_name, tls_send_fn send, tls_recv_fn
         sha256_update(&t->transcript, t->hs, (size_t)ml);
     }
 
-    /* application traffic secrets (transcript now includes server Finished) */
+
     uint8_t master[32];
     transcript_hash(t, th);
     {
@@ -453,13 +412,13 @@ int tls_connect(tls_t* t, const char* server_name, tls_send_fn send, tls_recv_fn
     derive_secret(master, "c ap traffic", th, t->client_app_secret);
     derive_secret(master, "s ap traffic", th, t->server_app_secret);
 
-    /* client Finished (still under handshake keys) */
+
     {
         uint8_t fkey[32], fin[4 + 32];
         expand_label(t->client_hs_secret, "finished", NULL, 0, fkey, 32);
         hmac_sha256(fkey, 32, th, 32, fin + 4);
         fin[0] = 20; put24(fin + 1, 32);
-        /* legacy change_cipher_spec first for middleboxes */
+
         uint8_t ccs = 1;
         int save = t->encrypted; t->encrypted = 0;
         send_record(t, 20, &ccs, 1);
@@ -476,8 +435,6 @@ int tls_connect(tls_t* t, const char* server_name, tls_send_fn send, tls_recv_fn
     return 0;
 }
 
-/* -------------------------------------------------- application data */
-
 int tls_write(tls_t* t, const uint8_t* data, int len) {
     if (!t->handshake_done || t->error) return -1;
     int done = 0;
@@ -491,7 +448,7 @@ int tls_write(tls_t* t, const uint8_t* data, int len) {
 }
 
 static void key_update(tls_t* t, int request_back) {
-    /* server updated its sending key: derive the next server application secret */
+
     uint8_t next[32];
     expand_label(t->server_app_secret, "traffic upd", NULL, 0, next, 32);
     memcpy(t->server_app_secret, next, 32);
@@ -501,7 +458,7 @@ static void key_update(tls_t* t, int request_back) {
     expand_label(t->server_app_secret, "iv", NULL, 0, t->riv, 12);
     t->rseq = 0;
     if (request_back) {
-        uint8_t msg[5] = { 24, 0, 0, 1, 0 };            /* KeyUpdate(update_not_requested) */
+        uint8_t msg[5] = { 24, 0, 0, 1, 0 };
         send_record(t, 22, msg, 5);
         expand_label(t->client_app_secret, "traffic upd", NULL, 0, next, 32);
         memcpy(t->client_app_secret, next, 32);
@@ -529,12 +486,12 @@ int tls_read(tls_t* t, uint8_t* out, int max, int timeout_ms) {
         if (t->rec_type == 23) continue;
         if (t->rec_type == 21) {
             t->alert_received = t->rec[1];
-            t->peer_closed = 1;                        /* close_notify or fatal: either way we are done */
+            t->peer_closed = 1;
             t->rec_used = t->rec_plain_len;
             return -1;
         }
         if (t->rec_type == 22) {
-            /* post-handshake messages: NewSessionTicket (4) ignored, KeyUpdate (24) handled */
+
             int p = 0;
             while (p + 4 <= t->rec_plain_len) {
                 int type = t->rec[p], l = (int)get24(t->rec + p + 1);
@@ -544,12 +501,12 @@ int tls_read(tls_t* t, uint8_t* out, int max, int timeout_ms) {
             t->rec_used = t->rec_plain_len;
             continue;
         }
-        t->rec_used = t->rec_plain_len;               /* unknown type: skip */
+        t->rec_used = t->rec_plain_len;
     }
 }
 
 void tls_close(tls_t* t) {
-    if (t->handshake_done && !t->peer_closed && !t->error) send_alert(t, 1, 0);   /* close_notify */
+    if (t->handshake_done && !t->peer_closed && !t->error) send_alert(t, 1, 0);
     memset(&t->wkey, 0, sizeof(t->wkey));
     memset(&t->rkey, 0, sizeof(t->rkey));
     memset(t->handshake_secret, 0, 32);

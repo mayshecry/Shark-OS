@@ -1,11 +1,4 @@
-/* windowmanager.c - Win98-style window manager for SharkOS.
- *
- * Painting is non-destructive: every frame, desktop_render() composites the
- * wallpaper, then the windows in ascending z-order, then the start menu and
- * the taskbar, and flushes once. There is therefore no per-window framebuffer
- * backup to save or restore - that model leaked memory (kfree() is a no-op in
- * this bump allocator) and smeared the desktop whenever windows overlapped.
- */
+
 
 #include "kernel.h"
 #include "desktop.h"
@@ -16,7 +9,6 @@
 #define RESIZE_EDGE_TOP    4
 #define RESIZE_EDGE_BOTTOM 8
 
-/* How close to an edge counts as grabbing it. */
 #define RESIZE_GRAB        4
 
 desktop_state_t desktop;
@@ -27,16 +19,9 @@ int desktop_drag_window = -1;
 int desktop_resize_window = -1;
 int desktop_resize_edge = 0;
 
-/* Caption-button press is deferred to mouse-up, like Win98. */
 static int caption_press_window = -1;
 static int caption_press_kind = -1;
 
-/* ------------------------------------------------------------------ geometry */
-
-/* Single source of truth for the client rectangle. It used to be recomputed
- * inline in window_create(), window_drag_update() and window_resize_update(),
- * and window_maximize() did not recompute it at all - so maximized windows
- * kept drawing at their restored size. */
 void window_update_client_rect(window_t* w) {
     w->rect.client_x = w->rect.x + W98_CLIENT_INSET;
     w->rect.client_y = w->rect.y + W98_CLIENT_TOP;
@@ -48,7 +33,7 @@ void window_update_client_rect(window_t* w) {
 
 void window_caption_button_rect(window_t* w, int which, int* rx, int* ry,
                                 int* rw, int* rh) {
-    /* Order left to right: minimise, maximise/restore, close. */
+
     int slot = 0;
     if (which == W98_GLYPHKIND_MIN) slot = 0;
     else if (which == W98_GLYPHKIND_MAX) slot = 1;
@@ -64,9 +49,6 @@ void window_caption_button_rect(window_t* w, int which, int* rx, int* ry,
     if (rh) *rh = W98_CAPBTN_H;
 }
 
-/* Returns the resize-edge bitmask for a point, or 0. Corners combine flags,
- * which the old code could never produce: window_begin_drag() intercepted the
- * top and bottom bands first and hardcoded the edge to 1, 2 or 8. */
 static int get_resize_edge(window_t* w, int mx, int my) {
     int rx = w->rect.x;
     int ry = w->rect.y;
@@ -129,10 +111,8 @@ window_hit_t window_hit_test(window_t* w, int mx, int my, int* resize_edge) {
         }
     }
 
-    return WINDOW_HIT_TITLEBAR;   /* the frame padding - still a grip */
+    return WINDOW_HIT_TITLEBAR;
 }
-
-/* ------------------------------------------------------------ z-order access */
 
 static window_t* window_topmost_from(int start, int* out_idx) {
     int best = -1;
@@ -160,8 +140,6 @@ void window_focus_top_visible(void) {
     }
     if (best >= 0) desktop.windows[best].has_focus = true;
 }
-
-/* ------------------------------------------------------------------ lifecycle */
 
 int window_create(window_type_t type, const char* title, int x, int y, int w, int h) {
     if (desktop.window_count >= MAX_WINDOWS) return -1;
@@ -290,8 +268,7 @@ void window_close(int idx) {
     if (desktop_resize_window > idx) desktop_resize_window--;
     if (caption_press_window > idx) caption_press_window--;
 
-    /* The old code gave focus to the highest z_order window whether or not it
-     * was visible, which left keyboard input going nowhere. */
+
     window_focus_top_visible();
 
     desktop.dirty = true;
@@ -306,9 +283,7 @@ void window_minimize(int idx) {
     win->visible = false;
     win->needs_redraw = true;
 
-    /* Minimizing used to leave has_focus set on a hidden window, so
-     * window_get_focused() (which requires visible) returned NULL and the
-     * keyboard went dead until the user clicked something. */
+
     if (win->has_focus) {
         win->has_focus = false;
         window_focus_top_visible();
@@ -331,8 +306,7 @@ void window_maximize(int idx) {
     win->rect.prev_w = win->rect.width;
     win->rect.prev_h = win->rect.height;
 
-    /* Win98 lets a maximized window hang 4px off each edge, so the outer
-     * bevel is off-screen and only the 1px inner frame shows. */
+
     win->rect.x = -W98_BORDER_W - W98_FRAME_PAD;
     win->rect.y = -W98_BORDER_W - W98_FRAME_PAD;
     win->rect.width = (int)screen_width + (W98_BORDER_W + W98_FRAME_PAD) * 2;
@@ -402,10 +376,6 @@ void window_close_by_ptr(window_t* w) {
     }
 }
 
-/* ------------------------------------------------------------------ painting */
-
-/* Nearest-neighbour 32x32 -> 16x16 for the titlebar icon, cached per window
- * type so dragging does not resample every frame. */
 static uint32_t title_icon_cache[WINDOW_TYPE_MAX][16 * 16];
 static bool title_icon_ready[WINDOW_TYPE_MAX];
 
@@ -430,7 +400,7 @@ static void window_build_title_icon(window_t* w) {
             if (((p >> 24) & 0xFF) > 128) {
                 dst[y * 16 + x] = 0xFF000000u | (p & 0x00FFFFFFu);
             } else {
-                /* Win98 title icons are transparent where the icon is. */
+
                 dst[y * 16 + x] = 0;
             }
         }
@@ -466,14 +436,13 @@ void window_draw_frame(window_t* w) {
     int ww = w->rect.width;
     int wh = w->rect.height;
 
-    /* Opaque body. Windows are painted back-to-front into the back buffer, so
-     * each one has to cover what is behind it. */
+
     w98_fill(x, y, ww, wh, W98_BTNFACE);
 
-    /* Outer bevel: highlight/dark-shadow on the outside, light/shadow inside. */
+
     w98_bevel(x, y, ww, wh, W98_BEVEL_RAISED);
 
-    /* Titlebar. */
+
     int tb_x = x + W98_BORDER_W + W98_FRAME_PAD;
     int tb_y = y + W98_BORDER_W + W98_FRAME_PAD;
     int tb_w = ww - (W98_BORDER_W + W98_FRAME_PAD) * 2;
@@ -494,7 +463,7 @@ void window_draw_frame(window_t* w) {
 #endif
     }
 
-    /* Title icon and caption. */
+
     int text_x = tb_x + 3;
     window_build_title_icon(w);
     if (w->type >= 0 && w->type < WINDOW_TYPE_MAX) {
@@ -520,13 +489,10 @@ void window_draw_frame(window_t* w) {
     window_draw_caption_button(w, W98_GLYPHKIND_MAX);
     window_draw_caption_button(w, W98_GLYPHKIND_CLOSE);
 
-    /* Client area. Apps paint over this; the fill just guarantees that a
-     * partially-drawn client never shows the wallpaper through it. */
+
     w98_fill(w->rect.client_x, w->rect.client_y,
              w->rect.client_w, w->rect.client_h, W98_BTNFACE);
 }
-
-/* ------------------------------------------------------------------- input */
 
 static void window_caption_activate(window_t* w, int kind) {
     if (!w) return;
@@ -540,9 +506,7 @@ static void window_caption_activate(window_t* w, int kind) {
 }
 
 void window_begin_drag(int mx, int my) {
-    /* Front-to-back, stopping at the first window that contains the point.
-     * The old version kept scanning after a hit, so a click inside a lower
-     * window's resize border could steal it from the window on top. */
+
     int idx = -1;
     window_t* w = window_topmost_from(-1, &idx);
 
@@ -609,11 +573,15 @@ void window_drag_update(int mx, int my) {
     }
     window_t* w = &desktop.windows[desktop_drag_window];
 
+    int old_x = w->rect.x;
+    int old_y = w->rect.y;
+    int old_w = w->rect.width;
+    int old_h = w->rect.height;
+
     int new_x = mx - w->drag_off_x;
     int new_y = my - w->drag_off_y;
 
-    /* Win98 lets you drag a window partly off the top and sides, but never so
-     * far that the titlebar leaves the screen. */
+
     int work_h = (int)screen_height - TASKBAR_HEIGHT;
     if (new_y < 0) new_y = 0;
     if (new_y > work_h - W98_BORDER_W - W98_TITLEBAR_H) {
@@ -630,7 +598,10 @@ void window_drag_update(int mx, int my) {
     w->rect.y = new_y;
     window_update_client_rect(w);
     w->needs_redraw = true;
-    desktop.dirty = true;
+
+
+    desktop_invalidate_rect(old_x, old_y, old_x + old_w, old_y + old_h);
+    desktop_invalidate_rect(new_x, new_y, new_x + old_w, new_y + old_h);
 }
 
 void window_resize_update(int mx, int my) {
@@ -639,6 +610,11 @@ void window_resize_update(int mx, int my) {
         return;
     }
     window_t* w = &desktop.windows[desktop_resize_window];
+
+    int old_x = w->rect.x;
+    int old_y = w->rect.y;
+    int old_w = w->rect.width;
+    int old_h = w->rect.height;
 
     int dx = mx - w->drag_off_x;
     int dy = my - w->drag_off_y;
@@ -666,8 +642,7 @@ void window_resize_update(int mx, int my) {
         new_y += dy;
     }
 
-    /* Clamp without letting the opposite edge drift, which is what made the
-     * old left/top resizing feel like the window was running away. */
+
     if (new_w < min_w) {
         if (desktop_resize_edge & RESIZE_EDGE_LEFT) {
             new_x -= min_w - new_w;
@@ -702,7 +677,10 @@ void window_resize_update(int mx, int my) {
     w->drag_off_y = my;
 
     w->needs_redraw = true;
-    desktop.dirty = true;
+
+
+    desktop_invalidate_rect(old_x, old_y, old_x + old_w, old_y + old_h);
+    desktop_invalidate_rect(new_x, new_y, new_x + new_w, new_y + new_h);
 }
 
 int window_caption_pressed(void) {
@@ -722,7 +700,7 @@ void window_end_drag(void) {
     desktop_resize_window = -1;
     desktop_resize_edge = 0;
 
-    /* Caption buttons fire on release, so a press-and-drag-away cancels. */
+
     if (caption_press_window >= 0 &&
         caption_press_window < desktop.window_count) {
         window_t* w = &desktop.windows[caption_press_window];
@@ -737,8 +715,6 @@ void window_end_drag(void) {
 
     desktop.dirty = true;
 }
-
-/* ------------------------------------------------------------------- paint */
 
 static void draw_window_content(window_t* w) {
     if (w->draw_func) {
@@ -757,7 +733,7 @@ void window_draw_all(void) {
         }
     }
 
-    /* Ascending z_order: lowest window first, so higher ones paint over it. */
+
     for (int i = 1; i < draw_count; i++) {
         int j = i;
         while (j > 0 &&

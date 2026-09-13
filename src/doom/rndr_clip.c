@@ -1,4 +1,4 @@
-/* rndr_clip.c - clip range arrays (rndr/clip_range_array) */
+
 #include "rndr_clip.h"
 
 void rndr_clip_reset(rndr_clip_t *c, int view_h) {

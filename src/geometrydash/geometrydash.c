@@ -242,7 +242,7 @@ static void draw_hud(void) {
 
 static void blit(void) {
     uint32_t stride = (uint32_t)(screen_pitch / 4);
-    int scale = 2;  /* Fixed scale for 320x200 to 640x400 */
+    int scale = 2;
     if (scale < 1) scale = 1;
 
     for (int y = 0; y < 200 && y * scale < window_h; y++) {
@@ -573,11 +573,11 @@ void gd_run(void) {
 
     state = MENU;
 
-    const uint32_t STEP_INTERVAL = 16; 
+    const uint32_t STEP_INTERVAL = 16;
     uint32_t last = uptime_ticks;
 
     while (running) {
-        
+
         char c;
         int action = 0;
         int keys_processed = 0;
@@ -604,7 +604,7 @@ void gd_run(void) {
             }
         }
 
-        
+
         uint32_t now = uptime_ticks;
         if (now - last >= STEP_INTERVAL) {
             if (state == PLAYING) {
@@ -614,8 +614,8 @@ void gd_run(void) {
             render_frame();
             last = now;
         }
-        
-        yield(); 
+
+        yield();
     }
 
     gd_cleanup();
@@ -647,7 +647,7 @@ void gd_set_kernel_mode(void) {
 
 void gd_tick(void) {
     if (state == QUIT) return;
-    
+
     if (state == PLAYING) {
         update();
         if (!alive) state = GAMEOVER;

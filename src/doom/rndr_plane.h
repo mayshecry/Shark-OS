@@ -1,6 +1,4 @@
-/* rndr_plane.h - visplanes (cpp-doom rndr/visplane, original r_plane):
- * horizontal floor/ceiling planes merged by pic+height, spans recorded
- * per column during BSP traversal, mapped at the end of the frame. */
+
 #ifndef RNDR_PLANE_H
 #define RNDR_PLANE_H
 
@@ -11,8 +9,8 @@
 #define RNDR_MAX_VISPLANES 96
 
 typedef struct {
-    int pic;          /* flat index */
-    int height;       /* world height of the plane */
+    int pic;
+    int height;
     int light;
     int minx, maxx;
     int16_t top[RNDR_W], bottom[RNDR_W];

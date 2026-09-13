@@ -1,9 +1,4 @@
-/*
-So, Uhh i wanted to name it flappybirb but then i remembered i need a J*B so like uhh this is flappybird
-So don't fap with the bird hehe (i fucking hate myself for this comment)
-Cleanest code in the world on the best OS im the best for this flappybirb
-nvidia fuck you - big torvalds
-*/
+
 
 #include "kernel.h"
 #include "flappybird.h"
@@ -12,7 +7,6 @@ nvidia fuck you - big torvalds
 uint8_t flappybird_screen[FLAPPYBIRD_SCREEN_H][FLAPPYBIRD_SCREEN_W];
 uint32_t flappybird_palette[256];
 
-/*https://youtu.be/2VZH5WQLAGo holy fucking banger cuz those colors rock that body*/
 #define COL_BLACK   0
 #define COL_WHITE   15
 #define COL_GREY    8
@@ -72,7 +66,7 @@ static void draw_bird(int x, int y, uint8_t bc) {
 }
 
 static void draw_pipe(pipe_t *p) {
-    int gt = p->y - 65;  /* Larger gap - easier gameplay */
+    int gt = p->y - 65;
     int gb = p->y + 65;
 
     fill_rect(p->x, 0, 28, gt, COL_PIPE);
@@ -89,7 +83,7 @@ static void draw_pipe(pipe_t *p) {
     }
 }
 
-static void draw_scene(void) { /*This was a headache to make anyone reading this send help*/
+static void draw_scene(void) {
     fill_rect(0, 0, 320, 155, COL_SKY);
     fill_rect(0, 155, 320, 45, COL_GROUND);
     fill_rect(0, 153, 320, 2, COL_GRASS);
@@ -120,7 +114,7 @@ static void draw_font_char(int x, int y, char c, uint8_t fg) {
     }
 }
 
-static void draw_number(int x, int y, int val, uint8_t col) { /*Smooth number go BRRRRR (if it breaks ur a femboy)*/
+static void draw_number(int x, int y, int val, uint8_t col) {
     if (val > 9999) val = 9999;
     char tmp[6];
     int len = 0;
@@ -150,13 +144,13 @@ static void draw_hud(void) {
 
 static void blit(void) {
     uint32_t stride = (uint32_t)(screen_pitch / 4);
-    /* Calculate scale to fit window, targeting 320x200 */
+
     int scale = 2;
     if (scale < 1) scale = 1;
 
     int max_y = (window_h / scale);
     int max_x = (window_w / scale);
-    
+
     if (max_y > 200) max_y = 200;
     if (max_x > 320) max_x = 320;
 
@@ -185,7 +179,7 @@ void flappybird_set_window_rect(int x, int y, int w, int h) {
     window_h = h;
 }
 
-static void build_pal(void) { /*Holy shit it's builidng a birb*/
+static void build_pal(void) {
     for (int i = 0; i < 256; i++)
         flappybird_palette[i] = 0;
     flappybird_palette[0]  = 0x000000;
@@ -208,24 +202,24 @@ static void build_pal(void) { /*Holy shit it's builidng a birb*/
     flappybird_palette[0] = 0x000000;
 }
 
-static void spawn_pipe(void) { /*Nintendo i know it looks like mario his pipes but i just a pijpbeurt (the dutch will understand!)*/
+static void spawn_pipe(void) {
     if (pipe_count >= 16) return;
-    
-    /* First pipe spawns further away for easier start */
+
+
     int spawn_x = (pipe_count == 0) ? 380 : 320;
-    
-    /* Center the gap in screen (bird at y=100), with some variation */
+
+
     pipes[pipe_count].x = spawn_x;
-    pipes[pipe_count].y = 100 + (score * 7 % 40) - 20;  /* Range 80-120, centered at 100 */
+    pipes[pipe_count].y = 100 + (score * 7 % 40) - 20;
     if (pipes[pipe_count].y < 80) pipes[pipe_count].y = 80;
     if (pipes[pipe_count].y > 120) pipes[pipe_count].y = 120;
     pipe_count++;
 }
 
-static void flap(void); /*foward heb je hulp nodig dat is hier*/
+static void flap(void);
 static void init_game(void) {
     bird_x_fix = to_fix(60);
-    bird_y_fix = to_fix(100);  /* Start bird in middle of screen */
+    bird_y_fix = to_fix(100);
     bird_vel_fix = 0;
     alive = 1;
     pipe_count = 0;
@@ -256,14 +250,14 @@ static void auto_flap(void) {
 }
 
 static void update(void) {
-    if (!alive) return; /*this would return false with my mental state im not alive*/
+    if (!alive) return;
 
-    bird_vel_fix += to_fix(1) / 4;  /* Even lighter gravity - easier gameplay */
+    bird_vel_fix += to_fix(1) / 4;
 
-    /* Lower max fall speed */
+
     if (bird_vel_fix > to_fix(6)) bird_vel_fix = to_fix(6);
-    
-    /* Added buffer from top of screen */
+
+
     if (bird_y_fix < to_fix(10)) bird_y_fix = to_fix(10);
 
     bird_y_fix += bird_vel_fix;
@@ -273,7 +267,7 @@ static void update(void) {
     if (by < 0) { by = 0; bird_y_fix = 0; bird_vel_fix = to_fix(1); }
 
     if (by > 148) {
-        alive = 0; /*the bird is dead and so am i insert the xxxtentacion sad music*/
+        alive = 0;
         if (score > best_score) best_score = score;
         return;
     }
@@ -287,7 +281,7 @@ static void update(void) {
         }
 
         if (60 + 3 < pipes[i].x + 28 && 60 + 9 > pipes[i].x) {
-            int gt = pipes[i].y - 65;  /* Match draw_pipe gap */
+            int gt = pipes[i].y - 65;
             int gb = pipes[i].y + 65;
 
             if (by + 1 < gt || by + 7 > gb) {
@@ -310,27 +304,26 @@ static void update(void) {
     }
 
     if (pipe_count == 0 || pipes[pipe_count - 1].x < 200) {
-        spawn_pipe(); /*pipe.*/
+        spawn_pipe();
     }
 }
 
-/* Check if bird is within the gap of the first pipe */
 static int check_first_pipe_collision(void) {
     if (pipe_count == 0) return 0;
     int gt = pipes[0].y - 55;
     int gb = pipes[0].y + 55;
     int by = to_int(bird_y_fix);
-    /* Bird is 8 pixels tall, check if it fits */
-    if (by + 8 <= gt || by >= gb) return 1; /* Clear collision */
-    return 0; /* Safe passage */
+
+    if (by + 8 <= gt || by >= gb) return 1;
+    return 0;
 }
 
-static void flap(void) { /*flap go up velocity is fucked (it works but it's fucked still needs a bit of magic)*/
+static void flap(void) {
     if (!alive) return;
-    bird_vel_fix = to_fix(-7);  /* Moderate flap - easier to control */
+    bird_vel_fix = to_fix(-7);
 }
 
-static void draw_menu(void) { /*menu goes brrrr*/
+static void draw_menu(void) {
 
     fill_rect(0, 0, 320, 155, COL_SKY);
     fill_rect(0, 155, 320, 45, COL_GROUND);
@@ -383,7 +376,7 @@ static void render_frame(void) {
     }
 }
 
-void flappybird_init(void) { /*oi this init function is a bit bri'ish bottle o' water innit!@>!>*/
+void flappybird_init(void) {
     running = 1;
     best_score = 0;
     score = 0;
@@ -408,7 +401,7 @@ void flappybird_run(void) {
     state = MENU;
     auto_play = 0;
 
-    const uint32_t STEP_INTERVAL = 16; /* 60 FPS */
+    const uint32_t STEP_INTERVAL = 16;
     uint32_t last = uptime_ticks;
 
     while (running) {
@@ -443,8 +436,8 @@ void flappybird_run(void) {
             render_frame();
             last = now;
         }
-        
-        yield(); /* Let multitasking scheduler run other tasks */
+
+        yield();
     }
 
     flappybird_cleanup();
@@ -460,7 +453,7 @@ void flappybird_handle_key(int key) {
 
     if (state == MENU) {
         static int cheat_idx = 0;
-        const char* target = "1337";/*Holy */
+        const char* target = "1337";
         if (key == target[cheat_idx]) {
             cheat_idx++;
             if (cheat_idx == 4) {
@@ -489,20 +482,20 @@ void flappybird_handle_key(int key) {
     }
 }
 
-void flappybird_set_kernel_mode(void) { /*don't ask why this is here it fixed my errors so ig just let it be here :3*/
+void flappybird_set_kernel_mode(void) {
 }
 
 void flappybird_tick(void) {
     if (state == QUIT) return;
-    
-    /* Frame rate limiting for desktop mode */
+
+
     uint32_t now = uptime_ticks;
     if (now - last_tick_time < 16) {
         render_frame();
         return;
     }
     last_tick_time = now;
-    
+
     char c;
     int keys_processed = 0;
     while (keys_processed < 4 && (c = keyboard_getchar()) != 0) {
@@ -511,12 +504,12 @@ void flappybird_tick(void) {
             if (current_kernel_mode == KERNEL_MODE_DESKTOP) desktop.dirty = true;
             return;
         }
-        /* Handle game start and input */
+
         if (c == ' ' || c == '\n' || c == 'w' || c == 'W') {
             if (state == MENU) {
                 init_game();
                 state = PLAYING;
-                /* Clear buffered keys to prevent instant death */
+
                 while (keyboard_getchar() != 0) { }
             } else if (state == PLAYING) {
                 flap();
@@ -526,7 +519,7 @@ void flappybird_tick(void) {
             }
         }
     }
-    
+
     if (state == PLAYING) {
         if (auto_play) auto_flap();
         update();

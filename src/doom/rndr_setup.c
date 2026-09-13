@@ -1,7 +1,4 @@
-/* rndr_setup.c - level construction: grid extraction and BSP build.
- * The original engine gets segs/subsectors/nodes from WAD lumps built
- * by an offline node builder; here the same structures are built once
- * at init from the extracted geometry, then rendering walks the tree. */
+
 #include "rndr_setup.h"
 
 static rndr_seg_t tmp_segs[RNDR_MAX_SEGS];
@@ -11,15 +8,13 @@ static int tmp_num_subs;
 static rndr_node_t tmp_nodes[RNDR_MAX_NODES];
 static int tmp_num_nodes;
 
-/* front sector must be on the left of (v1 -> v2); renderer treats
- * cross(dir, p - v1) < 0 as the front side. */
 static void add_line(int32_t ax, int32_t ay, int32_t bx, int32_t by,
                      int front, int back, int mid, int top, int bot) {
     if (tmp_num_segs >= RNDR_MAX_SEGS) return;
     rndr_seg_t *sg = &tmp_segs[tmp_num_segs++];
     sg->x1 = ax; sg->y1 = ay; sg->x2 = bx; sg->y2 = by;
     int32_t dx = bx - ax, dy = by - ay;
-    sg->length = fp_abs(dx) + fp_abs(dy); /* axis aligned */
+    sg->length = fp_abs(dx) + fp_abs(dy);
     sg->front = (int16_t)front;
     sg->back = (int16_t)back;
     sg->midtex = (int16_t)mid;
@@ -33,8 +28,6 @@ static int cell_open(const rndr_map_source_t *src, int x, int y) {
            src->cell_sector[y * src->map_w + x] >= 0;
 }
 
-/* canonical front side for two-sided lines: higher ceiling, then higher
- * floor, then lower index (stable, generated exactly once) */
 static int is_front_side(const rndr_map_source_t *src, int a, int b) {
     if (src->sector_ceilh[a] != src->sector_ceilh[b])
         return src->sector_ceilh[a] > src->sector_ceilh[b];
@@ -43,8 +36,6 @@ static int is_front_side(const rndr_map_source_t *src, int a, int b) {
     return a < b;
 }
 
-/* Merge a unit-length edge into the seg list: extend an existing
- * collinear seg when sectors/textures match (grid -> DOOM linedefs). */
 static void add_unit_edge(int32_t ax, int32_t ay, int32_t bx, int32_t by,
                           int front, int back, int mid, int top, int bot) {
     for (int i = 0; i < tmp_num_segs; i++) {
@@ -52,7 +43,7 @@ static void add_unit_edge(int32_t ax, int32_t ay, int32_t bx, int32_t by,
         if (sg->front != front || sg->back != back || sg->midtex != mid ||
             sg->toptex != top || sg->bottex != bot)
             continue;
-        /* only merge collinear, same-orientation edges */
+
         int e_vert = (ax == bx), s_vert = (sg->x1 == sg->x2);
         if (e_vert != s_vert) continue;
         if (e_vert) {
@@ -96,7 +87,7 @@ static void extract_level(rndr_level_t *l, const rndr_map_source_t *src) {
             int32_t ex = gx + cell;
             int32_t ey = gy + cell;
 
-            /* one-sided walls against solid cells */
+
             if (x + 1 >= src->map_w || src->grid[y * src->map_w + x + 1] > 0 ||
                 src->cell_sector[y * src->map_w + x + 1] < 0) {
                 int wt = 0;
@@ -126,7 +117,7 @@ static void extract_level(rndr_level_t *l, const rndr_map_source_t *src) {
                 add_unit_edge(ex, gy, gx, gy, s, -1, wt, -1, -1);
             }
 
-            /* two-sided lines between different sectors (steps/doorways) */
+
             if (cell_open(src, x + 1, y)) {
                 int s2 = src->cell_sector[y * src->map_w + x + 1];
                 if (s2 != s && is_front_side(src, s, s2))
@@ -146,8 +137,6 @@ static void extract_level(rndr_level_t *l, const rndr_map_source_t *src) {
     }
 }
 
-/* ------------------------- BSP builder ------------------------- */
-
 static int bsp_arena[RNDR_MAX_SEGS * 4];
 static int bsp_arena_used;
 
@@ -162,8 +151,7 @@ static int bsp_make_leaf(const int *list, int count) {
     if (tmp_num_subs >= RNDR_MAX_SUBS) return 0;
     int first = tmp_num_segs;
     for (int i = 0; i < count && first + i < RNDR_MAX_SEGS; i++) {
-        /* segs already live in tmp_segs; leaf records their indices
-         * compactly by copying to the tail region */
+
         tmp_segs[first + i] = tmp_segs[list[i]];
     }
     tmp_num_segs = first + count;
@@ -172,11 +160,6 @@ static int bsp_make_leaf(const int *list, int count) {
     return ~(tmp_num_subs++);
 }
 
-/* Classify a seg against a split line. Returns 1 when the seg truly
- * straddles the line and must be split. Endpoints exactly on the line
- * never trigger a split - they are classified to the other endpoint's
- * side (collinear segs go front). Scoring and partitioning must use
- * this identical logic or the builder loops on slivers. */
 static int bsp_classify(const rndr_seg_t *l, const rndr_seg_t *sg,
                         int *s1, int *s2) {
     int64_t c1 = rndr_cross64(l->x2 - l->x1, l->y2 - l->y1,
@@ -195,8 +178,7 @@ static int bsp_build(const int *list, int count, int depth) {
     if (count <= 1 || depth > 24 || tmp_num_nodes >= RNDR_MAX_NODES - 1)
         return bsp_make_leaf(list, count);
 
-    /* choose split line minimizing splits; candidates that would leave
-     * one side empty are useless partitions and get rejected */
+
     int best = -1, bestscore = 0x7FFFFFFF;
     for (int i = 0; i < count; i++) {
         const rndr_seg_t *sp = &tmp_segs[list[i]];
@@ -236,19 +218,19 @@ static int bsp_build(const int *list, int count, int depth) {
             if (den == 0) { bsp_arena[fl + nf++] = list[i]; continue; }
             int64_t num = rndr_cross64(split.x1 - sg.x1, split.y1 - sg.y1,
                                        (int32_t)dxs, (int32_t)dys);
-            /* t = num/den in 16.16, computed without shifting negatives */
+
             int neg = (num < 0) != (den < 0);
             uint64_t un = (uint64_t)(num < 0 ? 0 - (uint64_t)num : (uint64_t)num);
             uint64_t ud = (uint64_t)(den < 0 ? 0 - (uint64_t)den : (uint64_t)den);
             uint64_t r = (un << 16) / ud;
             if (r > 0x7FFFFFFFu) r = 0x7FFFFFFFu;
             int32_t t = neg ? (int32_t)(0u - (uint32_t)r) : (int32_t)r;
-            if (t <= 0) {          /* v1 on the line: body lies on v2's side */
+            if (t <= 0) {
                 if (s2 == 0) bsp_arena[fl + nf++] = list[i];
                 else bsp_arena[bl + nb++] = list[i];
                 continue;
             }
-            if (t >= FP_ONE) {     /* v2 on the line: body lies on v1's side */
+            if (t >= FP_ONE) {
                 if (s1 == 0) bsp_arena[fl + nf++] = list[i];
                 else bsp_arena[bl + nb++] = list[i];
                 continue;
@@ -292,7 +274,7 @@ void rndr_build_level(rndr_level_t *l, const rndr_map_source_t *src) {
         l->root = bsp_build(bsp_arena + root_list, n0, 0);
     }
 
-    /* publish the built level */
+
     l->num_segs = tmp_num_segs;
     for (int i = 0; i < tmp_num_segs; i++)
         l->segs[i] = tmp_segs[i];

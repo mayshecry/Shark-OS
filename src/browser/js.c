@@ -1,30 +1,6 @@
-/* A small JavaScript interpreter for the SharkOS browser.
- *
- * Design:
- *   - Tokenizer -> recursive-descent parser -> AST in a fixed arena
- *   - Tree-walking evaluator with lexical scopes (closures work)
- *   - Values: undefined, null, boolean, number, string, object, array,
- *     function (script or native). Numbers are 32.16 fixed point stored in a
- *     64-bit integer because the kernel is compiled without FPU/soft-float
- *     support; this keeps integer arithmetic exact up to 2^47 and gives two
- *     decimals for the common `0.5 * x` style code.
- *   - Property storage: small open arrays per object (pages are small)
- *   - No GC: everything lives in arenas that are reset per page load. A
- *     runaway script is stopped by a step budget so the desktop never hangs.
- *
- * Supported syntax: var/let/const, function declarations + expressions,
- * arrow functions, if/else, for, for-in, for-of, while, do-while, break,
- * continue, return, switch, try/catch/finally (catch everything), throw,
- * ternary, all arithmetic/comparison/logical/bitwise operators, ++/--,
- * compound assignment, template literals (no nesting), object/array
- * literals, member access, calls, new (for Object/Array/Date/Error),
- * typeof, instanceof (by constructor name), delete, comma, spread in calls
- * (arrays), destructuring is NOT supported, classes are NOT supported.
- */
+
 
 #include "browser_internal.h"
-
-/* ------------------------------------------------------------ limits */
 
 #define JS_MAX_TOKENS   24000
 #define JS_MAX_NODES    24000
@@ -41,8 +17,6 @@
 
 typedef int64_t fx_t;
 
-/* ------------------------------------------------------------ values */
-
 enum { V_UNDEF = 0, V_NULL, V_BOOL, V_NUM, V_STR, V_OBJ, V_FUNC, V_NATIVE };
 
 typedef struct value {
@@ -51,7 +25,7 @@ typedef struct value {
         int b;
         fx_t n;
         const char* s;
-        int obj;                    /* object index (also arrays, functions) */
+        int obj;
     } u;
 } value_t;
 
@@ -61,34 +35,30 @@ enum { O_PLAIN = 0, O_ARRAY, O_FUNC, O_NATIVE, O_DOM, O_DATE, O_ERROR, O_REGEXP 
 
 typedef struct {
     uint8_t kind;
-    int first_prop;             /* linked list head into props[] */
-    int last_prop;              /* tail, for O(1) append */
+    int first_prop;
+    int last_prop;
     int prop_count;
-    int proto;                  /* prototype object or -1 */
-    /* arrays */
+    int proto;
+
     value_t* items; int len; int cap;
-    /* functions */
-    int fn_node;                /* AST node of the function */
-    int fn_scope;               /* closure scope */
-    int fn_this;                /* bound this (arrow) or -1 */
+
+    int fn_node;
+    int fn_scope;
+    int fn_this;
     value_t (*native)(int this_obj, value_t* args, int argc);
-    /* DOM */
-    int dom_id;                 /* br_node id */
+
+    int dom_id;
     int date_ms;
     const char* name;
 } object_t;
 
 typedef struct { const char* names[24]; value_t vals[24]; int n; int parent; int this_obj; } scope_t;
 
-/* ------------------------------------------------------------ tokens */
-
 enum {
     T_EOF = 0, T_NUM, T_STR, T_TEMPLATE, T_IDENT, T_KW, T_PUNCT
 };
 
 typedef struct { uint8_t type; const char* s; int len; fx_t num; int line; int nl_before; } token_t;
-
-/* -------------------------------------------------------------- AST */
 
 enum {
     N_NUM = 1, N_STR, N_IDENT, N_TEMPLATE, N_TRUE, N_FALSE, N_NULL, N_UNDEF, N_THIS,
@@ -101,16 +71,14 @@ enum {
 
 typedef struct {
     uint8_t type;
-    uint8_t op;                 /* punct id / var kind */
-    int a, b, c, d;             /* children */
-    int list;                   /* index into lists[] (first), -1 */
+    uint8_t op;
+    int a, b, c, d;
+    int list;
     int count;
     const char* s;
     fx_t num;
     int line;
 } node_t;
-
-/* ------------------------------------------------------------ arenas */
 
 static token_t tokens[JS_MAX_TOKENS];
 static int tok_count = 0;
@@ -131,26 +99,24 @@ static int arr_used = 0;
 
 static int steps = 0;
 static int js_error = 0;
-static int js_aborted = 0;      /* step budget exhausted: uncatchable, ends the script */
+static int js_aborted = 0;
 static char js_error_msg[128];
 static int global_scope = 0;
 static int depth = 0;
-static int eval_nest = 0;        /* combined exec/eval recursion depth */
+static int eval_nest = 0;
 #define JS_MAX_EVAL_NEST 200     /* backstop; the real limit is br_stack_headroom() */
-static int parse_nest = 0;       /* parser recursion guard for pathological nesting */
+static int parse_nest = 0;
 #define JS_MAX_PARSE_NEST 96
 
-/* control flow */
 enum { F_NONE = 0, F_BREAK, F_CONTINUE, F_RETURN, F_THROW };
 static int flow = F_NONE;
 static value_t flow_val;
 static const char* flow_label = NULL;
 
-/* well-known objects */
 static int obj_global = -1, proto_object = -1, proto_array = -1, proto_string = -1, proto_function = -1, proto_number = -1;
 static int obj_document = -1, obj_window = -1, obj_console = -1, obj_math = -1, obj_json = -1;
 static int obj_location = -1;
-static void navigate_to(const char* url, int replace);   /* location.href = ... */
+static void navigate_to(const char* url, int replace);
 static int proto_element = -1;
 
 static value_t UNDEF = { V_UNDEF, { 0 } };
@@ -159,14 +125,8 @@ typedef struct { int fn; int due; int interval; int active; int id; } timer_t;
 static timer_t timers[JS_MAX_TIMERS];
 static int timer_next_id = 1;
 
-/* ------------------------------------------------------------ helpers */
-
 static void throw_error(const char* msg, const char* detail);
 
-/* Scratch area handed out when the string pool is exhausted. Callers write
- * up to the length they asked for, so the fallback must really be that big:
- * anything larger than the scratch is refused (truncated to fit) and an
- * exception is raised. Nothing is ever written past the pool. */
 #define JS_STR_MAX (16 * 1024)           /* longest single string */
 static char str_overflow[JS_STR_MAX + 1];
 
@@ -176,7 +136,7 @@ static char* js_alloc_str(int n) {
     if (str_used + n + 1 > JS_STR_POOL) {
         throw_error("RangeError: out of string memory", NULL);
         str_overflow[0] = 0;
-        return str_overflow;                       /* JS_STR_MAX+1 bytes: safe for any caller */
+        return str_overflow;
     }
     char* d = &strpool[str_used];
     str_used += n + 1;
@@ -268,14 +228,13 @@ static void set_prop(int o, const char* key, value_t v) {
     props[prop_count].val = v;
     props[prop_count].next = -1;
     props[prop_count].hash = h;
-    /* append at tail to preserve insertion order for for-in / JSON */
+
     if (objects[o].first_prop < 0) objects[o].first_prop = prop_count;
     else props[objects[o].last_prop].next = prop_count;
     objects[o].last_prop = prop_count;
     objects[o].prop_count++;
     prop_count++;
 }
-
 
 static int del_prop(int o, const char* key) {
     if (o < 0) return 0;
@@ -309,10 +268,8 @@ static void def_native(int o, const char* name, value_t (*fn)(int, value_t*, int
     set_prop(o, name, mk_obj(f));
 }
 
-/* ------------------------------------------------------ conversions */
-
 static void fx_to_str(fx_t n, char* out) {
-    /* integers print as integers; otherwise up to 4 decimals trimmed */
+
     int neg = n < 0;
     if (neg) n = -n;
     int64_t ip = n >> FX_SHIFT;
@@ -324,7 +281,7 @@ static void fx_to_str(fx_t n, char* out) {
     if (neg && (n != 0)) out[o++] = '-';
     while (t > 0) out[o++] = tmp[--t];
     if (frac) {
-        /* 4 decimals, rounded */
+
         int64_t d = (frac * 10000 + FX_ONE / 2) >> FX_SHIFT;
         if (d >= 10000) { d = 9999; }
         if (d > 0) {
@@ -380,7 +337,7 @@ static const char* obj_to_string(int o) {
     object_t* ob = &objects[o];
     if (ob->kind == O_ARRAY) {
         char* out = js_alloc_str(1);
-        /* build "a,b,c" */
+
         int total = 0;
         static char tmp[2048];
         tmp[0] = 0;
@@ -399,7 +356,7 @@ static const char* obj_to_string(int o) {
     if (ob->kind == O_ERROR) { value_t m = get_prop(o, "message"); return m.type == V_STR ? m.u.s : "Error"; }
     if (ob->kind == O_DOM) return "[object HTMLElement]";
     if (ob->kind == O_DATE) return "[object Date]";
-    /* toString method? */
+
     value_t ts = get_prop(o, "toString");
     (void)ts;
     return "[object Object]";
@@ -428,7 +385,7 @@ static fx_t to_num(value_t v) {
     case V_OBJ: if (objects[v.u.obj].kind == O_DATE) return (fx_t)objects[v.u.obj].date_ms << FX_SHIFT;
                 if (objects[v.u.obj].kind == O_ARRAY && objects[v.u.obj].len == 1) return to_num(objects[v.u.obj].items[0]);
                 if (objects[v.u.obj].kind == O_ARRAY && objects[v.u.obj].len == 0) return 0;
-                return (fx_t)0x7FFFFFFFFFFFLL;   /* NaN marker */
+                return (fx_t)0x7FFFFFFFFFFFLL;
     default: return (fx_t)0x7FFFFFFFFFFFLL;
     }
 }
@@ -484,8 +441,6 @@ static int loose_eq(value_t a, value_t b) {
     return 0;
 }
 
-/* --------------------------------------------------------- tokenizer */
-
 static const char* kw_list[] = {"var", "let", "const", "function", "return", "if", "else", "for", "while", "do",
     "break", "continue", "new", "this", "true", "false", "null", "undefined", "typeof", "instanceof", "in", "of",
     "delete", "switch", "case", "default", "try", "catch", "finally", "throw", "void", "class", "async", "await", NULL};
@@ -502,8 +457,6 @@ static int tokenize(const char* src, int len) {
     return 1;
 }
 
-/* Tokenizes `src` into tokens[base..], returns the number of tokens written
- * (including the trailing EOF) or -1 on overflow. */
 static int tokenize_into(const char* src, int len, int base) {
     int tc = base;
     int i = 0, line = 1, nl = 0;
@@ -577,8 +530,7 @@ static int tokenize_into(const char* src, int len, int base) {
                 }
                 if (src[i] == '\n') line++;
                 if ((unsigned char)src[i] >= 0x80) {
-                    /* UTF-8 passes through: the renderer draws it (string
-                     * length/indexing are byte based, as in the HTML path) */
+
                     out[o++] = src[i++];
                     continue;
                 }
@@ -591,7 +543,7 @@ static int tokenize_into(const char* src, int len, int base) {
             tc++;
             continue;
         }
-        /* regex literal: only when a value cannot precede it */
+
         if (c == '/') {
             int prev_is_value = 0;
             if (tc > base) {
@@ -611,14 +563,14 @@ static int tokenize_into(const char* src, int len, int base) {
                 }
                 i++;
                 while (i < len && is_ident_char(src[i])) i++;
-                /* store as a string token with a marker: regexes are matched by a tiny engine */
+
                 t->type = T_STR; t->s = js_strdup_n(&src[st], i - st); t->len = i - st;
-                t->num = 1;   /* regex marker */
+                t->num = 1;
                 tc++;
                 continue;
             }
         }
-        /* punctuators, longest first */
+
         static const char* puncts[] = {">>>=", "===", "!==", "**=", "<<=", ">>=", ">>>", "...", "=>", "==", "!=", "<=", ">=", "&&", "||", "??",
             "++", "--", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<", ">>", "**", "?.",
             "{", "}", "(", ")", "[", "]", ";", ",", "<", ">", "+", "-", "*", "/", "%", "&", "|", "^", "!", "~", "?", ":", "=", ".", NULL};
@@ -631,15 +583,13 @@ static int tokenize_into(const char* src, int len, int base) {
                 if (m) { t->type = T_PUNCT; t->s = &src[i]; t->len = pl; i += pl; matched = 1; break; }
             }
         }
-        if (!matched) { i++; continue; }     /* skip unknown char */
+        if (!matched) { i++; continue; }
         tc++;
     }
     tokens[tc].type = T_EOF; tokens[tc].s = ""; tokens[tc].len = 0; tokens[tc].line = line; tokens[tc].nl_before = 1;
     tc++;
     return tc - base;
 }
-
-/* ------------------------------------------------------------ parser */
 
 static int pos = 0;
 
@@ -668,7 +618,6 @@ static int parse_statement(void);
 static int parse_block(void);
 static int parse_function(int is_expr);
 
-/* list building: collect children in a temporary stack then copy */
 static int tmp_stack[JS_MAX_NODES];
 static int tmp_top = 0;
 
@@ -684,9 +633,7 @@ static int commit_list(int start) {
 static const char* tok_str(token_t* t) { return js_strdup_n(t->s, t->len); }
 
 static int parse_template(token_t* t) {
-    /* `text ${expr} text` -> N_TEMPLATE with a list of string/expr nodes.
-     * Each ${...} fragment is tokenized into the spare tail of tokens[] and
-     * parsed with a temporarily redirected cursor. */
+
     int n = new_node(N_TEMPLATE);
     int start = tmp_top;
     const char* s = t->s;
@@ -710,7 +657,7 @@ static int parse_template(token_t* t) {
             pos = save_pos; tok_count = save_count;
             tmp_stack[tmp_top++] = e;
         }
-        i++;                                             /* skip '}' */
+        i++;
     }
     nodes[n].list = commit_list(start);
     nodes[n].count = list_count - nodes[n].list;
@@ -736,7 +683,7 @@ static int parse_primary_inner(void) {
     if (t->type == T_STR) { int n = new_node(N_STR); nodes[n].s = (t->num == 1 && t->s[0] == '/') ? t->s : js_strdup_n(t->s, t->len); nodes[n].op = (t->num == 1 && t->s[0] == '/') ? 1 : 0; pos++; return n; }
     if (t->type == T_TEMPLATE) { pos++; return parse_template(t); }
     if (t->type == T_IDENT) {
-        /* arrow function: ident => expr */
+
         if (tokens[pos + 1].type == T_PUNCT && tokens[pos + 1].len == 2 && tokens[pos + 1].s[0] == '=' && tokens[pos + 1].s[1] == '>') {
             int n = new_node(N_ARROW);
             int start = tmp_top;
@@ -759,7 +706,7 @@ static int parse_primary_inner(void) {
         if (accept_kw("async")) { if (is_kw("function")) { pos++; return parse_function(1); } }
         if (accept_kw("new")) {
             int n = new_node(N_NEW);
-            /* callee: member chain without call */
+
             int callee;
             token_t* ct = cur();
             if (ct->type == T_IDENT) { callee = new_node(N_IDENT); nodes[callee].s = tok_str(ct); pos++; }
@@ -774,10 +721,10 @@ static int parse_primary_inner(void) {
             nodes[n].list = commit_list(start); nodes[n].count = list_count - nodes[n].list;
             return n;
         }
-        if (accept_kw("typeof")) { int n = new_node(N_TYPEOF); nodes[n].a = parse_primary(); /* unary binds tighter below */ return n; }
+        if (accept_kw("typeof")) { int n = new_node(N_TYPEOF); nodes[n].a = parse_primary();  return n; }
     }
     if (accept_punct("(")) {
-        /* arrow with parenthesised params? scan ahead for ") =>" */
+
         int save = pos, d = 1, k = pos;
         while (k < tok_count && d > 0) { if (tokens[k].type == T_PUNCT && tokens[k].len == 1) { if (tokens[k].s[0] == '(') d++; else if (tokens[k].s[0] == ')') d--; } if (d > 0) k++; }
         if (k + 1 < tok_count && tokens[k + 1].type == T_PUNCT && tokens[k + 1].len == 2 && tokens[k + 1].s[0] == '=' && tokens[k + 1].s[1] == '>') {
@@ -786,7 +733,7 @@ static int parse_primary_inner(void) {
             while (!is_punct(")") && cur()->type != T_EOF) {
                 accept_punct("...");
                 int pn = new_node(N_IDENT); nodes[pn].s = tok_str(cur()); pos++;
-                if (accept_punct("=")) { nodes[pn].a = parse_assign(); }   /* default value */
+                if (accept_punct("=")) { nodes[pn].a = parse_assign(); }
                 tmp_stack[tmp_top++] = pn;
                 if (!accept_punct(",")) break;
             }
@@ -827,10 +774,10 @@ static int parse_primary_inner(void) {
             else if (kt->type == T_NUM) { char b[32]; fx_to_str(kt->num, b); nodes[key].s = js_strdup(b); pos++; }
             else { pos++; continue; }
             int val;
-            if (is_punct("(")) { val = parse_function(1); }              /* method shorthand */
+            if (is_punct("(")) { val = parse_function(1); }
             else if (accept_punct(":")) val = parse_assign();
-            else { val = new_node(N_IDENT); nodes[val].s = nodes[key].s; }   /* shorthand {a} */
-            /* get/set accessors are treated as plain props named after them */
+            else { val = new_node(N_IDENT); nodes[val].s = nodes[key].s; }
+
             tmp_stack[tmp_top++] = key; tmp_stack[tmp_top++] = val;
             if (!accept_punct(",")) break;
         }
@@ -861,14 +808,14 @@ static int parse_postfix(void) {
     int e = parse_primary();
     while (!js_error) {
         if (accept_punct(".") || accept_punct("?.")) {
-            if (is_punct("(")) { pos++; e = parse_call_args(e); continue; }   /* a?.() */
+            if (is_punct("(")) { pos++; e = parse_call_args(e); continue; }
             int m = new_node(N_MEMBER); nodes[m].a = e; nodes[m].s = tok_str(cur()); pos++; e = m;
         } else if (accept_punct("[")) {
             int m = new_node(N_INDEX); nodes[m].a = e; nodes[m].b = parse_expr(); expect_punct("]"); e = m;
         } else if (accept_punct("(")) {
             e = parse_call_args(e);
         } else if (cur()->type == T_TEMPLATE) {
-            /* tagged template: treat as call with the string */
+
             token_t* t = cur(); pos++;
             int n = new_node(N_CALL); nodes[n].a = e;
             int start = tmp_top; tmp_stack[tmp_top++] = parse_template(t);
@@ -892,7 +839,6 @@ static int parse_unary(void) {
     return parse_postfix();
 }
 
-/* binary precedence climbing */
 static int binop_prec(token_t* t, char* opbuf) {
     if (t->type == T_KW) {
         if (br_streq_n(t->s, t->len, "instanceof")) { opbuf[0] = 'I'; opbuf[1] = 0; return 7; }
@@ -948,7 +894,7 @@ static int parse_assign(void) {
     token_t* t = cur();
     if (t->type == T_PUNCT && t->len >= 1 && t->s[t->len - 1] == '=' && !(t->len == 2 && (t->s[0] == '=' || t->s[0] == '!' || t->s[0] == '<' || t->s[0] == '>')) && !(t->len == 3)) {
         int n = new_node(N_ASSIGN);
-        nodes[n].a = left; nodes[n].s = js_strdup_n(t->s, t->len - 1);   /* "" for plain = */
+        nodes[n].a = left; nodes[n].s = js_strdup_n(t->s, t->len - 1);
         pos++;
         nodes[n].b = parse_assign();
         return n;
@@ -1005,7 +951,7 @@ static int parse_var(void) {
     while (!js_error) {
         int d = new_node(N_IDENT);
         if (is_punct("{") || is_punct("[")) {
-            /* destructuring: minimal support for `const {a, b} = obj` / `const [a, b] = arr` */
+
             int is_obj = is_punct("{");
             pos++;
             int names_start = tmp_top;
@@ -1073,7 +1019,7 @@ static int parse_statement_inner(void) {
         expect_punct("(");
         int init = -1;
         if (is_kw("var") || is_kw("let") || is_kw("const")) {
-            /* for-in / for-of ? */
+
             int save = pos;
             pos++;
             if (cur()->type == T_IDENT && tokens[pos + 1].type == T_KW && (br_streq_n(tokens[pos + 1].s, tokens[pos + 1].len, "in") || br_streq_n(tokens[pos + 1].s, tokens[pos + 1].len, "of"))) {
@@ -1086,7 +1032,7 @@ static int parse_statement_inner(void) {
             pos = save;
             init = parse_var();
         } else if (!is_punct(";")) {
-            /* for (x in obj) without declaration */
+
             if (cur()->type == T_IDENT && tokens[pos + 1].type == T_KW && (br_streq_n(tokens[pos + 1].s, tokens[pos + 1].len, "in") || br_streq_n(tokens[pos + 1].s, tokens[pos + 1].len, "of"))) {
                 int n = new_node(br_streq_n(tokens[pos + 1].s, tokens[pos + 1].len, "in") ? N_FORIN : N_FOROF);
                 nodes[n].s = tok_str(cur()); nodes[n].op = 1; pos += 2;
@@ -1144,13 +1090,13 @@ static int parse_statement_inner(void) {
         return n;
     }
     if (accept_kw("class")) {
-        /* Not supported: skip the whole class body so the rest of the script still runs. */
+
         while (!is_punct("{") && cur()->type != T_EOF) pos++;
         int d = 0;
         while (cur()->type != T_EOF) { if (is_punct("{")) d++; else if (is_punct("}")) { d--; if (d == 0) { pos++; break; } } pos++; }
         return new_node(N_EMPTY);
     }
-    /* labelled statement */
+
     if (cur()->type == T_IDENT && tokens[pos + 1].type == T_PUNCT && tokens[pos + 1].len == 1 && tokens[pos + 1].s[0] == ':') {
         const char* label = tok_str(cur()); pos += 2;
         int st = parse_statement();
@@ -1170,20 +1116,12 @@ static int parse_program(void) {
     while (cur()->type != T_EOF && !js_error) {
         int before = pos;
         tmp_stack[tmp_top++] = parse_statement();
-        if (pos == before) pos++;                          /* never stall */
+        if (pos == before) pos++;
     }
     nodes[n].list = commit_list(start); nodes[n].count = list_count - nodes[n].list;
     return n;
 }
 
-/* ------------------------------------------------------------ scopes */
-
-/* Scopes live in a stack-like arena. Loops and blocks allocate one per
- * iteration, which used to exhaust the 512 slots after a few hundred
- * iterations ("out of memory (scopes)"). A scope is popped again when it was
- * the most recently allocated one and nothing captured it: make_function()
- * bumps scope_pinned to the current top, so any scope at or below a closure's
- * birth stays alive for the rest of the page. */
 static int scope_pinned = 0;
 
 static int new_scope(int parent, int this_obj) {
@@ -1201,7 +1139,7 @@ static void scope_declare(int sc, const char* name, value_t v) {
     scope_t* s = &scopes[sc];
     for (int i = 0; i < s->n; i++) if (br_streq(s->names[i], name)) { s->vals[i] = v; return; }
     if (s->n >= 24) {
-        /* overflow: spill to the global object */
+
         set_prop(obj_global, name, v);
         return;
     }
@@ -1225,15 +1163,12 @@ static int scope_this(int sc) {
     return obj_window;
 }
 
-/* --------------------------------------------------------- evaluator */
-
 static value_t eval(int n, int sc);
 static void exec(int n, int sc);
 static value_t call_function(value_t fn, int this_obj, value_t* args, int argc);
 static value_t get_member(value_t obj, const char* key);
 static void set_member(value_t obj, const char* key, value_t v);
 
-/* DOM hooks implemented further down */
 static value_t dom_get(int dom_obj, const char* key, int* handled);
 static int dom_set(int dom_obj, const char* key, value_t v);
 static int wrap_node(br_node_t* n);
@@ -1317,7 +1252,7 @@ static void set_member(value_t obj, const char* key, value_t v) {
         }
     }
     if (ob->kind == O_DOM && dom_set(o, key, v)) return;
-    /* location.href = url / window.location = url navigate */
+
     if (o == obj_location && br_streq(key, "href")) { navigate_to(to_string(v), 0); return; }
     if (o == obj_window && br_streq(key, "location") && v.type == V_STR) { navigate_to(v.u.s, 0); return; }
     set_prop(o, js_strdup(key), v);
@@ -1342,7 +1277,7 @@ static value_t binary_op(const char* op, value_t a, value_t b) {
         if (objects[b.u.obj].kind == O_ARRAY && k[0] >= '0' && k[0] <= '9') return mk_bool(br_atoi(k) < objects[b.u.obj].len);
         return mk_bool(get_prop(b.u.obj, k).type != V_UNDEF);
     }
-    if (op[0] == 'I') {   /* instanceof: compare constructor name / prototype chain */
+    if (op[0] == 'I') {
         if (a.type != V_OBJ && a.type != V_FUNC) return mk_bool(0);
         if (b.type != V_FUNC) return mk_bool(0);
         const char* cname = objects[b.u.obj].name;
@@ -1360,7 +1295,7 @@ static value_t binary_op(const char* op, value_t a, value_t b) {
         while (p >= 0 && guard++ < 16) { if (proto.type == V_OBJ && proto.u.obj == p) return mk_bool(1); p = objects[p].proto; }
         return mk_bool(0);
     }
-    /* string comparison */
+
     if ((op[0] == '<' || op[0] == '>') && a.type == V_STR && b.type == V_STR) {
         int c = strcmp(a.u.s, b.u.s);
         if (br_streq(op, "<")) return mk_bool(c < 0);
@@ -1378,7 +1313,7 @@ static value_t binary_op(const char* op, value_t a, value_t b) {
     case '-': return mk_num(x - y);
     case '*': {
         if (op[1] == '*') {
-            /* integer exponent only */
+
             int e = (int)(y >> FX_SHIFT);
             fx_t r = FX_ONE;
             if (e >= 0) { for (int i = 0; i < e && i < 64; i++) r = (r * x) >> FX_SHIFT; }
@@ -1405,12 +1340,11 @@ static value_t binary_op(const char* op, value_t a, value_t b) {
     return UNDEF;
 }
 
-/* Assign to an lvalue node */
 static void assign_to(int target, value_t v, int sc) {
     node_t* t = &nodes[target];
     if (t->type == N_IDENT) {
         value_t* slot = scope_lookup(sc, t->s);
-        if (slot && v.type == V_STR && br_streq(t->s, "location") && obj_location >= 0) { prop_t* lp = find_own(obj_global, "location"); if (lp && slot == &lp->val) { navigate_to(v.u.s, 0); return; } }   /* location = url */
+        if (slot && v.type == V_STR && br_streq(t->s, "location") && obj_location >= 0) { prop_t* lp = find_own(obj_global, "location"); if (lp && slot == &lp->val) { navigate_to(v.u.s, 0); return; } }
         if (slot) *slot = v; else set_prop(obj_global, t->s, v);
     } else if (t->type == N_MEMBER) {
         value_t o = eval(t->a, sc);
@@ -1423,7 +1357,7 @@ static void assign_to(int target, value_t v, int sc) {
         if (flow) return;
         set_member(o, to_string(k), v);
     } else if (t->type == N_ARRAY) {
-        /* [a, b] = arr */
+
         for (int i = 0; i < t->count; i++) {
             value_t item = (v.type == V_OBJ && objects[v.u.obj].kind == O_ARRAY && i < objects[v.u.obj].len) ? objects[v.u.obj].items[i] : UNDEF;
             assign_to(lists[t->list + i], item, sc);
@@ -1439,7 +1373,7 @@ static void assign_to(int target, value_t v, int sc) {
 static value_t make_function(int n, int sc, int this_obj) {
     int o = new_object(O_FUNC);
     if (o < 0) return UNDEF;
-    if (scope_count > scope_pinned) scope_pinned = scope_count;   /* closure: keep every live scope */
+    if (scope_count > scope_pinned) scope_pinned = scope_count;
     objects[o].fn_node = n;
     objects[o].fn_scope = sc;
     objects[o].fn_this = this_obj;
@@ -1552,7 +1486,7 @@ static value_t eval_inner(int n, int sc) {
         value_t o = eval(nd->a, sc);
         if (flow) return UNDEF;
         if ((o.type == V_UNDEF || o.type == V_NULL)) {
-            /* optional chaining was folded into MEMBER; be lenient for `a?.b` */
+
             token_t* t = NULL; (void)t;
         }
         return get_member(o, nd->s);
@@ -1579,7 +1513,7 @@ static value_t eval_inner(int n, int sc) {
             const char* key;
             if (nodes[callee_n].type == N_MEMBER) key = nodes[callee_n].s;
             else { value_t k = eval(nodes[callee_n].b, sc); if (flow) return UNDEF; key = to_string(k); }
-            /* primitives get a temporary receiver via string/array methods */
+
             if (thisv.type == V_STR) {
                 value_t args[16]; int argc = collect_args(nd->list, nd->count, sc, args, 16); if (flow) return UNDEF;
                 extern value_t js_string_call(const char* s, const char* key, value_t* args, int argc, int* handled);
@@ -1644,7 +1578,7 @@ static value_t eval_inner(int n, int sc) {
                     if (handled) return r;
                 }
                 if (thisv.type == V_OBJ || thisv.type == V_FUNC) {
-                    /* generic object methods */
+
                     if (br_streq(key, "hasOwnProperty")) { value_t args[2]; int argc = collect_args(nd->list, nd->count, sc, args, 2); return mk_bool(argc > 0 && find_own(thisv.u.obj, to_string(args[0])) != NULL); }
                     if (br_streq(key, "toString")) return mk_str(to_string(thisv));
                     if (br_streq(key, "valueOf")) return thisv;
@@ -1681,7 +1615,7 @@ static value_t eval_inner(int n, int sc) {
         if (ctor.type != V_FUNC) { throw_error("TypeError: not a constructor", NULL); return UNDEF; }
         object_t* co = &objects[ctor.u.obj];
         if (co->kind == O_NATIVE) {
-            /* natives that act as constructors get this_obj = -2 marker */
+
             return co->native(-2, args, argc);
         }
         int o = new_object(O_PLAIN);
@@ -1704,7 +1638,7 @@ static value_t eval_inner(int n, int sc) {
         return UNDEF;
     }
     case N_TYPEOF: {
-        /* typeof undeclared -> "undefined" without throwing */
+
         if (nodes[nd->a].type == N_IDENT) {
             value_t* slot = scope_lookup(sc, nodes[nd->a].s);
             if (!slot) {
@@ -1739,7 +1673,7 @@ static value_t eval_inner(int n, int sc) {
         value_t a = eval(nd->a, sc); if (flow) return UNDEF;
         if (nd->s[0] == '&') return truthy(a) ? eval(nd->b, sc) : a;
         if (nd->s[0] == '|') return truthy(a) ? a : eval(nd->b, sc);
-        return (a.type == V_UNDEF || a.type == V_NULL) ? eval(nd->b, sc) : a;   /* ?? */
+        return (a.type == V_UNDEF || a.type == V_NULL) ? eval(nd->b, sc) : a;
     }
     case N_COND: {
         value_t c = eval(nd->a, sc); if (flow) return UNDEF;
@@ -1750,7 +1684,7 @@ static value_t eval_inner(int n, int sc) {
         value_t v;
         if (nd->s[0] == 0) {
             v = eval(nd->b, sc); if (flow) return UNDEF;
-            /* name anonymous functions after the variable */
+
             if (v.type == V_FUNC && nodes[nd->a].type == N_IDENT && objects[v.u.obj].kind == O_FUNC && br_streq(objects[v.u.obj].name, "anonymous")) objects[v.u.obj].name = nodes[nd->a].s;
         } else {
             value_t old = eval(nd->a, sc); if (flow) return UNDEF;
@@ -1769,10 +1703,6 @@ static value_t eval_inner(int n, int sc) {
     return UNDEF;
 }
 
-/* hoisting: declare function declarations and `var`s of a body up front.
- * `var` is function-scoped, so nested blocks / if / loops / try / switch
- * are searched too (`if (x) { var a = 1; } use(a)` is a common idiom in
- * minified scripts); only function bodies stop the walk. */
 static void hoist_vars(int s, int sc, int nest) {
     if (s < 0 || nest > 12) return;
     node_t* nd = &nodes[s];
@@ -1817,11 +1747,11 @@ static value_t call_function(value_t fn, int this_obj, value_t* args, int argc) 
     if (use_this < 0 && f->type != N_ARROW) use_this = obj_window;
     int sc = new_scope(fo->fn_scope, use_this);
     if (flow) return UNDEF;
-    /* params */
+
     for (int i = 0; i < f->count; i++) {
         int pn = lists[f->list + i];
         value_t v = i < argc ? args[i] : UNDEF;
-        if (nodes[pn].op == 1 && f->type != N_ARROW) {          /* rest param */
+        if (nodes[pn].op == 1 && f->type != N_ARROW) {
             int a = new_array();
             for (int k = i; k < argc; k++) array_push(a, args[k]);
             v = mk_obj(a);
@@ -1883,18 +1813,16 @@ static void exec_inner(int n, int sc) {
                     if (v.type == V_FUNC && objects[v.u.obj].kind == O_FUNC && br_streq(objects[v.u.obj].name, "anonymous")) objects[v.u.obj].name = nodes[d].s;
                 } else if (nd->op == 0) {
                     value_t* existing = scope_lookup(sc, nodes[d].s);
-                    if (existing) continue;                    /* var re-declaration keeps value */
+                    if (existing) continue;
                 }
                 if (nd->op == 0) {
-                    /* `var` is function-scoped: hoisting already declared it
-                     * in the enclosing function scope, assign there rather
-                     * than shadowing it in this block */
+
                     value_t* slot = scope_lookup(sc, nodes[d].s);
                     if (slot) { *slot = v; continue; }
                 }
                 scope_declare(sc, nodes[d].s, v);
             } else {
-                /* destructuring declaration */
+
                 value_t src = eval(nodes[d].a, sc); if (flow) return;
                 for (int k = 0; k < nodes[d].count; k++) {
                     int nn = lists[nodes[d].list + k];
@@ -1946,12 +1874,12 @@ static void exec_inner(int n, int sc) {
         int guard = 0;
         while (guard++ < 1000000 && !flow) {
             if (nd->b >= 0) { value_t c = eval(nd->b, ls); if (flow) return; if (!truthy(c)) break; }
-            /* per-iteration scope so closures capture the current value (let semantics) */
+
             int is = new_scope(ls, -1);
             if (flow) return;
             for (int i = 0; i < scopes[ls].n; i++) scope_declare(is, scopes[ls].names[i], scopes[ls].vals[i]);
             exec(nd->d, is);
-            /* copy back */
+
             for (int i = 0; i < scopes[ls].n; i++) { value_t* v = scope_lookup(is, scopes[ls].names[i]); if (v) scopes[ls].vals[i] = *v; }
             release_scope(is);
             if (flow == F_BREAK) { if (label_matches(nd)) flow = F_NONE; break; }
@@ -1988,13 +1916,11 @@ static void exec_inner(int n, int sc) {
                 if (flow == F_CONTINUE) { if (label_matches(nd)) flow = F_NONE; else break; }
             }
         } else if (src.type == V_OBJ || src.type == V_FUNC) {
-            /* snapshot keys first: the body may mutate (static: keeps the
-             * exec frame small; nested for-in over objects shares it, which
-             * only costs correctness for a mutated outer object) */
+
             static const char* keys[256]; int nk = 0;
             int o = src.u.obj;
             if (objects[o].kind == O_DOM && nd->type == N_FOROF) {
-                /* for (const child of element.children) handled via array getter */
+
                 value_t arr = get_member(src, "children");
                 if (arr.type == V_OBJ) { value_t tmp = arr; src = tmp; o = src.u.obj;
                     for (int i = 0; i < objects[o].len && !flow; i++) { int is = new_scope(ls, -1); if (flow) return; scope_declare(is, nd->s, objects[o].items[i]); exec(nd->b, is); release_scope(is); if (flow == F_BREAK) { if (label_matches(nd)) flow = F_NONE; break; } if (flow == F_CONTINUE) { if (label_matches(nd)) flow = F_NONE; else break; } }
@@ -2054,14 +1980,14 @@ static void exec_inner(int n, int sc) {
     }
     case N_TRY: {
         exec(nd->a, sc);
-        if (js_aborted) return;                 /* budget exhausted: not catchable */
+        if (js_aborted) return;
         if (flow == F_THROW) {
             value_t err = flow_val;
             flow = F_NONE;
             if (nd->b >= 0) {
                 int cs = new_scope(sc, -1); if (flow) return;
                 if (nd->s) {
-                    /* wrap string errors into an Error-ish object with .message */
+
                     if (err.type == V_STR) { int eo = new_object(O_ERROR); if (eo >= 0) { set_prop(eo, "message", err); set_prop(eo, "name", mk_str("Error")); err = mk_obj(eo); } }
                     scope_declare(cs, nd->s, err);
                 }
@@ -2078,8 +2004,6 @@ static void exec_inner(int n, int sc) {
         return;
     }
 }
-
-/* ------------------------------------------------------- string API */
 
 static int str_index_of(const char* hay, const char* needle, int from) {
     int hl = (int)strlen(hay), nl = (int)strlen(needle);
@@ -2104,14 +2028,10 @@ static const char* str_slice(const char* s, int a, int b) {
     return js_strdup_n(&s[a], b - a);
 }
 
-/* Tiny regex engine: supports literals, ., character classes [a-z], \d \w \s
- * \b, anchors ^ $, quantifiers * + ? {n,m}, groups (...) (non-capturing
- * semantics), alternation |, flags g i. Enough for the split/replace/test
- * calls typical demo pages make. */
 typedef struct { const char* pat; int plen; int icase; int global; } regex_t;
 
 static int rx_parse(const char* lit, regex_t* rx) {
-    /* lit = "/pattern/flags" */
+
     if (lit[0] != '/') return 0;
     int e = (int)strlen(lit) - 1;
     while (e > 0 && lit[e] != '/') e--;
@@ -2124,7 +2044,7 @@ static int rx_parse(const char* lit, regex_t* rx) {
 static int rx_lower(int c, int icase) { return (icase && c >= 'A' && c <= 'Z') ? c + 32 : c; }
 
 static int rx_class_match(const char* p, int plen, int c, int icase, int* adv) {
-    /* p points at '[' */
+
     int i = 1, neg = 0, matched = 0;
     if (i < plen && p[i] == '^') { neg = 1; i++; }
     while (i < plen && p[i] != ']') {
@@ -2144,7 +2064,6 @@ static int rx_class_match(const char* p, int plen, int c, int icase, int* adv) {
     return neg ? !matched : matched;
 }
 
-/* match a single atom at p against char c; returns atom length in *alen, 1 if match */
 static int rx_atom(const char* p, int plen, const char* s, int si, int slen, int icase, int* alen) {
     if (plen <= 0) return 0;
     if (p[0] == '[') { int adv; int c = si < slen ? s[si] : -1; int m = c >= 0 && rx_class_match(p, plen, c, icase, &adv); *alen = adv; if (c < 0) { int a2; rx_class_match(p, plen, 'a', icase, &a2); *alen = a2; } return m; }
@@ -2178,7 +2097,7 @@ static int rx_nest = 0, rx_budget = 0;
 
 static int rx_match_seq_inner(const char* p, int plen, const char* s, int si, int slen, int icase, int* end);
 static int rx_match_seq(const char* p, int plen, const char* s, int si, int slen, int icase, int* end) {
-    if (rx_nest >= RX_MAX_NEST || --rx_budget < 0 || br_stack_headroom() < BR_STACK_MIN) return 0;   /* give up: no match */
+    if (rx_nest >= RX_MAX_NEST || --rx_budget < 0 || br_stack_headroom() < BR_STACK_MIN) return 0;
     rx_nest++;
     int r = rx_match_seq_inner(p, plen, s, si, slen, icase, end);
     rx_nest--;
@@ -2195,7 +2114,7 @@ static int rx_match_seq_inner(const char* p, int plen, const char* s, int si, in
         if (before == after) return 0;
         return rx_match_seq(p + 2, plen - 2, s, si, slen, icase, end);
     }
-    /* group */
+
     int alen;
     int group_len = 0;
     const char* gp = NULL; int gplen = 0;
@@ -2207,11 +2126,11 @@ static int rx_match_seq_inner(const char* p, int plen, const char* s, int si, in
         if (gplen >= 2 && gp[0] == '?' && gp[1] == ':') { gp += 2; gplen -= 2; }
         alen = group_len;
     } else {
-        if (!rx_atom(p, plen, s, si, slen, icase, &alen) && !(si >= slen)) { /* fallthrough: still need alen for quantifier '?' or '*' */ }
+        if (!rx_atom(p, plen, s, si, slen, icase, &alen) && !(si >= slen)) {  }
         if (p[0] == '[') { int adv; rx_class_match(p, plen, 'a', icase, &adv); alen = adv; }
         else if (p[0] == '\\' && plen > 1) alen = 2; else alen = 1;
     }
-    /* quantifier */
+
     int min = 1, max = 1, qlen = 0;
     if (alen < plen) {
         char q = p[alen];
@@ -2225,10 +2144,10 @@ static int rx_match_seq_inner(const char* p, int plen, const char* s, int si, in
             if (i < plen && p[i] == '}') i++;
             qlen = i - alen;
         }
-        if (qlen && alen + qlen < plen && p[alen + qlen] == '?') qlen++;   /* lazy: treated greedy */
+        if (qlen && alen + qlen < plen && p[alen + qlen] == '?') qlen++;
     }
     const char* rest = p + alen + qlen; int restlen = plen - alen - qlen;
-    /* greedy: collect match positions */
+
     int positions[256]; int np = 0;
     positions[np++] = si;
     int cur_i = si;
@@ -2253,7 +2172,7 @@ static int rx_match_seq_inner(const char* p, int plen, const char* s, int si, in
 }
 
 static int rx_match_here(const char* p, int plen, const char* s, int si, int slen, int icase, int* end) {
-    /* alternation at top level of this sequence */
+
     int d = 0;
     for (int i = 0; i < plen; i++) {
         if (p[i] == '\\') { i++; continue; }
@@ -2267,7 +2186,6 @@ static int rx_match_here(const char* p, int plen, const char* s, int si, int sle
     return rx_match_seq(p, plen, s, si, slen, icase, end);
 }
 
-/* find first match at or after `from`; returns start or -1, *end = end */
 static int rx_search(regex_t* rx, const char* s, int from, int* end) {
     int slen = (int)strlen(s);
     rx_nest = 0; rx_budget = RX_BUDGET;
@@ -2336,7 +2254,7 @@ value_t js_string_call(const char* s, const char* key, value_t* args, int argc, 
         if (argc < 2) return mk_str(s);
         int all = br_streq(key, "replaceAll");
         char* out = js_alloc_str(0);
-        /* we build into a temp buffer then dup */
+
         static char tmp[8192];
         int o = 0;
         int from = 0;
@@ -2412,10 +2330,8 @@ static value_t string_method(const char* s, const char* key, int* handled) {
     return UNDEF;
 }
 
-/* -------------------------------------------------------- array API */
-
 static void sort_values(value_t* items, int n, value_t cmp) {
-    /* insertion sort: arrays are small */
+
     for (int i = 1; i < n; i++) {
         value_t key = items[i];
         int j = i - 1;
@@ -2472,7 +2388,7 @@ value_t js_array_call(int arr, const char* key, value_t* args, int argc, int* ha
         for (int i = 0; i < del; i++) array_push(removed, a->items[s + i]);
         int ins = argc > 2 ? argc - 2 : 0;
         int newlen = a->len - del + ins;
-        /* grow if needed */
+
         while (objects[arr].cap < newlen) { array_push(arr, UNDEF); objects[arr].len--; }
         a = &objects[arr];
         if (ins > del) for (int i = a->len - 1; i >= s + del; i--) a->items[i + ins - del] = a->items[i];
@@ -2505,7 +2421,7 @@ value_t js_array_call(int arr, const char* key, value_t* args, int argc, int* ha
         }
         return mk_obj(r);
     }
-    /* callbacks */
+
     int is_foreach = br_streq(key, "forEach"), is_map = br_streq(key, "map"), is_filter = br_streq(key, "filter"),
         is_find = br_streq(key, "find"), is_findidx = br_streq(key, "findIndex"), is_some = br_streq(key, "some"),
         is_every = br_streq(key, "every"), is_reduce = br_streq(key, "reduce"), is_flatmap = br_streq(key, "flatMap"),
@@ -2564,7 +2480,7 @@ value_t js_function_call(int fnobj, const char* key, value_t* args, int argc, in
         return call_function(fn, t, a2, n);
     }
     if (br_streq(key, "bind")) {
-        /* bound function: a native trampoline stored as a FUNC with fn_this set and bound args in a prop */
+
         int b = new_object(O_FUNC);
         if (b < 0) return UNDEF;
         objects[b].fn_node = objects[fnobj].fn_node;
@@ -2580,9 +2496,6 @@ value_t js_function_call(int fnobj, const char* key, value_t* args, int argc, in
     return UNDEF;
 }
 
-/* ---------------------------------------------------------- Date API */
-
-/* writes v (zero padded to 2 digits when pad) into out, returns chars written */
 static int date_field(char* out, int v, int pad) {
     char n[12]; int o = 0;
     if (pad && v < 10) out[o++] = '0';
@@ -2626,8 +2539,6 @@ value_t js_date_call(int obj, const char* key, value_t* args, int argc, int* han
     *handled = 0;
     return UNDEF;
 }
-
-/* ------------------------------------------------------------- JSON */
 
 static void json_out(value_t v, char* out, int max, int* o, int depth_) {
     if (*o >= max - 8 || depth_ > 32 || br_stack_headroom() < BR_STACK_MIN) return;
@@ -2721,8 +2632,6 @@ static value_t json_parse_value(const char** pp) {
     return r;
 }
 
-/* -------------------------------------------------------- natives */
-
 static char console_buf[512];
 
 static value_t n_console_log(int t, value_t* a, int n) {
@@ -2776,9 +2685,7 @@ static value_t n_Date(int t, value_t* a, int n) { (void)t; (void)a; (void)n; int
 static value_t n_Date_now(int t, value_t* a, int n) { (void)t; (void)a; (void)n; return mk_int((int)(uptime_ticks * (1000 / TICKS_PER_SEC))); }
 static value_t n_RegExp(int t, value_t* a, int n) { (void)t; int r = new_object(O_REGEXP); if (r < 0) return UNDEF; const char* pat = n ? to_string(a[0]) : ""; const char* flags = n > 1 ? to_string(a[1]) : ""; objects[r].name = concat(concat("/", pat), concat("/", flags)); return mk_obj(r); }
 static value_t n_Promise(int t, value_t* a, int n) { (void)t; (void)a; (void)n; return mk_obj(new_object(O_PLAIN)); }
-/* IntersectionObserver: everything is "intersecting" immediately, so
- * reveal-on-scroll sites (opacity:0 until .active is added) show their
- * content. observe(el) queues one callback with a single entry. */
+
 static value_t n_setTimeout(int t, value_t* a, int n);
 static value_t n_noop(int t, value_t* a, int n);
 static value_t n_io_observe(int t, value_t* a, int n) {
@@ -2789,11 +2696,11 @@ static value_t n_io_observe(int t, value_t* a, int n) {
     set_prop(entry, "target", a[0]); set_prop(entry, "isIntersecting", mk_bool(1)); set_prop(entry, "intersectionRatio", mk_int(1));
     int arr = new_array(); if (arr < 0) return UNDEF;
     array_push(arr, mk_obj(entry));
-    /* bind: () => cb([entry], observer) via a native trampoline stored on the entry list */
+
     int call = new_object(O_PLAIN); if (call < 0) return UNDEF;
     set_prop(call, "__cb", cb); set_prop(call, "__arg", mk_obj(arr)); set_prop(call, "__obs", mk_obj(t));
     value_t targs[2]; targs[0] = get_prop(obj_window, "__ioFire"); targs[1] = mk_int(0);
-    /* the trampoline reads the pending list */
+
     value_t pend = get_prop(obj_window, "__ioPending");
     if (pend.type != V_OBJ) { int p = new_array(); if (p < 0) return UNDEF; pend = mk_obj(p); set_prop(obj_window, "__ioPending", pend); }
     array_push(pend.u.obj, mk_obj(call));
@@ -2813,7 +2720,7 @@ static value_t n_io_fire(int t, value_t* a, int n) {
         value_t cb = get_prop(c.u.obj, "__cb");
         if (cb.type == V_FUNC) call_function(cb, args[1].type == V_OBJ ? args[1].u.obj : -1, args, 2);
     }
-    /* drop the ones we ran (new ones may have been appended by the callbacks) */
+
     int left = objects[arr].len - cnt;
     for (int i = 0; i < left; i++) objects[arr].items[i] = objects[arr].items[cnt + i];
     objects[arr].len = left;
@@ -2875,7 +2782,6 @@ static value_t n_Array_from(int t, value_t* a, int n) {
 static value_t n_JSON_stringify(int t, value_t* a, int n) { (void)t; if (!n) return UNDEF; static char buf[8192]; int o = 0; json_out(a[0], buf, sizeof(buf), &o, 0); buf[o] = 0; return mk_str(js_strdup_n(buf, o)); }
 static value_t n_JSON_parse(int t, value_t* a, int n) { (void)t; if (!n) return UNDEF; const char* p = to_string(a[0]); return json_parse_value(&p); }
 
-/* Math with fixed point */
 static uint32_t rng_state = 0x12345678;
 static value_t n_Math_random(int t, value_t* a, int n) { (void)t; (void)a; (void)n; rng_state = rng_state * 1664525u + 1013904223u + uptime_ticks; return mk_num((fx_t)(rng_state >> 16)); }
 static value_t n_Math_floor(int t, value_t* a, int n) { (void)t; if (!n) return mk_num(NAN_FX); fx_t v = to_num(a[0]); if (is_nan(v)) return mk_num(v); return mk_num(v & ~(FX_ONE - 1)); }
@@ -2890,20 +2796,20 @@ static value_t n_Math_pow(int t, value_t* a, int n) { (void)t; if (n < 2) return
 static value_t n_Math_sqrt(int t, value_t* a, int n) {
     (void)t; if (!n) return mk_num(NAN_FX);
     fx_t v = to_num(a[0]); if (v < 0 || is_nan(v)) return mk_num(NAN_FX);
-    /* integer sqrt on v << 16 gives sqrt in fixed point */
+
     uint64_t x = (uint64_t)v << FX_SHIFT, r = 0, bit = (uint64_t)1 << 62;
     while (bit > x) bit >>= 2;
     while (bit) { if (x >= r + bit) { x -= r + bit; r = (r >> 1) + bit; } else r >>= 1; bit >>= 2; }
     return mk_num((fx_t)r);
 }
 static value_t n_Math_hypot(int t, value_t* a, int n) { (void)t; fx_t s = 0; for (int i = 0; i < n; i++) { fx_t v = to_num(a[i]); s += (v * v) >> FX_SHIFT; } value_t arg = mk_num(s); return n_Math_sqrt(0, &arg, 1); }
-/* sin/cos via a 256-entry quarter table built at init (integer only) */
+
 static fx_t sin_table[257];
 static void build_sin_table(void) {
-    /* Bhaskara-free approach: Taylor in fixed point for angles 0..pi/2 */
+
     for (int i = 0; i <= 256; i++) {
-        /* angle = i/256 * pi/2 in 16.16 -> use polynomial sin(x) ~ x - x^3/6 + x^5/120 - x^7/5040 */
-        int64_t x = ((int64_t)i * 102944) / 256;         /* pi/2 in 16.16 = 102944 */
+
+        int64_t x = ((int64_t)i * 102944) / 256;
         int64_t x2 = (x * x) >> FX_SHIFT;
         int64_t x3 = (x2 * x) >> FX_SHIFT;
         int64_t x5 = (x3 * x2) >> FX_SHIFT;
@@ -2913,7 +2819,7 @@ static void build_sin_table(void) {
     }
 }
 static fx_t fx_sin(fx_t ang) {
-    const int64_t TWO_PI = 411775;       /* 2*pi in 16.16 */
+    const int64_t TWO_PI = 411775;
     int64_t a = ang % TWO_PI; if (a < 0) a += TWO_PI;
     int quadrant = (int)(a / 102944);
     int64_t rem = a % 102944;
@@ -2933,11 +2839,11 @@ static value_t n_Math_cos(int t, value_t* a, int n) { (void)t; if (!n) return mk
 static value_t n_Math_atan2(int t, value_t* a, int n) {
     (void)t; if (n < 2) return mk_num(NAN_FX);
     fx_t y = to_num(a[0]), x = to_num(a[1]);
-    /* approximation: atan(z) ~ z*(pi/4) - z*(|z|-1)*(0.2447+0.0663|z|) */
+
     fx_t ax = x < 0 ? -x : x, ay = y < 0 ? -y : y;
     fx_t z = (ay > ax) ? ((ax << FX_SHIFT) / (ay ? ay : 1)) : ((ay << FX_SHIFT) / (ax ? ax : 1));
     fx_t az = z;
-    fx_t r = (z * 51472) >> FX_SHIFT;                  /* z * pi/4 */
+    fx_t r = (z * 51472) >> FX_SHIFT;
     fx_t corr = (((z * (az - FX_ONE)) >> FX_SHIFT) * (16036 + ((4345 * az) >> FX_SHIFT))) >> FX_SHIFT;
     r -= corr;
     if (ay > ax) r = 102944 - r;
@@ -2945,10 +2851,9 @@ static value_t n_Math_atan2(int t, value_t* a, int n) {
     if (y < 0) r = -r;
     return mk_num(r);
 }
-static value_t n_Math_log(int t, value_t* a, int n) { (void)t; if (!n) return mk_num(NAN_FX); fx_t v = to_num(a[0]); if (v <= 0) return mk_num(NAN_FX); /* ln via log2 */ int e = 0; fx_t m = v; while (m >= 2 * FX_ONE) { m >>= 1; e++; } while (m < FX_ONE) { m <<= 1; e--; } fx_t f = m - FX_ONE; fx_t ln1p = f - ((f * f) >> 17) + ((((f * f) >> FX_SHIFT) * f) / 3 >> FX_SHIFT); return mk_num(ln1p + (fx_t)e * 45426); }
+static value_t n_Math_log(int t, value_t* a, int n) { (void)t; if (!n) return mk_num(NAN_FX); fx_t v = to_num(a[0]); if (v <= 0) return mk_num(NAN_FX);  int e = 0; fx_t m = v; while (m >= 2 * FX_ONE) { m >>= 1; e++; } while (m < FX_ONE) { m <<= 1; e--; } fx_t f = m - FX_ONE; fx_t ln1p = f - ((f * f) >> 17) + ((((f * f) >> FX_SHIFT) * f) / 3 >> FX_SHIFT); return mk_num(ln1p + (fx_t)e * 45426); }
 static value_t n_Math_exp(int t, value_t* a, int n) { (void)t; if (!n) return mk_num(NAN_FX); fx_t x = to_num(a[0]); fx_t r = FX_ONE, term = FX_ONE; for (int i = 1; i < 20; i++) { term = ((term * x) >> FX_SHIFT) / i; r += term; } return mk_num(r); }
 
-/* timers */
 static value_t n_setTimeout(int t, value_t* a, int n) {
     (void)t;
     if (!n || a[0].type != V_FUNC) return mk_int(0);
@@ -2972,8 +2877,6 @@ static value_t n_setInterval(int t, value_t* a, int n) {
 }
 static value_t n_clearTimeout(int t, value_t* a, int n) { (void)t; if (!n) return UNDEF; int id = (int)(to_num(a[0]) >> FX_SHIFT); for (int i = 0; i < JS_MAX_TIMERS; i++) if (timers[i].active && timers[i].id == id) timers[i].active = 0; return UNDEF; }
 static value_t n_requestAnimationFrame(int t, value_t* a, int n) { value_t args[2]; args[0] = n ? a[0] : UNDEF; args[1] = mk_int(16); return n_setTimeout(t, args, 2); }
-
-/* ------------------------------------------------------------- DOM */
 
 static int wrap_node(br_node_t* n) {
     if (!n) return -1;
@@ -3026,7 +2929,7 @@ static void collect_by_class(br_node_t* n, const char* cls, int arr) {
 }
 
 static const char* style_prop_to_css(const char* camel) {
-    /* backgroundColor -> background-color */
+
     static char buf[48];
     int o = 0;
     for (int i = 0; camel[i] && o < 46; i++) {
@@ -3039,15 +2942,12 @@ static const char* style_prop_to_css(const char* camel) {
     return buf;
 }
 
-/* element.style proxy: a plain object whose sets are mirrored into the
- * style attribute. We keep it simple: style object props are written back
- * into the style attribute string on each set. */
 static value_t make_style_proxy(br_node_t* n) {
     int o = new_object(O_DOM);
     if (o < 0) return UNDEF;
     objects[o].dom_id = n->id;
     objects[o].name = "style";
-    /* populate from the existing inline style */
+
     const char* inl = br_attr(n, "style");
     if (inl) {
         const char* p = inl;
@@ -3059,7 +2959,7 @@ static value_t make_style_proxy(br_node_t* n) {
             while (*p == ' ') p++;
             const char* vs = p; while (*p && *p != ';') p++;
             const char* val = js_strdup_n(vs, (int)(p - vs));
-            /* camelCase the name */
+
             char cam[48]; int o2 = 0;
             for (int i = 0; name[i] && o2 < 46; i++) { if (name[i] == '-' && name[i + 1]) { i++; cam[o2++] = (char)((name[i] >= 'a' && name[i] <= 'z') ? name[i] - 32 : name[i]); } else cam[o2++] = name[i]; }
             cam[o2] = 0;
@@ -3079,7 +2979,7 @@ static void style_proxy_set(int o, const char* key, value_t v) {
         return;
     }
     set_prop(o, js_strdup(key), mk_str(js_strdup(to_string(v))));
-    /* rebuild the style attribute from all props */
+
     static char css[1024]; int c = 0;
     for (int p = objects[o].first_prop; p >= 0; p = props[p].next) {
         if (props[p].val.type != V_STR || !props[p].val.u.s[0]) continue;
@@ -3140,7 +3040,7 @@ static value_t dom_get(int o, const char* key, int* handled) {
         if (br_streq(key, "length")) { const char* c = br_attr(n, "class"); int cnt = 0; if (c) { int in = 0; for (int i = 0; c[i]; i++) { if (c[i] != ' ' && !in) { cnt++; in = 1; } else if (c[i] == ' ') in = 0; } } return mk_int(cnt); }
         *handled = 0; return UNDEF;
     }
-    /* own JS props first (event handlers, expando) */
+
     prop_t* own = find_own(o, key);
     if (own) return own->val;
 
@@ -3218,9 +3118,9 @@ static value_t dom_get(int o, const char* key, int* handled) {
     if (br_streq(key, "selectedIndex")) { int i = 0; for (br_node_t* c = n->first_child; c; c = c->next) if (c->type == BR_NODE_ELEMENT && br_streq(c->tag, "option")) { if (br_attr(c, "selected")) return mk_int(i); i++; } return mk_int(0); }
     if (br_streq(key, "attributes")) { int a = new_array(); for (int i = 0; i < n->attr_count; i++) { int p = new_object(O_PLAIN); set_prop(p, "name", mk_str(n->attrs[i].name)); set_prop(p, "value", mk_str(n->attrs[i].value)); array_push(a, mk_obj(p)); } return mk_obj(a); }
     if (br_streq(key, "length") && n->type == BR_NODE_ELEMENT && br_streq(n->tag, "form")) { int c = 0; for (br_node_t* k = n->first_child; k; k = k->next) c++; return mk_int(c); }
-    /* on* handlers default to null */
+
     if (key[0] == 'o' && key[1] == 'n') return mk_null();
-    /* attribute fallback (e.g. el.title already handled; custom props) */
+
     if (n->type == BR_NODE_ELEMENT) { const char* v = br_attr(n, key); if (v) return mk_str(v); }
     *handled = 0;
     return UNDEF;
@@ -3234,7 +3134,7 @@ static int dom_set(int o, const char* key, value_t v) {
     if (n->type == BR_NODE_DOCUMENT) {
         if (br_streq(key, "title")) { br_strlcpy(brs.title, to_string(v), sizeof(brs.title)); br_request_repaint(); return 1; }
         if (br_streq(key, "cookie")) return 1;
-        return 0;   /* store as expando (onload etc.) */
+        return 0;
     }
     if (br_streq(key, "innerHTML")) { const char* s = to_string(v); br_html_parse_fragment(n, s, (int)strlen(s)); br_js_dom_changed(); return 1; }
     if (br_streq(key, "outerHTML")) { const char* s = to_string(v); if (n->parent) { br_html_parse_fragment(n, s, (int)strlen(s)); } br_js_dom_changed(); return 1; }
@@ -3257,11 +3157,11 @@ static int dom_set(int o, const char* key, value_t v) {
     if (br_streq(key, "hidden")) { if (truthy(v)) br_set_attr(n, "hidden", ""); else { for (int i = 0; i < n->attr_count; i++) if (br_streq(n->attrs[i].name, "hidden")) { n->attrs[i] = n->attrs[n->attr_count - 1]; n->attr_count--; break; } } br_js_dom_changed(); return 1; }
     if (br_streq(key, "selectedIndex")) { int want = (int)(to_num(v) >> FX_SHIFT), i = 0; for (br_node_t* c = n->first_child; c; c = c->next) if (c->type == BR_NODE_ELEMENT && br_streq(c->tag, "option")) { if (i == want) br_set_attr(c, "selected", "selected"); else { for (int k = 0; k < c->attr_count; k++) if (br_streq(c->attrs[k].name, "selected")) { c->attrs[k] = c->attrs[c->attr_count - 1]; c->attr_count--; break; } } i++; } br_request_repaint(); return 1; }
     if (br_streq(key, "scrollTop") || br_streq(key, "scrollLeft")) return 1;
-    return 0;   /* expando / on* handler stored as a normal prop */
+    return 0;
 }
 
 static void class_toggle(br_node_t* n, const char* cls, int mode) {
-    /* mode: 0 remove, 1 add, 2 toggle */
+
     const char* cur_cls = br_attr(n, "class");
     char out[512]; int o = 0; int had = 0;
     if (cur_cls) {
@@ -3311,11 +3211,11 @@ static void call_handler(value_t fn, int this_obj, value_t ev) {
 
 static int dispatch_event_on(int o, const char* type, value_t ev, int* prevented) {
     int handled = 0;
-    /* on<type> property */
+
     char on[32]; on[0] = 'o'; on[1] = 'n'; int i = 0; for (; type[i] && i < 28; i++) on[2 + i] = type[i]; on[2 + i] = 0;
     prop_t* p = find_own(o, on);
     if (p && p->val.type == V_FUNC) { call_handler(p->val, o, ev); handled = 1; }
-    /* listeners array: "__listeners_<type>" */
+
     char lk[48]; const char* pre = "__listeners_"; int k = 0; for (; pre[k]; k++) lk[k] = pre[k]; for (i = 0; type[i] && k < 46; i++) lk[k++] = type[i]; lk[k] = 0;
     prop_t* lp = find_own(o, lk);
     if (lp && lp->val.type == V_OBJ) {
@@ -3326,7 +3226,6 @@ static int dispatch_event_on(int o, const char* type, value_t ev, int* prevented
     return handled;
 }
 
-/* preventDefault sets defaultPrevented: implement via a native bound to the event */
 static value_t n_preventDefault(int t, value_t* a, int n) { (void)a; (void)n; if (t >= 0) set_prop(t, "defaultPrevented", mk_bool(1)); return UNDEF; }
 
 static int dispatch_bubbling(br_node_t* target, const char* type, const char* onattr) {
@@ -3337,11 +3236,11 @@ static int dispatch_bubbling(br_node_t* target, const char* type, const char* on
         int o = wrap_node(n);
         if (o < 0) break;
         if (ev.type == V_OBJ) set_prop(ev.u.obj, "currentTarget", mk_obj(o));
-        /* inline attribute handler, e.g. onclick="..." */
+
         if (onattr && n->type == BR_NODE_ELEMENT) {
             const char* code = br_attr(n, onattr);
             if (code && !find_own(o, onattr)) {
-                /* compile once into a function object: function(event){ code } */
+
                 const char* src = concat("(function(event){", concat(code, "\n})"));
                 int save_pos = pos;
                 int save_tok = tok_count;
@@ -3358,7 +3257,7 @@ static int dispatch_bubbling(br_node_t* target, const char* type, const char* on
         if (ev.type == V_OBJ) { value_t sp = get_prop(ev.u.obj, "__stopped"); if (truthy(sp)) break; }
         if (n->type == BR_NODE_DOCUMENT) break;
     }
-    /* window-level listeners */
+
     if (obj_window >= 0) dispatch_event_on(obj_window, type, ev, &prevented);
     return prevented;
 }
@@ -3376,15 +3275,15 @@ static br_node_t* create_element(const char* tag) {
 static void insert_before(br_node_t* parent, br_node_t* child, br_node_t* ref) {
     if (!parent || !child) return;
     if (!ref || ref->parent != parent) { br_node_append(parent, child); return; }
-    /* detach child */
-    br_node_append(parent, child);            /* appends at end (and detaches) */
-    /* now move it before ref: unlink from end */
+
+    br_node_append(parent, child);
+
     br_node_t* c = parent->first_child; br_node_t* prev = NULL;
     while (c && c != child) { prev = c; c = c->next; }
     if (!c) return;
     if (prev) prev->next = NULL; else parent->first_child = NULL;
     parent->last_child = prev;
-    /* insert before ref */
+
     if (parent->first_child == ref) { child->next = ref; parent->first_child = child; return; }
     c = parent->first_child;
     while (c && c->next != ref) c = c->next;
@@ -3429,9 +3328,9 @@ value_t js_dom_call(int o, const char* key, value_t* a, int n, int* handled) {
         if (br_streq(key, "removeProperty")) { if (n) style_proxy_set(o, to_string(a[0]), mk_str("")); return UNDEF; }
         *handled = 0; return UNDEF;
     }
-    /* querying */
+
     if (br_streq(key, "getElementById")) return node_or_null(n ? br_find_by_id(el, to_string(a[0])) : NULL);
-    if (br_streq(key, "querySelector")) { if (!n) return mk_null(); br_node_t* first = NULL; const char* sel = to_string(a[0]); /* selector lists */ const char* p = sel; while (*p && !first) { const char* q = p; while (*q && *q != ',') q++; const char* one = js_strdup_n(p, (int)(q - p)); collect_matching(el, one, -1, 1, &first); p = *q ? q + 1 : q; } return node_or_null(first); }
+    if (br_streq(key, "querySelector")) { if (!n) return mk_null(); br_node_t* first = NULL; const char* sel = to_string(a[0]);  const char* p = sel; while (*p && !first) { const char* q = p; while (*q && *q != ',') q++; const char* one = js_strdup_n(p, (int)(q - p)); collect_matching(el, one, -1, 1, &first); p = *q ? q + 1 : q; } return node_or_null(first); }
     if (br_streq(key, "querySelectorAll")) { int arr = new_array(); if (n) { br_node_t* f = NULL; const char* sel = to_string(a[0]); const char* p = sel; while (*p) { const char* q = p; while (*q && *q != ',') q++; const char* one = js_strdup_n(p, (int)(q - p)); collect_matching(el, one, arr, 0, &f); p = *q ? q + 1 : q; } } return mk_obj(arr); }
     if (br_streq(key, "getElementsByTagName")) { int arr = new_array(); if (n) collect_by_tag(el, to_string(a[0]), arr); return mk_obj(arr); }
     if (br_streq(key, "getElementsByClassName")) { int arr = new_array(); if (n) collect_by_class(el, to_string(a[0]), arr); return mk_obj(arr); }
@@ -3439,13 +3338,13 @@ value_t js_dom_call(int o, const char* key, value_t* a, int n, int* handled) {
     if (br_streq(key, "closest")) { if (!n) return mk_null(); for (br_node_t* p = el; p && p->type == BR_NODE_ELEMENT; p = p->parent) if (br_css_match_selector_string(p, to_string(a[0]))) return node_or_null(p); return mk_null(); }
     if (br_streq(key, "matches")) return mk_bool(n && el->type == BR_NODE_ELEMENT && br_css_match_selector_string(el, to_string(a[0])));
     if (br_streq(key, "contains")) { if (!n || a[0].type != V_OBJ) return mk_bool(0); br_node_t* t = unwrap(a[0].u.obj); while (t) { if (t == el) return mk_bool(1); t = t->parent; } return mk_bool(0); }
-    /* creation */
+
     if (br_streq(key, "createElement")) { br_node_t* c = create_element(n ? to_string(a[0]) : "div"); return node_or_null(c); }
     if (br_streq(key, "createTextNode")) { br_node_t* t = br_node_new(BR_NODE_TEXT); if (!t) return mk_null(); t->text = br_strdup(n ? to_string(a[0]) : ""); t->js_obj = -1; return node_or_null(t); }
     if (br_streq(key, "createDocumentFragment")) { br_node_t* c = create_element("fragment"); return node_or_null(c); }
     if (br_streq(key, "createEvent")) return make_event("Event", el);
     if (br_streq(key, "cloneNode")) return node_or_null(clone_node(el, n && truthy(a[0])));
-    /* tree mutation */
+
     if (br_streq(key, "appendChild") || br_streq(key, "append") || br_streq(key, "prepend")) {
         for (int i = 0; i < n; i++) {
             br_node_t* c = NULL;
@@ -3485,14 +3384,14 @@ value_t js_dom_call(int o, const char* key, value_t* a, int n, int* handled) {
     }
     if (br_streq(key, "insertAdjacentElement")) { if (n > 1 && a[1].type == V_OBJ) { const char* where = to_string(a[0]); br_node_t* c = unwrap(a[1].u.obj); if (c) { if (br_streq(where, "beforeend")) br_node_append(el, c); else if (br_streq(where, "afterbegin")) insert_before(el, c, el->first_child); else if (br_streq(where, "beforebegin") && el->parent) insert_before(el->parent, c, el); else if (el->parent) insert_before(el->parent, c, el->next); } br_js_dom_changed(); } return UNDEF; }
     if (br_streq(key, "insertAdjacentText")) { if (n > 1) { br_node_t* t = br_node_new(BR_NODE_TEXT); if (t) { t->text = br_strdup(to_string(a[1])); t->js_obj = -1; const char* where = to_string(a[0]); if (br_streq(where, "afterbegin")) insert_before(el, t, el->first_child); else br_node_append(el, t); } br_js_dom_changed(); } return UNDEF; }
-    /* attributes */
+
     if (br_streq(key, "getAttribute")) { if (!n) return mk_null(); const char* v = br_attr(el, to_string(a[0])); return v ? mk_str(v) : mk_null(); }
     if (br_streq(key, "setAttribute")) { if (n > 1) { br_set_attr(el, to_string(a[0]), to_string(a[1])); br_js_dom_changed(); } return UNDEF; }
     if (br_streq(key, "hasAttribute")) return mk_bool(n && br_attr(el, to_string(a[0])) != NULL);
     if (br_streq(key, "removeAttribute")) { if (n) { const char* nm = to_string(a[0]); for (int i = 0; i < el->attr_count; i++) if (br_strieq(el->attrs[i].name, nm)) { el->attrs[i] = el->attrs[el->attr_count - 1]; el->attr_count--; break; } br_js_dom_changed(); } return UNDEF; }
     if (br_streq(key, "toggleAttribute")) { if (n) { const char* nm = to_string(a[0]); if (br_attr(el, nm)) { for (int i = 0; i < el->attr_count; i++) if (br_strieq(el->attrs[i].name, nm)) { el->attrs[i] = el->attrs[el->attr_count - 1]; el->attr_count--; break; } } else br_set_attr(el, nm, ""); br_js_dom_changed(); } return UNDEF; }
     if (br_streq(key, "getBoundingClientRect")) { int r = new_object(O_PLAIN); set_prop(r, "x", mk_int(el->lx)); set_prop(r, "y", mk_int(el->ly - brs.scroll_y)); set_prop(r, "left", mk_int(el->lx)); set_prop(r, "top", mk_int(el->ly - brs.scroll_y)); set_prop(r, "width", mk_int(el->lw)); set_prop(r, "height", mk_int(el->lh)); set_prop(r, "right", mk_int(el->lx + el->lw)); set_prop(r, "bottom", mk_int(el->ly + el->lh - brs.scroll_y)); return mk_obj(r); }
-    /* events */
+
     if (br_streq(key, "addEventListener") || br_streq(key, "attachEvent")) {
         if (n > 1 && a[1].type == V_FUNC) {
             const char* type = to_string(a[0]);
@@ -3502,7 +3401,7 @@ value_t js_dom_call(int o, const char* key, value_t* a, int n, int* handled) {
             int arr;
             if (lp && lp->val.type == V_OBJ) arr = lp->val.u.obj; else { arr = new_array(); set_prop(o, js_strdup(lk), mk_obj(arr)); }
             array_push(arr, a[1]);
-            /* DOMContentLoaded / load fire right after the scripts ran: queue as a timer */
+
             if (br_streq(type, "DOMContentLoaded") || br_streq(type, "load") || br_streq(type, "readystatechange")) { value_t targs[2]; targs[0] = a[1]; targs[1] = mk_int(0); n_setTimeout(-1, targs, 2); }
         }
         return UNDEF;
@@ -3528,7 +3427,7 @@ value_t js_dom_call(int o, const char* key, value_t* a, int n, int* handled) {
     if (br_streq(key, "hasChildNodes")) return mk_bool(el->first_child != NULL);
     if (br_streq(key, "toString")) return mk_str("[object HTMLElement]");
     if (br_streq(key, "write") || br_streq(key, "writeln")) {
-        /* document.write during load appends to body */
+
         if (n && br_doc && br_doc->body) { const char* s = to_string(a[0]); br_node_t* frag = create_element("fragment"); if (frag) { br_html_parse_fragment(frag, s, (int)strlen(s)); br_node_t* k = frag->first_child; while (k) { br_node_t* nx = k->next; br_node_append(br_doc->body, k); k = nx; } } br_js_dom_changed(); }
         return UNDEF;
     }
@@ -3542,13 +3441,12 @@ value_t js_dom_call(int o, const char* key, value_t* a, int n, int* handled) {
     return UNDEF;
 }
 
-/* window-level natives that need DOM access */
-static value_t n_getComputedStyle(int t, value_t* a, int n) { (void)t; if (n && a[0].type == V_OBJ) { br_node_t* el = unwrap(a[0].u.obj); if (el) { value_t st = make_style_proxy(el); /* add computed colour/display */ if (st.type == V_OBJ) { char col[16]; uint32_t c = el->style.color; col[0] = '#'; static const char hx[] = "0123456789abcdef"; col[1] = hx[(c >> 20) & 15]; col[2] = hx[(c >> 16) & 15]; col[3] = hx[(c >> 12) & 15]; col[4] = hx[(c >> 8) & 15]; col[5] = hx[(c >> 4) & 15]; col[6] = hx[c & 15]; col[7] = 0; if (!find_own(st.u.obj, "color")) set_prop(st.u.obj, "color", mk_str(js_strdup(col))); if (!find_own(st.u.obj, "display")) set_prop(st.u.obj, "display", mk_str(el->style.display == BR_DISPLAY_NONE ? "none" : el->style.display == BR_DISPLAY_INLINE ? "inline" : "block")); } return st; } } return mk_obj(new_object(O_PLAIN)); }
+static value_t n_getComputedStyle(int t, value_t* a, int n) { (void)t; if (n && a[0].type == V_OBJ) { br_node_t* el = unwrap(a[0].u.obj); if (el) { value_t st = make_style_proxy(el);  if (st.type == V_OBJ) { char col[16]; uint32_t c = el->style.color; col[0] = '#'; static const char hx[] = "0123456789abcdef"; col[1] = hx[(c >> 20) & 15]; col[2] = hx[(c >> 16) & 15]; col[3] = hx[(c >> 12) & 15]; col[4] = hx[(c >> 8) & 15]; col[5] = hx[(c >> 4) & 15]; col[6] = hx[c & 15]; col[7] = 0; if (!find_own(st.u.obj, "color")) set_prop(st.u.obj, "color", mk_str(js_strdup(col))); if (!find_own(st.u.obj, "display")) set_prop(st.u.obj, "display", mk_str(el->style.display == BR_DISPLAY_NONE ? "none" : el->style.display == BR_DISPLAY_INLINE ? "inline" : "block")); } return st; } } return mk_obj(new_object(O_PLAIN)); }
 static value_t n_scrollTo(int t, value_t* a, int n) { (void)t; if (n >= 2) { brs.scroll_y = (int)(to_num(a[1]) >> FX_SHIFT); if (brs.scroll_y < 0) brs.scroll_y = 0; br_request_repaint(); } else if (n == 1 && a[0].type == V_OBJ) { value_t top = get_prop(a[0].u.obj, "top"); if (top.type == V_NUM) { brs.scroll_y = (int)(top.u.n >> FX_SHIFT); br_request_repaint(); } } return UNDEF; }
 static void navigate_to(const char* url, int replace) {
     char abs[BR_URL_MAX];
     br_resolve_url(brs.url, url, abs, sizeof(abs));
-    /* "#fragment" of the current document only scrolls */
+
     int hl = 0; while (abs[hl] && abs[hl] != '#') hl++;
     if (abs[hl] == '#') {
         int cl = 0; while (brs.url[cl] && brs.url[cl] != '#') cl++;
@@ -3600,8 +3498,6 @@ static value_t n_window_addEventListener(int t, value_t* a, int n) {
     }
     return UNDEF;
 }
-
-/* ------------------------------------------------------- environment */
 
 static void setup_globals(void) {
     obj_global = new_object(O_PLAIN);
@@ -3672,7 +3568,7 @@ static void setup_globals(void) {
     def_native(g, "postMessage", n_noop);
     def_native(g, "getSelection", n_noop);
 
-    /* constructors */
+
     def_native(g, "String", n_String); objects[get_prop(g, "String").u.obj].name = "String";
     def_native(g, "Number", n_Number); objects[get_prop(g, "Number").u.obj].name = "Number";
     def_native(g, "Boolean", n_Boolean); objects[get_prop(g, "Boolean").u.obj].name = "Boolean";
@@ -3734,13 +3630,13 @@ static void setup_globals(void) {
     def_native(obj_console, "error", n_console_log); def_native(obj_console, "debug", n_console_log); def_native(obj_console, "table", n_console_log);
     def_native(obj_console, "group", n_noop); def_native(obj_console, "groupEnd", n_noop); def_native(obj_console, "time", n_noop); def_native(obj_console, "timeEnd", n_noop); def_native(obj_console, "clear", n_noop); def_native(obj_console, "assert", n_noop); def_native(obj_console, "trace", n_noop); def_native(obj_console, "dir", n_console_log);
 
-    /* document */
+
     if (br_doc) {
         obj_document = wrap_node(br_doc);
         set_prop(g, "document", mk_obj(obj_document));
     }
 
-    /* location */
+
     int loc = new_object(O_PLAIN);
     obj_location = loc;
     set_prop(g, "location", mk_obj(loc));
@@ -3796,8 +3692,6 @@ static void setup_globals(void) {
     def_native(ls, "getItem", n_storage_getItem); def_native(ls, "setItem", n_storage_setItem); def_native(ls, "removeItem", n_storage_removeItem); def_native(ls, "clear", n_noop);
 }
 
-/* ------------------------------------------------------------ public */
-
 void br_js_reset(void) {
     node_count = 0; list_count = 0; obj_count = 0; prop_count = 0; str_used = 0; scope_count = 0; arr_used = 0;
     tok_count = 0; steps = 0; js_aborted = 0; js_error = 0; flow = F_NONE; depth = 0; eval_nest = 0; parse_nest = 0;
@@ -3810,7 +3704,6 @@ void br_js_reset(void) {
     scopes[global_scope].this_obj = obj_window;
 }
 
-/* "origin: message" without touching the string pool (it may be exhausted). */
 static void console_error(const char* origin, const char* what, const char* msg) {
     static char line[200];
     int o = 0;
@@ -3837,7 +3730,7 @@ static void run_source(const char* src, int len, const char* origin) {
         console_error(origin, ": Uncaught ", flow_val.type == V_STR ? flow_val.u.s : to_string(flow_val));
     }
     flow = F_NONE;
-    /* scripts may have changed the DOM: re-layout */
+
     br_js_dom_changed();
 }
 
@@ -3863,19 +3756,19 @@ static void run_scripts(br_node_t* n) {
         }
         return;
     }
-    /* iterate children with tolerance for scripts that mutate siblings */
+
     for (br_node_t* c = n->first_child; c; c = c->next) run_scripts(c);
 }
 
 void br_js_run_document(br_node_t* doc) {
     if (!doc) return;
     run_scripts(doc);
-    /* body onload */
+
     if (doc->body) {
         const char* onload = br_attr(doc->body, "onload");
         if (onload) run_source(onload, (int)strlen(onload), "onload");
     }
-    /* window.onload assigned by script */
+
     if (obj_window >= 0) {
         prop_t* p = find_own(obj_window, "onload");
         if (p && p->val.type == V_FUNC) { value_t ev = make_event("load", doc); call_handler(p->val, obj_window, ev); }
@@ -3889,7 +3782,7 @@ void br_js_run_document(br_node_t* doc) {
 void br_js_dispatch_click(br_node_t* n) {
     if (!n || obj_window < 0) return;
     steps = 0; js_aborted = 0; flow = F_NONE; depth = 0; eval_nest = 0;
-    /* checkbox toggles before handlers see it */
+
     if (n->type == BR_NODE_ELEMENT && br_streq(n->tag, "input")) {
         const char* type = br_attr(n, "type");
         if (type && br_strieq(type, "checkbox")) { n->checked = !(n->checked || (br_attr(n, "checked") && !n->value)); n->value = br_strdup("x"); }
@@ -3899,15 +3792,15 @@ void br_js_dispatch_click(br_node_t* n) {
             n->checked = 1; n->value = br_strdup("x");
         }
     }
-    /* label for= */
+
     if (n->type == BR_NODE_ELEMENT && br_streq(n->tag, "label")) {
         const char* f = br_attr(n, "for");
         if (f) { br_node_t* t = br_find_by_id(br_doc, f); if (t && t != n) { br_js_dispatch_click(t); return; } }
     }
     int prevented = dispatch_bubbling(n, "click", "onclick");
-    /* default actions */
+
     if (!prevented) {
-        /* submit buttons fire the form's submit */
+
         br_node_t* form = NULL;
         if (n->type == BR_NODE_ELEMENT && (br_streq(n->tag, "button") || br_streq(n->tag, "input"))) {
             const char* type = br_attr(n, "type");
@@ -3918,7 +3811,7 @@ void br_js_dispatch_click(br_node_t* n) {
         if (form) {
             int sp = dispatch_bubbling(form, "submit", "onsubmit");
             if (!sp) {
-                /* GET submit: build query string and navigate */
+
                 const char* action = br_attr(form, "action");
                 const char* method = br_attr(form, "method");
                 if (!method || !br_strieq(method, "post")) {
@@ -3948,7 +3841,7 @@ void br_js_dispatch_click(br_node_t* n) {
             }
             return;
         }
-        /* links */
+
         for (br_node_t* p = n; p; p = p->parent) {
             if (p->type == BR_NODE_ELEMENT && br_streq(p->tag, "a")) {
                 const char* href = br_attr(p, "href");
@@ -4003,12 +3896,11 @@ void br_js_tick(void) {
         call_function(fn, obj_window, &ev, 1);
         if (flow == F_THROW) br_js_console(concat("Uncaught (timer): ", to_string(flow_val)));
         flow = F_NONE;
-        /* scripts running under the step budget keep the UI responsive */
+
         if (steps > JS_STEP_BUDGET) timers[i].active = 0;
     }
 }
 
-/* keyboard events for focused inputs: Enter triggers form submit */
 void br_js_dispatch_key(br_node_t* n, char c) {
     if (!n || obj_window < 0) return;
     steps = 0; js_aborted = 0; flow = F_NONE; depth = 0; eval_nest = 0;
@@ -4031,10 +3923,10 @@ void br_js_dispatch_key(br_node_t* n, char c) {
     }
     if (obj_window >= 0) dispatch_event_on(obj_window, "keydown", ev, &prevented);
     if (c == '\n' && !prevented) {
-        /* Enter in a text input submits its form */
+
         for (br_node_t* p = n->parent; p; p = p->parent) {
             if (p->type == BR_NODE_ELEMENT && br_streq(p->tag, "form")) {
-                /* find a submit button, else submit directly */
+
                 br_node_t* btn = NULL;
                 for (int i = 0; i < br_dom_node_count() && !btn; i++) {
                     br_node_t* k = br_dom_node(i);

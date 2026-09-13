@@ -14,7 +14,7 @@ void irq_handler(struct registers* r) {
     if (r->int_no == 32) {
         uptime_ticks++;
     }
-    
+
     if (r->int_no >= 40) {
         outb(0x20, 0x20);
     }
@@ -58,11 +58,7 @@ void isr_handler(struct registers* r) {
         return;
     }
 
-    /* A fault must be visible no matter what the terminal was doing. If the
-     * desktop Terminal window was capturing output, the old message vanished
-     * into the capture buffer and the machine looked "frozen" - drop the
-     * capture and paint a panic banner straight onto the hardware
-     * framebuffer (lfbptr may be the back buffer in desktop mode). */
+
     terminal_capture_buffer = NULL;
     terminal_capture_len = 0;
     if (hw_lfbptr && lfbptr != hw_lfbptr) lfbptr = hw_lfbptr;

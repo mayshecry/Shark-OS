@@ -220,7 +220,6 @@ int history_index = -1;
 
 volatile uint32_t uptime_ticks = 0;
 
-/* Terminal output capture for desktop terminal window */
 char* terminal_capture_buffer = NULL;
 int terminal_capture_len = 0;
 bool terminal_in_desktop_window = false;

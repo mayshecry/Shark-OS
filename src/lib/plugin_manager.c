@@ -96,7 +96,7 @@ int plugin_register_builtin(const char* name, plugin_init_t init,
 
     for (int i = 0; i < g_plugin_count; i++) {
         if (strcmp(g_plugins[i].name, (char*)name) == 0) {
-            /* Update existing auto-detected plugin with builtin functions */
+
             g_plugins[i].init = init;
             g_plugins[i].cleanup = cleanup;
             g_plugins[i].command = command;

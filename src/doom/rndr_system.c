@@ -1,4 +1,4 @@
-/* rndr_system.c - renderer system (rndr/system) */
+
 #include "rndr_system.h"
 
 void rndr_init_context(rndr_context_t *ctx, rndr_level_t *lvl,
@@ -16,7 +16,7 @@ void rndr_render_frame(rndr_context_t *ctx, int32_t x, int32_t y,
     rndr_planes_reset(&ctx->planes);
     rndr_drawsegs_reset(&ctx->segs);
 
-    /* clear the view area (HUD keeps its pixels) */
+
     volatile uint8_t (*vs)[RNDR_W] = ctx->screen;
     for (int yy = 0; yy < view_h; yy++)
         for (int xx = 0; xx < RNDR_W; xx++)

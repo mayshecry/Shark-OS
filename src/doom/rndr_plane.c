@@ -1,4 +1,4 @@
-/* rndr_plane.c - visplanes (rndr/visplane) */
+
 #include "rndr_plane.h"
 #include "rndr_light.h"
 #include "rndr_gamedata.h"
@@ -42,8 +42,6 @@ rndr_visplane_t *rndr_check_plane(rndr_planes_t *ps, int pic, int height,
     return pl;
 }
 
-/* BSP traversal is front-to-back, so the first span recorded for a
- * column is the nearest one and wins. */
 void rndr_set_span(rndr_visplane_t *pl, int x, int top, int bottom) {
     if (!pl || top > bottom) return;
     if (pl->top[x] != 0x7FFF) return;
@@ -51,8 +49,6 @@ void rndr_set_span(rndr_visplane_t *pl, int x, int top, int bottom) {
     pl->bottom[x] = (int16_t)bottom;
 }
 
-/* Textured flat row like DOOM's R_MapPlane: one distance division per
- * scanline, then per-pixel texture stepping along the column rays. */
 static void rndr_map_plane(const rndr_view_t *v, const rndr_clip_t *clip,
                            uint8_t (*screen)[RNDR_W],
                            int y, int x1, int x2, int pic,
@@ -90,7 +86,7 @@ void rndr_draw_planes(rndr_planes_t *ps, const rndr_view_t *v,
             if (t < 0) t = 0;
             if (b > v->view_h - 1) b = v->view_h - 1;
             if (b < t || t >= v->view_h) continue;
-            /* group runs of equal spans, then map every scanline */
+
             int x2 = x;
             while (x2 + 1 <= pl->maxx && pl->top[x2 + 1] == t &&
                    pl->bottom[x2 + 1] == b)

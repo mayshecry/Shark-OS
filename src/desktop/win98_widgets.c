@@ -1,8 +1,4 @@
-/* win98_widgets.c - Windows 98 drawing primitives for the SharkOS desktop.
- *
- * Everything here paints into the `lfbptr` back buffer. Nothing here touches
- * hardware; the caller flushes once per frame with flush_screen_to_hw().
- */
+
 
 #include "kernel.h"
 #include "win98_theme.h"
@@ -12,7 +8,6 @@ static const uint16_t w98_glyph_max[W98_GLYPH_H]     = W98_GLYPH_MAX;
 static const uint16_t w98_glyph_restore[W98_GLYPH_H] = W98_GLYPH_RESTORE;
 static const uint16_t w98_glyph_close[W98_GLYPH_H]   = W98_GLYPH_CLOSE;
 
-/* Clamp a rect to the screen. Returns 0 when nothing is visible. */
 static int w98_clip(const w98_rect_t* in, int x, int y, int w, int h,
                     int* x0, int* y0, int* x1, int* y1) {
     int sw = (int)screen_width;
@@ -48,8 +43,7 @@ void w98_fill_dither(int x, int y, int w, int h) {
     if (!w98_clip(NULL, x, y, w, h, &x0, &y0, &x1, &y1)) return;
 
     uint32_t stride = screen_pitch / 4;
-    /* Paint one row as alternating pairs, then repeat. The pattern is aligned
-     * to absolute screen coordinates so it stays put while windows move. */
+
     for (int py = y0; py < y1; py++) {
         uint32_t* row = &lfbptr[(uint32_t)py * stride];
         uint32_t first = (py & 1) ? W98_DESKTOP_DARK : W98_DESKTOP;
@@ -88,7 +82,7 @@ void w98_bevel(int x, int y, int w, int h, w98_bevel_t style) {
         break;
     case W98_BEVEL_ETCHED:
     default:
-        /* Win98 etched lines are a shadow with a highlight 1px below/right. */
+
         w98_hline(x, y, w, W98_BTNSHADOW);
         w98_hline(x, y + 1, w, W98_BTNHILITE);
         w98_vline(x, y, h, W98_BTNSHADOW);
@@ -96,13 +90,13 @@ void w98_bevel(int x, int y, int w, int h, w98_bevel_t style) {
         return;
     }
 
-    /* Outer ring. */
+
     w98_hline(x, y, w, lt_outer);
     w98_vline(x, y, h, lt_outer);
     w98_hline(x, y + h - 1, w, rb_outer);
     w98_vline(x + w - 1, y, h, rb_outer);
 
-    /* Inner ring. */
+
     w98_hline(x + 1, y + 1, w - 2, lt_inner);
     w98_vline(x + 1, y + 1, h - 2, lt_inner);
     w98_hline(x + 1, y + h - 2, w - 2, rb_inner);
@@ -130,13 +124,13 @@ void w98_button(int x, int y, int w, int h, const char* label,
     int ty = y + (h - th) / 2 + ox;
 
     if (!enabled) {
-        /* Disabled text is drawn embossed: white 1px down-right, grey on top. */
+
         w98_text(label, tx + 1, ty + 1, W98_BTNHILITE, W98_BTNFACE, 1, NULL);
     }
     w98_text(label, tx, ty, fg, W98_BTNFACE, 1, NULL);
 
     if (focused) {
-        /* Dotted focus rectangle, 3px inside the border. */
+
         for (int dx = x + 3; dx < x + w - 3; dx += 2) {
             draw_pixel(dx, y + 3, W98_BTNTEXT);
             draw_pixel(dx, y + h - 4, W98_BTNTEXT);
@@ -161,8 +155,7 @@ void w98_hgradient(int x, int y, int w, int h, uint32_t left, uint32_t right) {
     int x0, y0, x1, y1;
     if (!w98_clip(NULL, x, y, w, h, &x0, &y0, &x1, &y1)) return;
 
-    /* Ramp a single row into a scratch buffer, then stamp it down. Recomputing
-     * the lerp per pixel per row costs h times more for the same result. */
+
     static uint32_t ramp[W98_RAMP_MAX];
 
     uint32_t stride = screen_pitch / 4;
@@ -219,8 +212,6 @@ void w98_vgradient(int x, int y, int w, int h, uint32_t top, uint32_t bottom) {
     }
 }
 
-/* One 8x8 glyph at `scale`, with the trailing column filled so glyphs do not
- * run into each other. Returns the advance width. */
 static void w98_glyph_cell(char c, int x, int y, uint32_t fg, uint32_t bg,
                            int scale, const w98_rect_t* clip) {
     if (c < 32 || c > 126) return;
@@ -242,7 +233,7 @@ static void w98_glyph_cell(char c, int x, int y, uint32_t fg, uint32_t bg,
             int gcol = (px - x) / scale;
             uint32_t color;
             if (gcol < 0 || gcol > 7) {
-                color = bg;                       /* padding column */
+                color = bg;
             } else {
                 color = ((bits >> (7 - gcol)) & 1) ? fg : bg;
             }
@@ -299,7 +290,7 @@ void w98_text_vertical(const char* s, int x, int y_bottom, uint32_t fg,
     while (s[n]) n++;
     if (n == 0) return;
 
-    /* The string runs bottom-to-top, so the first character ends up lowest. */
+
     int advance = 6 * scale;
     int total = n * advance;
     int y = y_bottom - total;
@@ -311,15 +302,14 @@ void w98_text_vertical(const char* s, int x, int y_bottom, uint32_t fg,
     int thick = 8 * scale;
 
     for (int py = y0; py < y1; py++) {
-        int along = py - y;                 /* distance up the string  */
-        int gidx = along / advance;         /* which character         */
-        int gcol_row = along % advance;     /* row within that glyph   */
+        int along = py - y;
+        int gidx = along / advance;
+        int gcol_row = along % advance;
         if (gidx < 0 || gidx >= n) continue;
         int grow = gcol_row / scale;
         if (grow < 0 || grow > 7) continue;
 
-        /* Transpose: glyph row becomes the horizontal axis, MSB at the top
-         * of the rotated string, i.e. the right-hand side on screen. */
+
         uint8_t bits = font8x8[s[gidx] - 32][grow];
         uint32_t* row = &lfbptr[(uint32_t)py * stride];
         for (int px = x0; px < x1; px++) {

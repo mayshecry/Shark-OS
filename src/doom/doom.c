@@ -434,14 +434,6 @@ static void generate_textures(void) {
 #define PLAYER_HEIGHT 41
 #define HUD_HEIGHT 32
 
-/* =====================================================================
- * Level geometry in the style of the original DOOM engine (the same
- * architecture cpp-doom ports to C++: r_defs / r_bsp / r_segs / r_plane).
- * The grid map is converted into vertexes, sectors and segs, and a real
- * BSP tree is built once at init. Rendering then walks the BSP instead
- * of raycasting, exactly like DOOM does.
- * ===================================================================== */
-
 #define MAX_LEVEL_SEGS  1024
 #define MAX_LEVEL_SUBS  512
 #define MAX_LEVEL_NODES 512
@@ -453,17 +445,17 @@ typedef struct {
 } lv_sector_t;
 
 typedef struct {
-    int32_t x1, y1, x2, y2;      /* fixed world coords */
+    int32_t x1, y1, x2, y2;
     int32_t length;
-    int16_t front, back;         /* sector idx; back = -1 one-sided */
+    int16_t front, back;
     int16_t midtex, toptex, bottex;
 } lv_seg_t;
 
 typedef struct { int16_t firstseg, numsegs; } lv_subsector_t;
 
 typedef struct {
-    int32_t x, y, dx, dy;        /* split plane */
-    int32_t children[2];         /* >=0 node idx, <0 = ~(subsector idx) */
+    int32_t x, y, dx, dy;
+    int32_t children[2];
 } lv_node_t;
 
 static lv_sector_t level_sectors[MAX_SECTORS];
@@ -475,15 +467,13 @@ static lv_node_t level_nodes[MAX_LEVEL_NODES];
 static int num_nodes;
 static int level_built = 0;
 
-/* front sector must be on the left of (v1 -> v2); renderer treats
- * cross(dir, p - v1) < 0 as the front side. */
 static void add_line(int32_t ax, int32_t ay, int32_t bx, int32_t by,
                      int front, int back, int mid, int top, int bot) {
     if (num_segs >= MAX_LEVEL_SEGS) return;
     lv_seg_t *sg = &level_segs[num_segs++];
     sg->x1 = ax; sg->y1 = ay; sg->x2 = bx; sg->y2 = by;
     int32_t dx = bx - ax, dy = by - ay;
-    sg->length = fp_abs(dx) + fp_abs(dy); /* axis aligned */
+    sg->length = fp_abs(dx) + fp_abs(dy);
     sg->front = (int16_t)front;
     sg->back = (int16_t)back;
     sg->midtex = (int16_t)mid;
@@ -496,16 +486,12 @@ static int cell_open(int x, int y) {
            game_map[y][x] == 0 && cell_sector[y][x] >= 0;
 }
 
-/* canonical front side for two-sided lines: higher ceiling, then higher
- * floor, then lower index (stable, generated exactly once) */
 static int is_front_side(int a, int b) {
     if (sector_ceil[a] != sector_ceil[b]) return sector_ceil[a] > sector_ceil[b];
     if (sector_floor[a] != sector_floor[b]) return sector_floor[a] > sector_floor[b];
     return a < b;
 }
 
-/* Merge a unit-length edge into the seg list: extend an existing
- * collinear seg when sectors/textures match (grid -> DOOM linedefs). */
 static void add_unit_edge(int32_t ax, int32_t ay, int32_t bx, int32_t by,
                           int front, int back, int mid, int top, int bot) {
     for (int i = 0; i < num_segs; i++) {
@@ -513,7 +499,7 @@ static void add_unit_edge(int32_t ax, int32_t ay, int32_t bx, int32_t by,
         if (sg->front != front || sg->back != back || sg->midtex != mid ||
             sg->toptex != top || sg->bottex != bot)
             continue;
-        /* only merge collinear, same-orientation edges */
+
         int e_vert = (ax == bx), s_vert = (sg->x1 == sg->x2);
         if (e_vert != s_vert) continue;
         if (e_vert) {
@@ -547,8 +533,7 @@ static void extract_level(void) {
     for (int i = 0; i < num_sectors; i++)
         level_sectors[i].light = sector_lights[i];
 
-    /* doorway cells carved out of wall rings have no sector yet: give
-     * them the sector of an adjacent open cell so openings stay open */
+
     for (int y = 0; y < MAP_H; y++)
         for (int x = 0; x < MAP_W; x++)
             if (game_map[y][x] == 0 && cell_sector[y][x] < 0) {
@@ -573,7 +558,7 @@ static void extract_level(void) {
             int32_t ex = int_to_fp((x + 1) * CELL_SIZE);
             int32_t ey = int_to_fp((y + 1) * CELL_SIZE);
 
-            /* one-sided walls against solid cells */
+
             if (x + 1 >= MAP_W || game_map[y][x + 1] > 0 || cell_sector[y][x + 1] < 0) {
                 int wt = 0;
                 if (x + 1 < MAP_W && game_map[y][x + 1] > 0) wt = game_map[y][x + 1] - 1;
@@ -595,7 +580,7 @@ static void extract_level(void) {
                 add_unit_edge(ex, gy, gx, gy, s, -1, wt, -1, -1);
             }
 
-            /* two-sided lines between different sectors (steps/doorways) */
+
             if (cell_open(x + 1, y)) {
                 int s2 = cell_sector[y][x + 1];
                 if (s2 != s && is_front_side(s, s2))
@@ -615,8 +600,6 @@ static void extract_level(void) {
     }
 }
 
-/* ------------------------- BSP builder ------------------------- */
-
 static int64_t cross64(int32_t ax, int32_t ay, int32_t bx, int32_t by) {
     return (int64_t)ax * by - (int64_t)ay * bx;
 }
@@ -635,8 +618,7 @@ static int bsp_make_leaf(const int *list, int count) {
     if (num_subs >= MAX_LEVEL_SUBS) return 0;
     int first = num_segs;
     for (int i = 0; i < count && first + i < MAX_LEVEL_SEGS; i++) {
-        /* segs already live in level_segs; leaf records their indices
-         * compactly by copying to the tail region */
+
         level_segs[first + i] = level_segs[list[i]];
     }
     num_segs = first + count;
@@ -645,11 +627,6 @@ static int bsp_make_leaf(const int *list, int count) {
     return ~(num_subs++);
 }
 
-/* Classify a seg against a split line. Returns 1 when the seg truly
- * straddles the line and must be split. Endpoints exactly on the line
- * never trigger a split - they are classified to the other endpoint's
- * side (collinear segs go front). Scoring and partitioning must use
- * this identical logic or the builder loops on slivers. */
 static int bsp_classify(const lv_seg_t *l, const lv_seg_t *sg, int *s1, int *s2) {
     int64_t c1 = cross64(l->x2 - l->x1, l->y2 - l->y1, sg->x1 - l->x1, sg->y1 - l->y1);
     int64_t c2 = cross64(l->x2 - l->x1, l->y2 - l->y1, sg->x2 - l->x1, sg->y2 - l->y1);
@@ -665,8 +642,7 @@ static int bsp_build(const int *list, int count, int depth) {
     if (count <= 1 || depth > 24 || num_nodes >= MAX_LEVEL_NODES - 1)
         return bsp_make_leaf(list, count);
 
-    /* choose split line minimizing splits; candidates that would leave
-     * one side empty are useless partitions and get rejected */
+
     int best = -1, bestscore = 0x7FFFFFFF;
     for (int i = 0; i < count; i++) {
         const lv_seg_t *sp = &level_segs[list[i]];
@@ -706,19 +682,19 @@ static int bsp_build(const int *list, int count, int depth) {
             if (den == 0) { bsp_arena[fl + nf++] = list[i]; continue; }
             int64_t num = cross64(split.x1 - sg.x1, split.y1 - sg.y1,
                                   (int32_t)dxs, (int32_t)dys);
-            /* t = num/den in 16.16, computed without shifting negatives */
+
             int neg = (num < 0) != (den < 0);
             uint64_t un = (uint64_t)(num < 0 ? 0 - (uint64_t)num : (uint64_t)num);
             uint64_t ud = (uint64_t)(den < 0 ? 0 - (uint64_t)den : (uint64_t)den);
             uint64_t r = (un << 16) / ud;
             if (r > 0x7FFFFFFFu) r = 0x7FFFFFFFu;
             int32_t t = neg ? (int32_t)(0u - (uint32_t)r) : (int32_t)r;
-            if (t <= 0) {          /* v1 on the line: body lies on v2's side */
+            if (t <= 0) {
                 if (s2 == 0) bsp_arena[fl + nf++] = list[i];
                 else bsp_arena[bl + nb++] = list[i];
                 continue;
             }
-            if (t >= FP_ONE) {     /* v2 on the line: body lies on v1's side */
+            if (t >= FP_ONE) {
                 if (s1 == 0) bsp_arena[fl + nf++] = list[i];
                 else bsp_arena[bl + nb++] = list[i];
                 continue;
@@ -772,29 +748,13 @@ static lv_subsector_t* R_PointInSubsector(int32_t x, int32_t y) {
     return &level_subs[~ni];
 }
 
-
-/* Column renderer in the style of the real DOOM: each screen column walks
- * the map near-to-far, emitting floor/ceiling spans per sector, two-sided
- * "riser" walls where sector heights change (steps, doorways), and finally
- * the solid wall. Heights come from the sector table, so rooms with raised
- * floors or low ceilings actually look different - the old renderer drew
- * every wall full-height like Wolfenstein 3D. */
-
-/* =====================================================================
- * The DOOM rendering pipeline (r_main / r_bsp / r_segs / r_plane style):
- * BSP traversal -> R_AddLine per seg -> visplanes for floors/ceilings
- * -> R_DrawPlanes. Walls use one-sided midtexture or two-sided
- * upper/lower risers between front/back sector heights, with
- * ceilingclip/floorclip occlusion and drawsegs for sprite clipping.
- * ===================================================================== */
-
 #define MAXVISPLANES 96
 #define MAXDRAWSEGS  64
 #define NEAR_DIST    (8 * FP_ONE)
 
 typedef struct {
-    int pic;          /* flat index */
-    int height;       /* world height of the plane */
+    int pic;
+    int height;
     int light;
     int minx, maxx;
     int16_t top[SCREEN_W], bottom[SCREEN_W];
@@ -814,9 +774,8 @@ static struct {
 static int num_drawsegs;
 static int16_t ds_clip_pool[MAXDRAWSEGS * 2][SCREEN_W];
 
-/* per-frame view state */
 static int32_t viewx, viewy;
-static int viewz;               /* eye height, world units */
+static int viewz;
 static int32_t viewcos, viewsin;
 static int32_t dircos[SCREEN_W], dirsin[SCREEN_W];
 static int centery, view_h_r;
@@ -830,9 +789,8 @@ static inline uint8_t apply_shade(uint8_t c, int shade) {
     return (uint8_t)(s > 255 ? 255 : s);
 }
 
-/* light falloff like DOOM's light tables: sector light minus distance */
 static inline int light_shade(int sector_light, int32_t dist_units) {
-    int cells = dist_units >> 22;          /* /64 world units */
+    int cells = dist_units >> 22;
     int sh = sector_light - cells * 10;
     if (sh < 32) sh = 32;
     if (sh > 255) sh = 255;
@@ -850,13 +808,10 @@ static inline int proj_screen_x(int32_t lat, int32_t dep) {
     return SCREEN_W / 2 + fp_to_int(fp_div(fp_mul(lat, int_to_fp(SCREEN_W / 2)), dep));
 }
 
-/* screen row of world height h at perpendicular distance z (fp units) */
 static inline int proj_row(int32_t z, int h) {
     if (z < NEAR_DIST) z = NEAR_DIST;
     return centery - fp_to_int(fp_div(int_to_fp((h - viewz) * (SCREEN_W / 2)), z));
 }
-
-/* ------------------------- visplanes (r_plane) ------------------------- */
 
 static visplane_t* R_CheckPlane(int pic, int height, int light, int start, int stop) {
     visplane_t *pl = NULL;
@@ -890,8 +845,6 @@ static visplane_t* R_CheckPlane(int pic, int height, int light, int start, int s
     return pl;
 }
 
-/* BSP traversal is front-to-back, so the first span recorded for a
- * column is the nearest one and wins. */
 static void R_SetSpan(visplane_t *pl, int x, int top, int bottom) {
     if (!pl || top > bottom) return;
     if (pl->top[x] != 0x7FFF) return;
@@ -899,8 +852,6 @@ static void R_SetSpan(visplane_t *pl, int x, int top, int bottom) {
     pl->bottom[x] = (int16_t)bottom;
 }
 
-/* Textured flat row like DOOM's R_MapPlane: one distance division per
- * scanline, then per-pixel texture stepping along the column rays. */
 static void R_MapPlane(int y, int x1, int x2, int pic, int planeheight, int light) {
     int p = y - centery;
     if (p < 0) p = (int)(0u - (uint32_t)p);
@@ -934,7 +885,7 @@ static void R_DrawPlanes(void) {
             if (t < 0) t = 0;
             if (b > view_h_r - 1) b = view_h_r - 1;
             if (b < t || t >= view_h_r) continue;
-            /* group runs of equal spans, then map every scanline */
+
             int x2 = x;
             while (x2 + 1 <= pl->maxx && pl->top[x2 + 1] == t && pl->bottom[x2 + 1] == b)
                 x2++;
@@ -947,8 +898,6 @@ static void R_DrawPlanes(void) {
     }
 }
 
-/* ------------------------- walls (r_segs) ------------------------- */
-
 static void R_StoreWallRange(int x, int32_t z, lv_seg_t *sg,
                              const lv_sector_t *front, const lv_sector_t *back,
                              int markfloor, int markceiling,
@@ -956,11 +905,11 @@ static void R_StoreWallRange(int x, int32_t z, lv_seg_t *sg,
                              int sx1, int sx2) {
     int fceil = front->ceilh, ffloor = front->floorh;
 
-    /* full wall extent */
+
     int topy = proj_row(z, fceil);
     int boty = proj_row(z, ffloor);
 
-    /* ceiling / floor planes visible past this seg */
+
     int ctop = ceilingclip[x] + 1;
     int cbot = topy - 1;
     int ftop = boty + 1;
@@ -972,11 +921,11 @@ static void R_StoreWallRange(int x, int32_t z, lv_seg_t *sg,
     if (markceiling) R_SetSpan(ceilingplane, x, ctop, cbot);
     if (markfloor) R_SetSpan(floorplane, x, ftop, fbot);
 
-    /* wall faces, clipped against nearer geometry */
+
     int shade = light_shade(front->light, z);
     int u = 0;
     if (sg->length > 0 && sx2 > sx1) {
-        /* screen-linear texture column like the original engine */
+
         u = (int)(((int64_t)sg->length * (x - sx1) / (sx2 - sx1)) >> 16);
     }
     int tex_x = u & (TEX_W - 1);
@@ -1002,7 +951,7 @@ static void R_StoreWallRange(int x, int32_t z, lv_seg_t *sg,
         }
     } else {
         int bceil = back->ceilh, bfloor = back->floorh;
-        /* upper riser between the two ceilings */
+
         if (fceil > bceil && sg->toptex >= 0) {
             ya = proj_row(z, fceil); yb = proj_row(z, bceil);
             h_top = fceil; h_bot = bceil; texid = sg->toptex;
@@ -1015,7 +964,7 @@ static void R_StoreWallRange(int x, int32_t z, lv_seg_t *sg,
                 wall_drawn[y][x] = 1;
             }
         }
-        /* lower riser between the two floors */
+
         if (bfloor > ffloor && sg->bottex >= 0) {
             ya = proj_row(z, bfloor); yb = proj_row(z, ffloor);
             h_top = bfloor; h_bot = ffloor; texid = sg->bottex;
@@ -1030,9 +979,7 @@ static void R_StoreWallRange(int x, int32_t z, lv_seg_t *sg,
         }
     }
 
-    /* Occlusion: one-sided walls block the whole column, two-sided
-     * lines only close what their upper/lower risers actually cover -
-     * the opening between them must stay visible, like in DOOM. */
+
     if (!back || sg->midtex >= 0) {
         if (ds_top) {
             if (topy < ds_top[x]) ds_top[x] = (int16_t)topy;
@@ -1041,8 +988,7 @@ static void R_StoreWallRange(int x, int32_t z, lv_seg_t *sg,
         if (boty > ceilingclip[x]) ceilingclip[x] = boty;
         if (topy < floorclip[x]) floorclip[x] = topy;
     } else {
-        /* Two-sided: the opening is bounded by the front sector's edge
-         * lines - geometry beyond can only show between them. */
+
         int fcl = proj_row(z, fceil);
         int ffl = proj_row(z, ffloor);
         if (fceil > back->ceilh) {
@@ -1070,7 +1016,7 @@ static void R_AddLine(lv_seg_t *sg) {
 
     if (dep1 <= NEAR_DIST && dep2 <= NEAR_DIST) return;
 
-    /* clip against the near plane */
+
     if (dep1 <= NEAR_DIST) {
         int64_t t = ((int64_t)(NEAR_DIST - dep1) << 16) / (dep2 - dep1);
         lat1 = lat1 + (int32_t)((t * (lat2 - lat1)) >> 16);
@@ -1093,7 +1039,7 @@ static void R_AddLine(lv_seg_t *sg) {
     if (sx2 > SCREEN_W) sx2 = SCREEN_W;
     if (sx2 - sx1 < 1) return;
 
-    /* find the visible column range (not yet covered by nearer walls) */
+
     int start = -1, stop = -1;
     for (int x = sx1; x < sx2; x++) {
         if (ceilingclip[x] + 1 < floorclip[x]) {
@@ -1103,10 +1049,7 @@ static void R_AddLine(lv_seg_t *sg) {
     }
     if (start < 0) return;
 
-    /* Orient the seg toward the viewer: front = the sector on the
-     * viewpoint side. Two-sided lines then render the correct risers
-     * and planes from either side, like DOOM's frontsector/backsector
-     * semantics but view-aware. */
+
     const lv_sector_t *front, *back;
     if (sg->back >= 0) {
         int64_t vside = cross64(sg->x2 - sg->x1, sg->y2 - sg->y1,
@@ -1136,9 +1079,7 @@ static void R_AddLine(lv_seg_t *sg) {
                       (front->ceilh > viewz);
     }
 
-    /* Floor below a seg / ceiling above it belong to the front sector;
-     * surfaces past the opening are marked by the far sector's own segs,
-     * limited by the clip lines this seg closes. */
+
     if (markfloor)
         floorplane = R_CheckPlane(front->floorpic, front->floorh, front->light,
                                   start, stop - 1);
@@ -1150,7 +1091,7 @@ static void R_AddLine(lv_seg_t *sg) {
     else
         ceilingplane = NULL;
 
-    /* drawseg for sprite clipping */
+
     int dsi = -1;
     if (num_drawsegs < MAXDRAWSEGS) {
         dsi = num_drawsegs;
@@ -1165,7 +1106,7 @@ static void R_AddLine(lv_seg_t *sg) {
         num_drawsegs++;
     }
 
-    /* inverse-depth interpolation for perspective-correct columns */
+
     int64_t inv1 = ((int64_t)1 << 40) / dep1;
     int64_t inv2 = ((int64_t)1 << 40) / dep2;
 
@@ -1184,8 +1125,6 @@ static void R_AddLines(lv_subsector_t *sub) {
     for (int i = 0; i < sub->numsegs; i++)
         R_AddLine(&level_segs[sub->firstseg + i]);
 }
-
-/* ------------------------- BSP traversal (r_bsp) ------------------------- */
 
 static void R_RenderBSPNode(int ni) {
     if (ni < 0) {
@@ -1208,9 +1147,9 @@ static void render_view(void) {
     viewsin = fp_sin(player.angle);
     viewcos = fp_cos(player.angle);
 
-    /* column ray directions for flat casting (90 deg FOV) */
-    uint32_t a = player.angle - 0x20000000u;   /* ANG45 */
-    uint32_t step = 0x40000000u / SCREEN_W;    /* ANG90 / width */
+
+    uint32_t a = player.angle - 0x20000000u;
+    uint32_t step = 0x40000000u / SCREEN_W;
     for (int x = 0; x < SCREEN_W; x++) {
         dircos[x] = fp_cos(a);
         dirsin[x] = fp_sin(a);
@@ -1335,7 +1274,6 @@ static void hud_str(int x, int y, const char* str, uint8_t color, uint8_t bg) {
     }
 }
 
-/* Brief muzzle flash after firing, like DOOM's weapon light. */
 static void draw_muzzle_flash(void) {
     if (muzzle_flash <= 0) return;
     int cx = SCREEN_W / 2;
@@ -1348,9 +1286,9 @@ static void draw_muzzle_flash(void) {
             int dx = x - cx, dy = y - my;
             int d2 = dx * dx + dy * dy;
             if (d2 <= r * r / 4) {
-                doom_screen[y][x] = 255;            /* white core */
+                doom_screen[y][x] = 255;
             } else if (d2 <= r * r) {
-                doom_screen[y][x] = (muzzle_flash >= 2) ? 248 : 249; /* yellow/orange */
+                doom_screen[y][x] = (muzzle_flash >= 2) ? 248 : 249;
             }
         }
     }
@@ -1360,7 +1298,7 @@ static void draw_muzzle_flash(void) {
 static void draw_hud(void) {
     int hud_y = SCREEN_H - HUD_HEIGHT;
 
-    /* DOOM status bar: warm gray plate with red text */
+
     for (int y = hud_y; y < SCREEN_H; y++) {
         for (int x = 0; x < SCREEN_W; x++)
             doom_screen[y][x] = 152;
@@ -1545,9 +1483,9 @@ void doom_handle_key(int key) {
 
 static void blit_to_fb(void) {
     uint32_t stride = (uint32_t)(screen_pitch / 4);
-    /* Always use scale 2 for 320x200 to 640x400 (aspect ratio preserved) */
+
     int scale = doom_scale_factor;
-    if (scale < 2) scale = 2;  /* Minimum scale 2 for desktop windows */
+    if (scale < 2) scale = 2;
     int sw = SCREEN_W * scale;
     int sh = SCREEN_H * scale;
 
@@ -1570,8 +1508,8 @@ void doom_set_window_rect(int x, int y, int w, int h) {
     window_y = y;
     window_w = w;
     window_h = h;
-    
-    /* Calculate scale based on window client area */
+
+
     doom_scale_factor = 1;
     if (w >= 640 && h >= 400) doom_scale_factor = 2;
     if (w >= 1280 && h >= 800) doom_scale_factor = 4;
@@ -1754,10 +1692,6 @@ static void update_player(void) {
 
 }
 
-/* Sprites the DOOM way (r_things): projected from their sector floor,
- * sorted far-to-near, and clipped column-wise against the drawsegs
- * stored during wall rendering. */
-
 #define MAX_VISIBLE_SPRITES MAX_ENEMIES
 
 typedef struct { int idx; int32_t dep; } vis_sprite_t;
@@ -1765,7 +1699,7 @@ static vis_sprite_t vis_sprites[MAX_VISIBLE_SPRITES];
 static int num_vis_sprites;
 
 static void draw_enemies(void) {
-    /* view state (viewx/viewz/centery) is left over from render_view */
+
     num_vis_sprites = 0;
 
     for (int i = 0; i < num_enemies; i++) {
@@ -1781,7 +1715,7 @@ static void draw_enemies(void) {
         num_vis_sprites++;
     }
 
-    /* insertion sort, far first (painter's order like R_DrawMasked) */
+
     for (int i = 1; i < num_vis_sprites; i++) {
         vis_sprite_t key = vis_sprites[i];
         int j = i - 1;
@@ -1817,7 +1751,7 @@ static void draw_enemies(void) {
             if (x < 0 || x >= SCREEN_W) continue;
             int top = y_top, bot = y_bot;
 
-            /* clip against walls recorded this frame */
+
             for (int d = 0; d < num_drawsegs; d++) {
                 if (x < drawsegs[d].x1 || x >= drawsegs[d].x2) continue;
                 int wtop = drawsegs[d].sprtopclip[x];
@@ -1929,18 +1863,18 @@ void doom_run(void) {
     if (doom_running) return;
     doom_running = true;
 
-    
+
     while (keyboard_getchar() != 0) yield();
 
     game_state = DOOM_MENU;
     doom_set_kernel_mode();
     doom_draw_frame();
 
-    const uint32_t FRAME_INTERVAL = 16; 
+    const uint32_t FRAME_INTERVAL = 16;
     uint32_t last_frame_time = uptime_ticks;
 
     while (doom_running) {
-        
+
         char c;
         int keys_processed = 0;
         while (keys_processed < 4 && (c = keyboard_getchar()) != 0) {
@@ -1951,35 +1885,35 @@ void doom_run(void) {
                 break;
             }
         }
-        
-        
+
+
         if (game_state == DOOM_PLAYING) {
             update_player();
             update_enemies();
         }
 
-        
+
         uint32_t now = uptime_ticks;
         if (now - last_frame_time >= FRAME_INTERVAL) {
             doom_draw_frame();
             last_frame_time = now;
         }
-        
-        yield(); 
+
+        yield();
     }
-    
+
     doom_cleanup();
     doom_restore_kernel_mode();
 }
 
 void doom_set_kernel_mode(void) {
-    /* Initialize with a reasonable scale for 320x200 screen */
+
     doom_scale_factor = 2;
 }
 
 void doom_tick(void) {
     if (game_state == DOOM_QUIT) return;
-    
+
     while (keyboard_getchar() != 0) {
         char c = keyboard_getchar();
         doom_handle_key((int)c);
@@ -1989,7 +1923,7 @@ void doom_tick(void) {
             return;
         }
     }
-    
+
     if (game_state == DOOM_PLAYING) {
         update_player();
         update_enemies();

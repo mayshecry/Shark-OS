@@ -1,8 +1,4 @@
-/* bootscreen.c - Windows 98 style boot splash.
- *
- * Teal dithered background, product name, and the classic block progress
- * bar. Same public API as before.
- */
+
 
 #include "kernel.h"
 #include "desktop.h"
@@ -28,7 +24,6 @@ static void draw_rect_safe(int x, int y, int w, int h, uint32_t color) {
     draw_rect(x, y, w, h, color);
 }
 
-/* Teal checkerboard, exactly what the desktop shows after login. */
 static void draw_dither_bg(void) {
     int w = (int)screen_width;
     int h = (int)screen_height;
@@ -61,7 +56,7 @@ static void draw_shark_logo(int cx, int cy, int size, uint32_t color) {
         }
     }
 
-    /* Dorsal fin, so it reads as a shark and not a blob. */
+
     for (int dy = 0; dy < half / 2; dy++) {
         int fw = half / 2 - dy;
         for (int dx = 0; dx < fw; dx++) {
@@ -70,7 +65,6 @@ static void draw_shark_logo(int cx, int cy, int size, uint32_t color) {
     }
 }
 
-/* 10 Win98-style blocks sliding along a sunken track. */
 static void draw_progress_bar(int progress) {
     int bar_x = BOOT_BAR_X;
     int bar_y = BOOT_BAR_Y;

@@ -36,10 +36,6 @@ void draw_string_px(const char* s, int x, int y, uint32_t fg, uint32_t bg) {
     }
 }
 
-/* draw_char / draw_pixel / draw_rect take signed coordinates and clip on all
- * four edges. The previous uint32_t versions only tested the right/bottom
- * edge, so a negative x or y wrapped to a huge value, slipped past the
- * `x + px < screen_width` test and wrote outside the framebuffer. */
 void draw_char(char c, int x, int y, uint32_t fg, uint32_t bg) {
     if (c < 32 || c > 126) return;
 
@@ -52,7 +48,7 @@ void draw_char(char c, int x, int y, uint32_t fg, uint32_t bg) {
     int sh = (int)screen_height;
     int cell = 8 * scale;
 
-    /* Reject cells entirely off screen before touching the framebuffer. */
+
     if (x >= sw || y >= sh || x + cell <= 0 || y + cell <= 0) return;
 
     for (int row = 0; row < 8; row++) {
@@ -103,15 +99,6 @@ void draw_rect(int x, int y, int w, int h, uint32_t color) {
     }
 }
 
-/* ------------------------------------------------------------ capture mode
- *
- * The desktop Terminal window runs shell commands with terminal_capture_buffer
- * pointing at a text buffer. While that is set, nothing here may touch the
- * framebuffer or the CLI cursor position: the shell pane metrics are stale in
- * desktop mode and every stray draw_char() landed somewhere in the back
- * buffer. Previously only terminal_writestring() honoured the capture, while
- * terminal_putchar(), terminal_write_direct(), terminal_clear() and
- * terminal_scroll() drew straight onto the desktop composite. */
 int terminal_capture_cap = 0;
 bool terminal_capture_cleared = false;
 
@@ -121,7 +108,7 @@ static inline bool terminal_capturing(void) {
 
 static void terminal_capture_char(char c) {
     if (!terminal_capture_buffer) return;
-    /* Always leave room for the terminating NUL. */
+
     if (terminal_capture_len < terminal_capture_cap - 1) {
         terminal_capture_buffer[terminal_capture_len++] = c;
         terminal_capture_buffer[terminal_capture_len] = '\0';
@@ -147,12 +134,8 @@ void terminal_capture_end(void) {
     terminal_capture_cap = 0;
 }
 
-/* Minimal ANSI SGR filter. Several commands (neofetch, sysinfo, ...) emit
- * "\033[0;36m" style colour codes which used to be printed literally as
- * "[0;36m". The sequence is swallowed and, in CLI mode, mapped onto the VGA
- * palette. Returns true when the character was consumed by the parser. */
 static bool terminal_ansi_filter(char c) {
-    static int state = 0;      /* 0 = idle, 1 = got ESC, 2 = inside CSI */
+    static int state = 0;
     static int param = 0;
     static int have_param = 0;
 
@@ -165,7 +148,7 @@ static bool terminal_ansi_filter(char c) {
         state = 0;
         return false;
     }
-    /* state == 2: parameters until a final byte (0x40..0x7E). */
+
     if (c >= '0' && c <= '9') { param = param * 10 + (c - '0'); have_param = 1; return true; }
     if (c == ';') {
         if (have_param) {
@@ -188,7 +171,7 @@ static bool terminal_ansi_filter(char c) {
         state = 0;
         return true;
     }
-    if (c >= 0x40 && c <= 0x7E) { state = 0; return true; }   /* other CSI */
+    if (c >= 0x40 && c <= 0x7E) { state = 0; return true; }
     if ((unsigned char)c < 0x20) { state = 0; return false; }
     return true;
 }
@@ -206,7 +189,7 @@ void terminal_set_color(uint8_t color) {
 
 void terminal_scroll() {
     if (terminal_capturing()) {
-        /* Captured output never scrolls the screen; the window paints it. */
+
         terminal_row = term_max_row - 1;
         return;
     }
@@ -216,9 +199,7 @@ void terminal_scroll() {
     uint32_t px_start = col_px(panes[active_pane].col_start);
     uint32_t px_width = col_px(panes[active_pane].col_end - panes[active_pane].col_start);
 
-    /* The source row (y + font_cell_h) must stay inside the framebuffer;
-     * on screen heights that are not a multiple of the cell height the
-     * old loop read one cell past the end of video memory. */
+
     uint32_t max_y = (uint32_t)screen_height;
     if (px_start + px_width > (uint32_t)screen_width) {
         px_width = (px_start < (uint32_t)screen_width) ? (uint32_t)screen_width - px_start : 0;
@@ -239,8 +220,7 @@ void terminal_scroll() {
 
 void terminal_clear(void) {
     if (terminal_capturing()) {
-        /* `clear` inside the desktop Terminal: drop what was captured so far
-         * and tell the window to wipe its scrollback. */
+
         terminal_capture_len = 0;
         if (terminal_capture_cap > 0) terminal_capture_buffer[0] = '\0';
         terminal_capture_cleared = true;
@@ -446,10 +426,9 @@ void terminal_writestring(const char* data) {
                 line_buf[line_len++] = data[i];
             }
         }
-        
-        
-        /* Capture-aware: appends to terminal_capture_buffer in the desktop
-         * Terminal, draws to the CLI pane otherwise. */
+
+
+
         terminal_write_char_internal(data[i]);
     }
 }

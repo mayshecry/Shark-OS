@@ -1,14 +1,12 @@
-/* rndr_clip.h - per-column occlusion (cpp-doom rndr/clip_range_array):
- * ceilingclip/floorclip from the original engine plus a wall mask so
- * planes can never overdraw wall pixels. */
+
 #ifndef RNDR_CLIP_H
 #define RNDR_CLIP_H
 
 #include "rndr_types.h"
 
 typedef struct {
-    int ceiling[RNDR_W];        /* lowest row occluded from above */
-    int floor[RNDR_W];          /* highest row occluded from below */
+    int ceiling[RNDR_W];
+    int floor[RNDR_W];
     uint8_t wallmask[RNDR_H][RNDR_W];
 } rndr_clip_t;
 

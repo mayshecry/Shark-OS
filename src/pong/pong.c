@@ -242,7 +242,7 @@ static void update(void) {
 
 static void blit(void) {
     uint32_t stride = (uint32_t)(screen_pitch / 4);
-    int scale = 2;  /* Scale 320x200 to 640x400 */
+    int scale = 2;
     if (scale < 1) scale = 1;
 
     for (int y = 0; y < 200 && y * scale < window_h; y++) {
@@ -298,7 +298,7 @@ void pong_run(void) {
 
     state = MENU;
 
-    const uint32_t STEP_INTERVAL = 16; 
+    const uint32_t STEP_INTERVAL = 16;
     uint32_t last = uptime_ticks;
 
     while (running) {
@@ -350,8 +350,8 @@ void pong_run(void) {
             blit();
             last = now;
         }
-        
-        yield(); 
+
+        yield();
     }
 
     pong_cleanup();
@@ -368,19 +368,19 @@ static uint32_t pong_last_tick_time = 0;
 
 void pong_tick(void) {
     if (state == QUIT) return;
-    
-    /* Frame rate limiting for desktop mode */
+
+
     uint32_t now = uptime_ticks;
     if (now - pong_last_tick_time < 16) {
         blit();
         return;
     }
     pong_last_tick_time = now;
-    
+
     if (state == PLAYING) {
         update();
         draw_game();
-        /* Clear key state after update - keys are momentary in desktop mode */
+
         key_up_pressed = 0;
         key_down_pressed = 0;
     } else if (state == MENU) {
@@ -415,8 +415,8 @@ void pong_handle_key(int key) {
             init_game();
         }
     }
-    if (key == 'w' || key == 'W' || key == 72 || key == 80) key_up_pressed = 1;  /* W or UP arrow */
-    if (key == 's' || key == 'S' || key == 80) key_down_pressed = 1;  /* S or DOWN arrow */
+    if (key == 'w' || key == 'W' || key == 72 || key == 80) key_up_pressed = 1;
+    if (key == 's' || key == 'S' || key == 80) key_down_pressed = 1;
 }
 
 void pong_set_kernel_mode(void) {
@@ -426,7 +426,7 @@ void pong_set_kernel_mode(void) {
 
 void pong_restore_kernel_mode(void) {
     if (current_kernel_mode == KERNEL_MODE_DESKTOP) {
-        
+
         desktop.dirty = true;
         return;
     }

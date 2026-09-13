@@ -227,8 +227,7 @@ static void cmd_edit(const char* args) {
         return;
     }
     if (current_kernel_mode == KERNEL_MODE_DESKTOP) {
-        /* The line editor takes over the CLI pane; in the desktop that
-         * would switch kernel mode underneath the window manager. */
+
         terminal_writestring("edit: not available inside the desktop Terminal - use Notepad.\n");
         return;
     }
@@ -391,7 +390,7 @@ static void cmd_browser(const char* args) {
 static void cmd_taskmanager(const char* args) {
     (void)args;
     if (current_kernel_mode == KERNEL_MODE_DESKTOP) {
-        /* Same as Start > Task Manager: open (or raise) the window. */
+
         for (int i = 0; i < desktop.window_count; i++) {
             if (desktop.windows[i].type == WINDOW_TYPE_TASKMANAGER) {
                 if (desktop.windows[i].state == WINDOW_STATE_MINIMIZED) window_restore(i);
@@ -406,7 +405,7 @@ static void cmd_taskmanager(const char* args) {
         return;
     }
 
-    /* Text-mode snapshot for the Lite shell / console. */
+
     char buf[32];
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     terminal_writestring("\nSharkOS Task Manager\n");
@@ -576,14 +575,14 @@ static void cmd_neofetch(const char* args) {
     terminal_writestring("       ⠀⠀⠀⠀⠀⠸⣴⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\n");
     terminal_writestring("\n");
     terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
-    
+
     char buf[64];
     uint32_t total_mb = (uint32_t)(total_system_memory >> 20);
     uint32_t up_secs = uptime_ticks / TICKS_PER_SEC;
     uint32_t hours = up_secs / 3600;
     uint32_t mins = (up_secs % 3600) / 60;
     uint32_t secs = up_secs % 60;
-    
+
     terminal_writestring("\033[0;36m");
     terminal_writestring("  OS: \033[0;37mSharkOS V2 - The Sharkslayer Edition\n");
     terminal_writestring("\033[0;36m");
@@ -829,7 +828,7 @@ void execute_command(char* cmd) {
         terminal_writestring("       ⠀⠀⠀⠀⠀⠸⣴⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\n");
         terminal_writestring("\n");
         terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
-        
+
         char buf[128];
         uint32_t total_mb = (uint32_t)(total_system_memory >> 20);
         uint32_t total_kb = (uint32_t)total_system_memory;
@@ -842,10 +841,10 @@ void execute_command(char* cmd) {
         int task_count = 0;
         task_t* t;
         for (t = task_list; t; t = t->next) task_count++;
-        
+
         char cpu_model[49];
         get_cpu_model(cpu_model);
-        
+
         terminal_writestring("\033[0;36m");
         terminal_writestring("  OS: \033[0;37mSharkOS V2 - The Sharkslayer Edition\n");
         terminal_writestring("\033[0;36m");
@@ -1352,9 +1351,7 @@ void execute_command(char* cmd) {
         } else {
             struct fs_node* target = find_node(current_dir, args);
             if (target && target->type == FS_FILE) {
-                /* 8 KB of line storage; static so execute_command()'s frame
-                 * stays small (it used to be 8.7 KB, larger than the whole
-                 * original kernel stack). */
+
                 static char lines[64][128];
                 int line_count = 0;
                 char line_buf[128];

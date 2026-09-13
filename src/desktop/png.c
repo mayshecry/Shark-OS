@@ -1,25 +1,6 @@
-/* Small, correct PNG decoder for SharkOS.
- *
- * The previous version of this file read chunk lengths little-endian and only
- * knew the fixed Huffman table, so it rejected every real-world PNG. This
- * rewrite handles:
- *   - zlib/DEFLATE: stored, fixed and dynamic Huffman blocks (puff-style
- *     canonical decoding, no tables to build beyond counts/symbols)
- *   - colour types 0 (grey), 2 (RGB), 3 (palette + tRNS), 4 (grey+alpha),
- *     6 (RGBA); bit depths 1/2/4/8/16 (16-bit samples are truncated)
- *   - all five scanline filters
- * Adam7 interlacing is supported. Output is 0xAARRGGBB.
- *
- * Integer-only, no libc beyond memset/memcpy, no recursion.
- *
- * Two entry points:
- *   png_decode_buf()  decodes into caller-provided buffers (used by the
- *                     browser, which keeps a per-page pixel arena)
- *   decode_png()      convenience wrapper that kmalloc()s the buffers */
+
 
 #include "kernel.h"
-
-/* ------------------------------------------------------------ inflate */
 
 typedef struct {
     const uint8_t* in;
@@ -48,17 +29,16 @@ typedef struct {
     uint16_t symbol[320];
 } huff_t;
 
-/* Build canonical code from lengths; returns 0 on success. */
 static int huff_build(huff_t* h, const uint8_t* length, int n) {
     uint16_t offs[16];
     for (int len = 0; len < 16; len++) h->count[len] = 0;
     for (int sym = 0; sym < n; sym++) h->count[length[sym]]++;
-    if (h->count[0] == n) return 0;                  /* no codes: legal */
+    if (h->count[0] == n) return 0;
     int left = 1;
     for (int len = 1; len < 16; len++) {
         left <<= 1;
         left -= h->count[len];
-        if (left < 0) return -1;                     /* over-subscribed */
+        if (left < 0) return -1;
     }
     offs[1] = 0;
     for (int len = 1; len < 15; len++) offs[len + 1] = offs[len] + h->count[len];
@@ -108,18 +88,18 @@ static int inf_codes(inf_t* s, const huff_t* lencode, const huff_t* distcode) {
             if (dsym < 0 || dsym >= 30) return -1;
             size_t dist = dist_base[dsym] + (size_t)inf_bits(s, dist_extra[dsym]);
             if (s->error) return -1;
-            if (dist > s->out_pos) return -1;                 /* before start */
+            if (dist > s->out_pos) return -1;
             if (s->out_pos + (size_t)len > s->out_len) return -2;
             uint8_t* dst = s->out + s->out_pos;
             const uint8_t* src = dst - dist;
-            for (int i = 0; i < len; i++) dst[i] = src[i];    /* overlap-safe forward copy */
+            for (int i = 0; i < len; i++) dst[i] = src[i];
             s->out_pos += (size_t)len;
         }
     }
 }
 
 static int inf_stored(inf_t* s) {
-    s->bit_buf = 0; s->bit_cnt = 0;                           /* drop to byte boundary */
+    s->bit_buf = 0; s->bit_cnt = 0;
     if (s->in_pos + 4 > s->in_len) return -1;
     unsigned len = s->in[s->in_pos] | (s->in[s->in_pos + 1] << 8);
     unsigned nlen = s->in[s->in_pos + 2] | (s->in[s->in_pos + 3] << 8);
@@ -187,18 +167,17 @@ static int inf_dynamic(inf_t* s) {
             while (rep--) lengths[i++] = (uint8_t)len;
         }
     }
-    if (lengths[256] == 0) return -1;                         /* no end-of-block code */
+    if (lengths[256] == 0) return -1;
     if (huff_build(&lencode, lengths, nlen) != 0 && nlen - lencode.count[0] != 1) return -1;
     if (huff_build(&distcode, lengths + nlen, ndist) != 0 && ndist - distcode.count[0] != 1) return -1;
     return inf_codes(s, &lencode, &distcode);
 }
 
-/* Inflate a zlib stream. Returns bytes produced, or -1 on error. */
 static long zlib_inflate(const uint8_t* in, size_t in_len, uint8_t* out, size_t out_len) {
     if (in_len < 2) return -1;
-    if ((in[0] & 0x0F) != 8) return -1;                       /* not deflate */
-    if (((in[0] << 8) | in[1]) % 31 != 0) return -1;          /* bad zlib header */
-    if (in[1] & 0x20) return -1;                              /* preset dictionary */
+    if ((in[0] & 0x0F) != 8) return -1;
+    if (((in[0] << 8) | in[1]) % 31 != 0) return -1;
+    if (in[1] & 0x20) return -1;
 
     inf_t s;
     s.in = in + 2; s.in_len = in_len - 2; s.in_pos = 0;
@@ -215,13 +194,11 @@ static long zlib_inflate(const uint8_t* in, size_t in_len, uint8_t* out, size_t 
         else if (type == 1) err = inf_fixed(&s);
         else if (type == 2) err = inf_dynamic(&s);
         else err = -1;
-        if (err == -2) break;                                 /* output full: keep what we have */
+        if (err == -2) break;
         if (err != 0 || s.error) return -1;
     } while (!last);
     return (long)s.out_pos;
 }
-
-/* ---------------------------------------------------------------- PNG */
 
 static inline uint32_t be32(const uint8_t* p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
@@ -237,7 +214,6 @@ static inline uint8_t paeth(int a, int b, int c) {
     return (uint8_t)c;
 }
 
-/* Read sample `idx` (0-based across the row) of `depth` bits; returns 0..255 scaled. */
 static inline int sample_at(const uint8_t* row, int idx, int depth) {
     switch (depth) {
     case 8:  return row[idx];
@@ -249,7 +225,6 @@ static inline int sample_at(const uint8_t* row, int idx, int depth) {
     }
 }
 
-/* Raw palette index (unscaled) for colour type 3. */
 static inline int index_at(const uint8_t* row, int idx, int depth) {
     switch (depth) {
     case 8:  return row[idx];
@@ -260,11 +235,6 @@ static inline int index_at(const uint8_t* row, int idx, int depth) {
     }
 }
 
-/* Decode into caller buffers.
- *   pixels      : receives w*h ARGB values (must hold max_pixels)
- *   scratch     : work area for the concatenated IDAT stream + the inflated
- *                 filtered scanlines (scratch_len bytes)
- * Returns 0 on success, negative on failure (bad data or too big). */
 int png_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
                    uint32_t* pixels, size_t max_pixels,
                    uint8_t* scratch, size_t scratch_len) {
@@ -279,7 +249,7 @@ int png_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
     int pal_len = 0;
     for (int i = 0; i < 256; i++) { palette[i][0] = palette[i][1] = palette[i][2] = 0; palette[i][3] = 255; }
 
-    /* Pass 1: header + total IDAT size. */
+
     size_t pos = 8, idat_total = 0;
     int saw_ihdr = 0;
     while (pos + 12 <= len) {
@@ -287,20 +257,20 @@ int png_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
         uint32_t ctyp = be32(data + pos + 4);
         if (clen > len || pos + 12 + clen > len) return -1;
         const uint8_t* body = data + pos + 8;
-        if (ctyp == 0x49484452u) {                            /* IHDR */
+        if (ctyp == 0x49484452u) {
             if (clen < 13) return -1;
             width = be32(body); height = be32(body + 4);
             depth = body[8]; ctype = body[9]; interlace = body[12];
             saw_ihdr = 1;
-        } else if (ctyp == 0x504C5445u) {                     /* PLTE */
+        } else if (ctyp == 0x504C5445u) {
             pal_len = (int)(clen / 3);
             if (pal_len > 256) pal_len = 256;
             for (int i = 0; i < pal_len; i++) { palette[i][0] = body[i * 3]; palette[i][1] = body[i * 3 + 1]; palette[i][2] = body[i * 3 + 2]; }
-        } else if (ctyp == 0x74524E53u) {                     /* tRNS */
+        } else if (ctyp == 0x74524E53u) {
             if (ctype == 3) for (uint32_t i = 0; i < clen && i < 256; i++) palette[i][3] = body[i];
-        } else if (ctyp == 0x49444154u) {                     /* IDAT */
+        } else if (ctyp == 0x49444154u) {
             idat_total += clen;
-        } else if (ctyp == 0x49454E44u) {                     /* IEND */
+        } else if (ctyp == 0x49454E44u) {
             break;
         }
         pos += 12 + clen;
@@ -323,10 +293,10 @@ int png_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
     if ((ctype == 2 || ctype == 4 || ctype == 6) && depth < 8) return -1;
 
     size_t bits_per_pixel = (size_t)channels * depth;
-    size_t stride = (width * bits_per_pixel + 7) / 8;         /* bytes per scanline (no filter byte) */
-    size_t bpp = bits_per_pixel < 8 ? 1 : bits_per_pixel / 8;  /* filter unit */
+    size_t stride = (width * bits_per_pixel + 7) / 8;
+    size_t bpp = bits_per_pixel < 8 ? 1 : bits_per_pixel / 8;
     size_t raw_len;
-    /* Adam7: seven sub-images, each with its own filtered scanlines. */
+
     static const int a7_x0[7] = { 0, 4, 0, 2, 0, 1, 0 }, a7_y0[7] = { 0, 0, 4, 0, 2, 0, 1 };
     static const int a7_dx[7] = { 8, 8, 4, 4, 2, 2, 1 }, a7_dy[7] = { 8, 8, 8, 4, 4, 2, 2 };
     if (interlace) {
@@ -340,7 +310,7 @@ int png_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
     } else raw_len = (stride + 1) * height;
     if (idat_total + raw_len > scratch_len) return -3;
 
-    /* Pass 2: gather IDAT into scratch[0..idat_total). */
+
     uint8_t* zdata = scratch;
     uint8_t* raw = scratch + idat_total;
     size_t zpos = 0;
@@ -356,12 +326,11 @@ int png_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
     long got = zlib_inflate(zdata, zpos, raw, raw_len);
     if (got < 0) return -1;
     if ((size_t)got < raw_len) {
-        /* truncated stream: zero the rest so we still show what we have */
+
         memset(raw + got, 0, raw_len - (size_t)got);
     }
 
-    /* Unfilter in place, then convert each row to ARGB. For Adam7 the same
-     * routine runs once per pass with a pixel-placement stride. */
+
     struct pass { uint32_t pw, ph, x0, y0, dx, dy; } passes[7];
     int npasses = 0;
     if (interlace) {
@@ -429,7 +398,7 @@ int png_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
                 case 4:
                     r = g = b = sample_at(cur, (int)x * 2, depth); a = sample_at(cur, (int)x * 2 + 1, depth);
                     break;
-                default: /* 6 */
+                default:
                     r = sample_at(cur, (int)x * 4, depth); g = sample_at(cur, (int)x * 4 + 1, depth);
                     b = sample_at(cur, (int)x * 4 + 2, depth); a = sample_at(cur, (int)x * 4 + 3, depth);
                     break;
@@ -445,11 +414,10 @@ int png_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
     return 0;
 }
 
-/* Convenience wrapper: heap-allocated result (never freed: kfree is a no-op). */
 uint32_t* decode_png(const uint8_t* png_data, size_t png_len, int* out_w, int* out_h) {
     *out_w = 0; *out_h = 0;
     if (!png_data || png_len < 33) return NULL;
-    /* Peek at IHDR to size the buffers. */
+
     if (be32(png_data + 12) != 0x49484452u) return NULL;
     uint32_t w = be32(png_data + 16), h = be32(png_data + 20);
     if (w == 0 || h == 0 || w > 2048 || h > 2048) return NULL;

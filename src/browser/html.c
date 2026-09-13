@@ -1,13 +1,6 @@
-/* HTML tokenizer + tree builder for the SharkOS browser.
- *
- * Deliberately simple but forgiving: unclosed tags, stray end tags, upper
- * case, unquoted attributes, entities and raw-text elements all work. The
- * node pool is a fixed arena so a malformed page can never exhaust the
- * kernel heap (the kernel allocator is a bump allocator without free()). */
+
 
 #include "browser_internal.h"
-
-/* ------------------------------------------------------------- arena */
 
 static br_node_t dom_pool[BR_MAX_NODES];
 static int node_count = 0;
@@ -27,7 +20,7 @@ int br_text_in_pool(const char* s) { return s >= text_pool && s < text_pool + BR
 char* br_strdup_n(const char* s, int n) {
     if (n < 0) n = 0;
     if (text_used + n + 1 > BR_TEXT_POOL) {
-        /* Out of text space: return an empty string rather than crashing. */
+
         text_pool[BR_TEXT_POOL - 1] = 0;
         return &text_pool[BR_TEXT_POOL - 1];
     }
@@ -53,12 +46,11 @@ br_node_t* br_node_new(int type) {
 
 void br_node_append(br_node_t* parent, br_node_t* child) {
     if (!parent || !child || parent == child) return;
-    /* Refuse to create a cycle (appendChild of an ancestor) or a tree deeper
-     * than the recursive walkers can handle. */
+
     int depth = 0;
     for (br_node_t* a = parent; a; a = a->parent, depth++) if (a == child) return;
     if (depth >= BR_MAX_DEPTH * 2) return;
-    /* Detach first if it already has a parent (JS appendChild moves). */
+
     if (child->parent) {
         br_node_t* p = child->parent;
         if (p->first_child == child) p->first_child = child->next;
@@ -85,8 +77,6 @@ void br_node_remove_children(br_node_t* n) {
     if (!n) return;
     n->first_child = n->last_child = NULL;
 }
-
-/* ------------------------------------------------------------ helpers */
 
 int br_strieq(const char* a, const char* b) {
     if (!a || !b) return 0;
@@ -179,7 +169,6 @@ int br_is_block_tag(const char* t) {
     return 0;
 }
 
-/* Emit a code point as UTF-8 (the font engine renders UTF-8 directly). */
 static int put_utf8(uint32_t cp, char* out) {
     if (cp < 0x80) { out[0] = (char)cp; return 1; }
     if (cp < 0x800) { out[0] = (char)(0xC0 | (cp >> 6)); out[1] = (char)(0x80 | (cp & 0x3F)); return 2; }
@@ -188,9 +177,8 @@ static int put_utf8(uint32_t cp, char* out) {
     out[0] = '?'; return 1;
 }
 
-/* Entities: the common named ones plus numeric forms. Output is UTF-8. */
 static int decode_entity(const char* s, int* consumed, char* out) {
-    /* s points just after '&'. Returns bytes written to out. */
+
     static const struct { const char* name; uint32_t cp; } ents[] = {
         {"amp", '&'}, {"lt", '<'}, {"gt", '>'}, {"quot", '"'}, {"apos", '\''},
         {"nbsp", 0xA0}, {"copy", 0xA9}, {"reg", 0xAE}, {"trade", 0x2122},
@@ -254,7 +242,7 @@ static int decode_entity(const char* s, int* consumed, char* out) {
         *consumed = i;
         if (cp == 0 || (cp >= 0xD800 && cp <= 0xDFFF)) cp = 0xFFFD;
         if (cp < 32 && cp != '\t' && cp != '\n') cp = ' ';
-        /* Windows-1252 leftovers: &#150; etc. */
+
         if (cp >= 0x80 && cp <= 0x9F) {
             static const uint16_t cp1252[32] = { 0x20AC, 0x81, 0x201A, 0x192, 0x201E, 0x2026, 0x2020, 0x2021, 0x2C6, 0x2030, 0x160, 0x2039, 0x152, 0x8D, 0x17D, 0x8F,
                                                  0x90, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x2DC, 0x2122, 0x161, 0x203A, 0x153, 0x9D, 0x17E, 0x178 };
@@ -271,30 +259,25 @@ static int decode_entity(const char* s, int* consumed, char* out) {
             return put_utf8(ents[e].cp, out);
         }
     }
-    /* Unknown: keep the ampersand literally. */
+
     *consumed = 0;
     out[0] = '&';
     return 1;
 }
 
-/* UTF-8 passes through untouched (validated); stray bytes from Latin-1
- * pages are re-encoded so the renderer never sees malformed sequences. */
 static int utf8_fold(const unsigned char* s, int* consumed, char* out) {
     unsigned char c = s[0];
     if (c < 0x80) { *consumed = 1; out[0] = (char)c; return 1; }
     int len = (c >= 0xF0) ? 4 : (c >= 0xE0) ? 3 : (c >= 0xC0) ? 2 : 0;
-    if (len == 0) { *consumed = 1; return put_utf8(c, out); }          /* lone continuation byte: Latin-1 */
+    if (len == 0) { *consumed = 1; return put_utf8(c, out); }
     for (int i = 1; i < len; i++) {
-        if ((s[i] & 0xC0) != 0x80) { *consumed = 1; return put_utf8(c, out); }   /* invalid sequence: treat as Latin-1 */
+        if ((s[i] & 0xC0) != 0x80) { *consumed = 1; return put_utf8(c, out); }
     }
     *consumed = len;
     for (int i = 0; i < len; i++) out[i] = (char)s[i];
     return len;
 }
 
-/* Decode a raw text run (entities + UTF-8) into the text pool as UTF-8. When
- * `collapse` is set runs of whitespace fold to one space (normal HTML);
- * <pre> keeps them. */
 char* br_decode_text(const char* s, int n, int collapse) {
     static char tmp[BR_MAX_TEXT_RUN];
     int o = 0;
@@ -329,8 +312,6 @@ char* br_decode_text(const char* s, int n, int collapse) {
     return br_strdup_n(tmp, o);
 }
 
-/* ------------------------------------------------------------- parser */
-
 typedef struct {
     const char* src;
     int len;
@@ -348,7 +329,7 @@ static void push(parser_t* p, br_node_t* n) {
 }
 
 static void pop_to(parser_t* p, const char* tag) {
-    /* Close the innermost open element with this tag (and everything above). */
+
     for (int i = p->depth - 1; i >= 1; i--) {
         if (br_streq(p->stack[i]->tag, tag)) { p->depth = i; return; }
     }
@@ -358,14 +339,13 @@ static int has_open(parser_t* p, const char* tag) {
     for (int i = p->depth - 1; i >= 1; i--) if (br_streq(p->stack[i]->tag, tag)) return 1;
     return 0;
 }
-/* like has_open, but the search stops at an enclosing table scope so a
- * <tr> inside a nested table never closes the outer table's row */
+
 static int has_open_in_table(parser_t* p, const char* tag) {
     for (int i = p->depth - 1; i >= 1; i--) {
         const char* t = p->stack[i]->tag;
         if (br_streq(t, tag)) return 1;
         if (br_streq(t, "table")) return 0;
-        if (!br_streq(tag, "tr") && br_streq(t, "tr")) return 0;      /* td/th: stop at the row */
+        if (!br_streq(tag, "tr") && br_streq(t, "tr")) return 0;
     }
     return 0;
 }
@@ -373,19 +353,16 @@ static int has_open_in_table(parser_t* p, const char* tag) {
 static void flush_text(parser_t* p, int start, int end) {
     if (end <= start) return;
     int collapse = p->pre_depth == 0;
-    /* Skip whitespace-only runs between block elements: they would otherwise
-     * become empty lines. Inline whitespace is kept by the layout engine. */
+
     int all_space = 1;
     for (int i = start; i < end; i++) if (!is_space(p->src[i])) { all_space = 0; break; }
     br_node_t* parent = cur(p);
     if (all_space && collapse) {
-        /* Keep a single space only after an inline element (it separates
-         * "<b>bold</b> word"); whitespace between blocks is dropped. */
+
         if (!parent->last_child || parent->last_child->type != BR_NODE_ELEMENT ||
             br_is_block_tag(parent->last_child->tag)) return;
         if (br_is_block_tag(parent->tag) && !parent->last_child) return;
-        /* if the next thing is a closing tag of a block we'd add a trailing
-         * space: harmless (dropped at line end by layout). */
+
     }
     char* text = br_decode_text(&p->src[start], end - start, collapse);
     if (!text[0]) return;
@@ -396,8 +373,7 @@ static void flush_text(parser_t* p, int start, int end) {
 }
 
 static void implied_end_tags(parser_t* p, const char* tag) {
-    /* <p> closes an open <p>; <li> closes an open <li>; <tr>/<td> likewise;
-     * <option> closes <option>; block-level tags close an open <p>. */
+
     if (br_streq(tag, "li")) { if (has_open(p, "li")) { pop_to(p, "li"); } return; }
     if (br_streq(tag, "dt") || br_streq(tag, "dd")) {
         if (has_open(p, "dd")) pop_to(p, "dd"); else if (has_open(p, "dt")) pop_to(p, "dt");
@@ -410,7 +386,7 @@ static void implied_end_tags(parser_t* p, const char* tag) {
     }
     if (br_streq(tag, "option")) { if (has_open(p, "option")) pop_to(p, "option"); return; }
     if (br_is_block_tag(tag) && !br_streq(tag, "html") && !br_streq(tag, "body") && !br_streq(tag, "head")) {
-        /* Only close a <p> if it is the innermost block context. */
+
         for (int i = p->depth - 1; i >= 1; i--) {
             if (br_streq(p->stack[i]->tag, "p")) { p->depth = i; break; }
             if (br_is_block_tag(p->stack[i]->tag)) break;
@@ -478,8 +454,7 @@ br_node_t* br_html_parse(const char* html, int len) {
     p->doc = doc;
     push(p, doc);
 
-    /* Implied <html><body>: created lazily so <head> content ends up in the
-     * right place but pages without any of it still work. */
+
     br_node_t* html_el = br_node_new(BR_NODE_ELEMENT); html_el->tag = "html"; br_node_append(doc, html_el);
     br_node_t* head_el = br_node_new(BR_NODE_ELEMENT); head_el->tag = "head"; br_node_append(html_el, head_el);
     br_node_t* body_el = br_node_new(BR_NODE_ELEMENT); body_el->tag = "body"; br_node_append(html_el, body_el);
@@ -492,7 +467,7 @@ br_node_t* br_html_parse(const char* html, int len) {
     const char* s = html;
     while (p->pos < len) {
         if (s[p->pos] != '<') { p->pos++; continue; }
-        /* Comment / doctype / CDATA */
+
         if (p->pos + 3 < len && s[p->pos + 1] == '!') {
             flush_text(p, text_start, p->pos);
             if (s[p->pos + 2] == '-' && s[p->pos + 3] == '-') {
@@ -506,7 +481,7 @@ br_node_t* br_html_parse(const char* html, int len) {
             text_start = p->pos;
             continue;
         }
-        /* End tag */
+
         if (p->pos + 1 < len && s[p->pos + 1] == '/') {
             flush_text(p, text_start, p->pos);
             p->pos += 2;
@@ -520,15 +495,15 @@ br_node_t* br_html_parse(const char* html, int len) {
             if (br_streq(tag, "pre") && p->pre_depth > 0) p->pre_depth--;
             if (br_streq(tag, "body") || br_streq(tag, "html")) continue;
             if (br_streq(tag, "p") && !has_open(p, "p")) {
-                /* Stray </p> creates an empty paragraph in browsers; ignore. */
+
                 continue;
             }
             pop_to(p, tag);
-            /* Text after </head> belongs to body. */
+
             if (br_streq(tag, "head")) { p->depth = 2; push(p, body_el); }
             continue;
         }
-        /* Start tag: must be followed by a letter, otherwise it is text. */
+
         char c1 = (p->pos + 1 < len) ? s[p->pos + 1] : 0;
         if (!((c1 >= 'a' && c1 <= 'z') || (c1 >= 'A' && c1 <= 'Z'))) { p->pos++; continue; }
         flush_text(p, text_start, p->pos);
@@ -545,21 +520,19 @@ br_node_t* br_html_parse(const char* html, int len) {
         int self_closing = 0;
         if (p->pos > 0 && s[p->pos - 1] == '/') self_closing = 1;
         if (self_closing && !is_void_tag(tag)) {
-            /* HTML5 ignores the slash on ordinary elements (<tr/> opens a
-             * row); it is only honoured for unknown/custom tags, where it
-             * is usually meant */
+
             static const char* const plain[] = { "tr", "td", "th", "div", "span", "p", "a", "li", "ul", "ol", "table", "tbody", "thead", "tfoot",
                 "section", "article", "nav", "header", "footer", "main", "aside", "b", "i", "em", "strong", "small", "label", "form",
                 "h1", "h2", "h3", "h4", "h5", "h6", "button", "select", "option", "iframe", "textarea", "script", "style", "title", NULL };
             for (int k = 0; plain[k]; k++) if (br_streq(tag, plain[k])) { self_closing = 0; break; }
         }
-        /* parse_attrs stops at '>' */
+
         if (p->pos < len && s[p->pos] == '>') p->pos++;
         text_start = p->pos;
 
-        /* Where does it go? */
+
         if (br_streq(tag, "html")) {
-            /* merge attributes (lang etc.) and drop */
+
             for (int i = 0; i < n->attr_count; i++) br_set_attr(html_el, n->attrs[i].name, n->attrs[i].value);
             continue;
         }
@@ -572,17 +545,14 @@ br_node_t* br_html_parse(const char* html, int len) {
         int head_only = br_streq(tag, "title") || br_streq(tag, "meta") || br_streq(tag, "link") ||
                         br_streq(tag, "style") || br_streq(tag, "base");
         if (head_only && cur(p) == body_el && !body_el->first_child) {
-            /* A <title>/<style> before any content, without <head>: file it
-             * under head like a browser would. */
+
             br_node_append(head_el, n);
         } else {
             implied_end_tags(p, tag);
             br_node_append(cur(p), n);
         }
 
-        /* <template> content is inert, inline <svg> is not rendered (it only
-         * keeps its box) and <math>: skip their subtrees entirely so their
-         * text never leaks into the page and they cost no nodes. */
+
         if (br_streq(tag, "template") || br_streq(tag, "svg") || br_streq(tag, "math")) {
             if (self_closing) continue;
             int depth = 1, e = p->pos;
@@ -591,7 +561,7 @@ br_node_t* br_html_parse(const char* html, int len) {
                 if (s[e] == '<') {
                     if (s[e + 1] == '/' && match_ci(&s[e + 2], len - e - 2, tag) && (s[e + 2 + tl] == '>' || is_space(s[e + 2 + tl]))) depth--;
                     else if (match_ci(&s[e + 1], len - e - 1, tag) && (s[e + 1 + tl] == '>' || is_space(s[e + 1 + tl]) || s[e + 1 + tl] == '/')) {
-                        /* nested same tag (unless self-closing) */
+
                         int q = e + 1; while (q < len && s[q] != '>') q++;
                         if (!(q > 0 && s[q - 1] == '/')) depth++;
                     }
@@ -603,7 +573,7 @@ br_node_t* br_html_parse(const char* html, int len) {
             text_start = p->pos;
             continue;
         }
-        /* Raw text elements swallow everything up to their end tag. */
+
         if (br_streq(tag, "script") || br_streq(tag, "style") || br_streq(tag, "textarea") || br_streq(tag, "title")) {
             int e = p->pos;
             char endtag[16];
@@ -635,19 +605,17 @@ br_node_t* br_html_parse(const char* html, int len) {
     return doc;
 }
 
-/* Parse a fragment (innerHTML) into an existing element. */
 void br_html_parse_fragment(br_node_t* parent, const char* html, int len) {
     br_node_remove_children(parent);
     br_node_t* tmp = br_html_parse(html, len);
     if (!tmp || !tmp->body) return;
-    /* Move body children (and any head children: <style> in innerHTML) */
+
     br_node_t* c = tmp->body->first_child;
     while (c) { br_node_t* nx = c->next; br_node_append(parent, c); c = nx; }
     c = tmp->head->first_child;
     while (c) { br_node_t* nx = c->next; br_node_append(parent, c); c = nx; }
 }
 
-/* Collect textContent. */
 int br_node_text_content(const br_node_t* n, char* out, int max) {
     int o = 0;
     if (!n || br_stack_headroom() < BR_STACK_MIN) { if (max) out[0] = 0; return 0; }
@@ -663,7 +631,6 @@ int br_node_text_content(const br_node_t* n, char* out, int max) {
     return o;
 }
 
-/* Serialize back to HTML (innerHTML getter). */
 static int ser(const br_node_t* n, char* out, int max, int o) {
     if (!n || o >= max - 1 || br_stack_headroom() < BR_STACK_MIN) return o;
     if (n->type == BR_NODE_TEXT) {

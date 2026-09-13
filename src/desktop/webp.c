@@ -1,14 +1,5 @@
 
- /* WebP decoder for SharkOS (WebM lossless + lossy stills).
- *
- *   - RIFF container: simple (VP8 / VP8L) and extended (VP8X + ALPH),
- *     animated files are reduced to their first frame.
- *   - Lossy images ("VP8 "): full VP8 key-frame decode, YUV -> RGB.
- *   - Lossless images ("VP8L"): bitstream with the four optional transforms.
- *   - Alpha ("ALPH"): lossless or raw, plus the optional prediction filter.
- *
- * Integer only, no allocation: caller provides the pixel buffer and scratch.
- * Output is 0xAARRGGBB, matching png.c/gif.c/jpeg.c. */
+
 
 #include "kernel.h"
 
@@ -31,7 +22,6 @@ static void wp_bits_init(wp_bit_t* b, const uint8_t* d, size_t len) {
     b->d = d; b->len = len; b->pos = 0; b->bitbuf = 0; b->bitcnt = 0;
 }
 
-
 static int wp_read_bits(wp_bit_t* b, int n) {
     while (b->bitcnt < n) {
         if (b->pos >= b->len) return -1;
@@ -43,7 +33,6 @@ static int wp_read_bits(wp_bit_t* b, int n) {
     b->bitcnt -= n;
     return v;
 }
-
 
 typedef struct {
     uint16_t sym[WP_GREEN_MAX];
@@ -89,7 +78,6 @@ static int wp_decode_huff(wp_huff_t* h, wp_bit_t* b) {
     return -1;
 }
 
-
 static const int wp_len_extra[3] = { 2, 3, 7 };
 static const int wp_len_repeat[3] = { 3, 3, 11 };
 static const int wp_clc_order[19] = { 17, 18, 0, 1, 2, 3, 4, 5, 16, 6, 7, 8, 9,
@@ -107,24 +95,21 @@ static const uint8_t wp_plane[120] = {
     0x00, 0x74, 0x7c, 0x41, 0x4f, 0x10, 0x20, 0x62, 0x6e, 0x30, 0x73, 0x7d,
     0x51, 0x5f, 0x40, 0x72, 0x7e, 0x61, 0x6f, 0x50, 0x71, 0x7f, 0x60, 0x70 };
 
-
-
 typedef struct {
     wp_bit_t bit;
-    uint8_t*  lenbuf;       
-    uint32_t* cache;        
-    int cache_bits;         
-    uint32_t* meta;         
+    uint8_t*  lenbuf;
+    uint32_t* cache;
+    int cache_bits;
+    uint32_t* meta;
     int meta_w, meta_bits, have_meta;
     int groups;
-    int green_alpha;        
-    int max_groups;         
+    int green_alpha;
+    int max_groups;
 } wp_l8_t;
 
 static uint32_t wp_cache_idx(const wp_l8_t* d, uint32_t pix) {
     return (uint32_t)((pix * 0x1e35a7bdu) >> (32 - d->cache_bits));
 }
-
 
 static int wp_read_code(wp_l8_t* d, uint8_t* len, int alphabet) {
     int simple = wp_read_bits(&d->bit, 1);
@@ -191,7 +176,6 @@ static int wp_read_code(wp_l8_t* d, uint8_t* len, int alphabet) {
     return WEBP_OK;
 }
 
-
 static int wp_read_group(wp_l8_t* d, int g) {
     uint8_t* base = d->lenbuf + (size_t)g * 5 * WP_GREEN_MAX;
     int alpha[5] = { d->green_alpha, 256, 256, 256, 40 };
@@ -203,7 +187,7 @@ static int wp_read_group(wp_l8_t* d, int g) {
 
 static int wp_decode_image(wp_l8_t* d, uint32_t* dst, int w, int h,
                            int xsize, int with_meta) {
-    d->green_alpha = 280;                       
+    d->green_alpha = 280;
     int cc = wp_read_bits(&d->bit, 1);
     if (cc < 0) return WEBP_ERR;
     d->cache_bits = -1;
@@ -327,24 +311,21 @@ static int wp_decode_image(wp_l8_t* d, uint32_t* dst, int w, int h,
     return WEBP_OK;
 }
 
-
-
 typedef struct {
-    int type;              
-    int block_bits;        
-    uint32_t* data;        
-    int data_w, data_h;    
-    int pix_bits;          
-    int wb;                
-    int count;             
+    int type;
+    int block_bits;
+    uint32_t* data;
+    int data_w, data_h;
+    int pix_bits;
+    int wb;
+    int count;
 } wp_tx_t;
 
 #define WP_TX_NONE 0
-#define WP_TX_SUB  1      
-#define WP_TX_PRED 2      
-#define WP_TX_COLOR 3     
-#define WP_TX_PAL 4       
-
+#define WP_TX_SUB  1
+#define WP_TX_PRED 2
+#define WP_TX_COLOR 3
+#define WP_TX_PAL 4
 
 static uint32_t wp_pred(int m, uint32_t L, uint32_t T, uint32_t TR, uint32_t TL) {
     switch (m) {
@@ -488,7 +469,6 @@ static int wp_apply_tx(wp_tx_t* tx, int ntx, uint32_t* pix, int* pw, int h) {
     return WEBP_OK;
 }
 
-
 static int wp_vp8l(const uint8_t* data, size_t len, uint32_t* pix,
                    int* out_w, int* out_h, uint32_t max_pixels,
                    uint8_t* scratch, size_t scratch_len) {
@@ -497,12 +477,11 @@ static int wp_vp8l(const uint8_t* data, size_t len, uint32_t* pix,
     wp_bits_init(&d.bit, data, len);
     if (wp_read_bits(&d.bit, 8) != 0x2f) return WEBP_ERR;
     int w = wp_read_bits(&d.bit, 14), h = wp_read_bits(&d.bit, 14);
-    (void)wp_read_bits(&d.bit, 1);           
+    (void)wp_read_bits(&d.bit, 1);
     int ver = wp_read_bits(&d.bit, 3);
     if (w < 0 || h < 0 || ver != 0) return WEBP_ERR;
     w++; h++;
     if ((size_t)w * h > max_pixels) return WEBP_BIG;
-
 
     size_t sp = 0;
     d.max_groups = WP_MAX_GROUPS;
@@ -515,7 +494,6 @@ static int wp_vp8l(const uint8_t* data, size_t len, uint32_t* pix,
     d.meta = (uint32_t*)(scratch + sp); sp += 4096 * 4;
     uint8_t* sub = scratch + sp;
     size_t sub_len = scratch_len - sp;
-
 
     wp_tx_t txs[4];
     int ntx = 0;
@@ -555,7 +533,7 @@ static int wp_vp8l(const uint8_t* data, size_t len, uint32_t* pix,
             t->data = (uint32_t*)sub;
             sub += bytes; sub_len -= bytes;
             if (wp_decode_image(&d, t->data, cnt, 1, cnt, 0) != WEBP_OK) return WEBP_ERR;
-            for (int i = 1; i < cnt; i++) {  
+            for (int i = 1; i < cnt; i++) {
                 t->data[i] = ((t->data[i - 1] + t->data[i]) & 0xff000000u)
                            | (((t->data[i - 1] & 0xff0000u) + (t->data[i] & 0xff0000u)) & 0xff0000u)
                            | (((t->data[i - 1] & 0xff00u) + (t->data[i] & 0xff00u)) & 0xff00u)
@@ -569,14 +547,11 @@ static int wp_vp8l(const uint8_t* data, size_t len, uint32_t* pix,
         }
     }
 
-
     if (wp_decode_image(&d, pix, w, h, w, 1) != WEBP_OK) return WEBP_ERR;
     if (wp_apply_tx(txs, ntx, pix, &w, h) != WEBP_OK) return WEBP_ERR;
     *out_w = w; *out_h = h;
     return WEBP_OK;
 }
-
-
 
 int webp_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
                     uint32_t* pixels, size_t max_pixels,

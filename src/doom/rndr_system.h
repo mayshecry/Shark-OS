@@ -1,5 +1,4 @@
-/* rndr_system.h - renderer system (cpp-doom rndr/system): context
- * initialisation and the per-frame entry point. */
+
 #ifndef RNDR_SYSTEM_H
 #define RNDR_SYSTEM_H
 

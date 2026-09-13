@@ -11,7 +11,7 @@ void pmm_init(uint64_t mem_size_bytes) {
     if (free_memory_end < free_memory_start + 32768) {
         free_memory_end = free_memory_start + 32768;
     }
-    
+
     pmm_bitmap = (uint64_t*)free_memory_start;
     memset(pmm_bitmap, 0xFF, 4096);
     free_memory_start += 4096;

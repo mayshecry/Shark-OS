@@ -1,17 +1,13 @@
-/* rndr_types.h - core types for the level renderer, in the spirit of
- * cpp-doom's core/ (math, vec, radians, wad_types): fixed point helpers,
- * binary angular measure, vectors and the r_defs level structures. */
+
 #ifndef RNDR_TYPES_H
 #define RNDR_TYPES_H
 
 #include <stdint.h>
 #include <stddef.h>
 
-/* renderer target geometry */
 #define RNDR_W 320
 #define RNDR_H 200
 
-/* texture metrics */
 #define RNDR_TEX_W 64
 #define RNDR_TEX_H 64
 
@@ -20,7 +16,6 @@
 #define RNDR_MAX_SUBS    512
 #define RNDR_MAX_NODES   512
 
-/* 16:16 fixed point, like the original engine */
 #define FP_ONE 65536
 
 static inline int32_t int_to_fp(int x) { return (int32_t)((uint32_t)x << 16); }
@@ -52,15 +47,12 @@ static inline int32_t fp_abs(int32_t x) {
     return (x < 0) ? (int32_t)(0u - (uint32_t)x) : x;
 }
 
-/* angles: 360deg / 2^32, wrapping by overflow, like the original */
 typedef uint32_t rndr_angle_t;
 #define RNDR_ANG45  0x20000000u
 #define RNDR_ANG90  0x40000000u
 #define RNDR_ANG180 0x80000000u
 
 typedef struct { int32_t x, y; } rndr_vec2_t;
-
-/* ---------------- level structures (r_defs style) ---------------- */
 
 typedef struct {
     int16_t floorh, ceilh;
@@ -69,17 +61,17 @@ typedef struct {
 } rndr_sector_t;
 
 typedef struct {
-    int32_t x1, y1, x2, y2;      /* fixed world coords */
+    int32_t x1, y1, x2, y2;
     int32_t length;
-    int16_t front, back;         /* sector idx; back = -1 one-sided */
+    int16_t front, back;
     int16_t midtex, toptex, bottex;
 } rndr_seg_t;
 
 typedef struct { int16_t firstseg, numsegs; } rndr_subsector_t;
 
 typedef struct {
-    int32_t x, y, dx, dy;        /* split plane */
-    int32_t children[2];         /* >=0 node idx, <0 = ~(subsector idx) */
+    int32_t x, y, dx, dy;
+    int32_t children[2];
 } rndr_node_t;
 
 typedef struct {

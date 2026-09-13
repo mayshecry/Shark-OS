@@ -1,14 +1,4 @@
-/* startmenu.c - Windows 98 style start menu.
- *
- * Layout: a vertical gradient sidebar with the product name rotated 90
- * degrees on the left, then a column of items (16x16 icon + label) and a
- * Shut Down entry under an etched separator.
- *
- * The draw, hover and click paths all use start_menu_item_rect() so they
- * can never disagree about where an item is. The item tables are 16 wide
- * (STARTMENU_MAX); the old code declared 8 slots and guarded on 10, writing
- * two elements past the end of both arrays.
- */
+
 
 #include "kernel.h"
 #include "desktop.h"
@@ -23,12 +13,9 @@ static const char* start_menu_items[STARTMENU_MAX];
 static window_type_t start_menu_types[STARTMENU_MAX];
 static int start_menu_count = 0;
 
-/* ------------------------------------------------------------------ layout */
-
 static int start_menu_height(void) {
-    /* Sidebar is full height; items run from the top edge. The shutdown row
-     * and its separator sit at the bottom. */
-    int items = start_menu_count + 1;      /* +1 for Shut Down */
+
+    int items = start_menu_count + 1;
     return items * W98_MENU_ITEM_H + 4 + 2;
 }
 
@@ -37,8 +24,6 @@ static void start_menu_anchor(int* mx, int* my) {
     *my = (int)screen_height - TASKBAR_HEIGHT - start_menu_height();
 }
 
-/* One rectangle for draw, hover and click alike. `index == start_menu_count`
- * is the Shut Down row. */
 static bool start_menu_item_rect(int index, int* rx, int* ry, int* rw,
                                  int* rh) {
     if (index < 0 || index > start_menu_count) return false;
@@ -52,8 +37,6 @@ static bool start_menu_item_rect(int index, int* rx, int* ry, int* rw,
     *rh = W98_MENU_ITEM_H - 2;
     return true;
 }
-
-/* ---------------------------------------------------------------- lifecycle */
 
 void start_menu_open(void) {
     desktop.start_menu.active = true;
@@ -156,12 +139,9 @@ void start_menu_toggle(void) {
     }
 }
 
-/* ------------------------------------------------------------------- input */
-
 static int start_menu_row_at(int mx, int my) {
     int ax, ay;
     start_menu_anchor(&ax, &ay);
-
     int mw = STARTMENU_W;
     int mh = start_menu_height();
 
@@ -184,18 +164,27 @@ void start_menu_handle_hover(int mx, int my) {
     desktop.start_menu.hovered_item = start_menu_row_at(mx, my);
 }
 
+void start_menu_get_rect(int* x, int* y, int* w, int* h) {
+    int mx, my;
+    start_menu_anchor(&mx, &my);
+    if (x) *x = mx;
+    if (y) *y = my;
+    if (w) *w = STARTMENU_W;
+    if (h) *h = start_menu_height();
+}
+
 void start_menu_handle_click(int mx, int my) {
     if (!desktop.start_menu.visible) return;
 
     int row = start_menu_row_at(mx, my);
     if (row < 0) {
-        /* Click outside the menu closes it and is swallowed, like Win98. */
+
         start_menu_close();
         return;
     }
 
     if (row == start_menu_count) {
-        /* Shut Down */
+
         start_menu_close();
         shutdown();
         return;
@@ -206,8 +195,6 @@ void start_menu_handle_click(int mx, int my) {
     start_menu_close();
     desktop_icon_launch_offset(tp, label);
 }
-
-/* ------------------------------------------------------------------- paint */
 
 void start_menu_draw(void) {
     if (!desktop.start_menu.visible) return;
@@ -220,21 +207,21 @@ void start_menu_draw(void) {
     w98_fill(mx, my, mw, mh, W98_MENU_BG);
     w98_bevel(mx, my, mw, mh, W98_BEVEL_RAISED);
 
-    /* Sidebar gradient with the rotated product name. */
+
     int sb_w = W98_MENU_SIDEBAR_W;
     w98_vgradient(mx + 2, my + 2, sb_w - 2, mh - 4,
                   W98_CAPTION_START, W98_CAPTION_END);
     w98_text_vertical("SharkOS 98", mx + 6, my + mh - 6, W98_TITLETEXT, 1,
                       NULL);
 
-    /* Items. */
+
     for (int i = 0; i <= start_menu_count; i++) {
         int rx, ry, rw, rh;
         start_menu_item_rect(i, &rx, &ry, &rw, &rh);
 
         bool is_shutdown = (i == start_menu_count);
 
-        /* Etched separator above Shut Down. */
+
         if (is_shutdown) {
             w98_bevel(rx + 2, ry - 3, rw - 4, 2, W98_BEVEL_ETCHED);
         }

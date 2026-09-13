@@ -55,16 +55,10 @@ char* strstr(const char* haystack, const char* needle) {
     return NULL;
 }
 
-/* memcpy/memset are the hottest routines in the kernel: every frame the
- * desktop composites ~3 MB (1024x768x32) into the back buffer and then
- * copies it to video memory. The old byte loops moved one byte per
- * iteration; `rep movsl`/`rep stosl` move 4 bytes per iteration and are
- * microcoded fast paths on every x86 since the 486, which matters on the
- * low-end machines this kernel is meant to run on. */
 void* memcpy(void* dest, const void* src, size_t n) {
     void* ret = dest;
     if (n >= 8) {
-        /* Align the destination to 4 bytes first. */
+
         size_t head = (4 - ((uintptr_t)dest & 3)) & 3;
         if (head) {
             n -= head;
@@ -113,7 +107,6 @@ void* memset(void* s, int c, size_t n) {
     return ret;
 }
 
-/* Fill `count` 32-bit pixels. */
 void fill32(uint32_t* dst, uint32_t value, size_t count) {
     asm volatile("rep stosl"
                  : "+D"(dst), "+c"(count)
@@ -186,9 +179,6 @@ void flush_screen_to_hw(void) {
     memcpy(hw_lfbptr, lfbptr, fb_size);
 }
 
-/* Copy only the rows [y0, y1) of the back buffer to video memory. Used by
- * the cursor-only fast path so moving the mouse does not push 3 MB through
- * the (often uncached, slow) framebuffer aperture every time. */
 void flush_rows_to_hw(int y0, int y1) {
     if (!hw_lfbptr || !lfbptr || hw_lfbptr == lfbptr) return;
     if (y0 < 0) y0 = 0;
