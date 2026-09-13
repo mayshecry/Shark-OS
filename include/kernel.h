@@ -51,6 +51,8 @@ static inline uint32_t inl(uint16_t port) {
 extern uint32_t* lfbptr;
 extern uint32_t* hw_lfbptr;
 extern uint64_t screen_width;
+
+void framebuffer_enable_write_combining(uintptr_t fb, uint32_t size);
 extern uint64_t screen_height;
 extern uint64_t screen_pitch;
 extern uint64_t total_system_memory;
@@ -183,13 +185,9 @@ extern char command_history[MAX_HISTORY][80];
 extern int history_count;
 extern int history_index;
 extern volatile uint32_t uptime_ticks;
-/* The PIT is programmed for 1000 Hz in kmain()/lite_kmain(); uptime_ticks
- * counts milliseconds. (Several callers used to assume 100 Hz.) */
+
 #define TICKS_PER_SEC 1000u
 
-/* Coarse CPU load: share of each second the main loop spent doing work
- * (compositing, game ticks, shell commands) rather than halted. Maintained
- * by kmain()'s loop, displayed by the Task Manager. */
 #define SYS_CPU_HISTORY 64
 extern uint32_t sys_cpu_percent;
 extern uint32_t sys_cpu_history[SYS_CPU_HISTORY];
@@ -197,17 +195,14 @@ extern int sys_cpu_history_pos;
 extern uint32_t sys_frames_rendered;
 extern uint32_t sys_frames_per_sec;
 
-
 extern char* terminal_capture_buffer;
 extern int terminal_capture_len;
-/* Capacity of terminal_capture_buffer (incl. NUL) and the "clear was
- * requested while capturing" flag, both maintained by src/ui/terminal.c. */
+
 extern int terminal_capture_cap;
 extern bool terminal_capture_cleared;
 void terminal_capture_begin(char* buf, int cap);
 void terminal_capture_end(void);
-/* Set while a shell command is being executed for the desktop Terminal
- * window, so blocking/full-screen commands can refuse to run. */
+
 extern bool terminal_in_desktop_window;
 
 #define terminal_row     (panes[active_pane].row)
@@ -270,7 +265,7 @@ void int_to_string(uint32_t value, char* buffer);
 void delay_ms(uint32_t ms);
 
 void init_descriptor_tables(void);
-void pmm_init(uint32_t mmap_addr, uint32_t mmap_len, uint64_t mem_size);
+void pmm_init(uint64_t mem_size_bytes);
 void pmm_reserve(uintptr_t base, size_t len);
 void* kmalloc(size_t size);
 void kfree(void* ptr);
@@ -308,7 +303,6 @@ struct fs_node* create_node(const char* name, node_type_t type, struct fs_node* 
 void fs_initialize(void);
 void execute_command(char* cmd);
 
-/* Signed, clipped on all four edges. See the note in src/ui/terminal.c. */
 void draw_char(char c, int x, int y, uint32_t fg, uint32_t bg);
 void draw_pixel(int x, int y, uint32_t color);
 void draw_rect(int x, int y, int w, int h, uint32_t color);
@@ -363,7 +357,6 @@ void syscall_handler(struct registers* r);
 void flush_screen_to_hw(void);
 void flush_rows_to_hw(int y0, int y1);
 void fill32(uint32_t* dst, uint32_t value, size_t count);
-
 
 void rtc_init(void);
 void rtc_read_time(void);
