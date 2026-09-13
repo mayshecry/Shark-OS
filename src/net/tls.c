@@ -330,18 +330,15 @@ int tls_connect(tls_t* t, const char* server_name, tls_send_fn send, tls_recv_fn
     }
     sha256_init(&t->transcript);
 
-
     uint8_t priv[32], pub[32], random[32], server_pub[32];
     tls_random(priv, 32);
     tls_random(random, 32);
     x25519_base(pub, priv);
 
-
     static uint8_t hello[1024];
     int hl = build_client_hello(t, hello, pub, random);
     sha256_update(&t->transcript, hello, (size_t)hl);
     if (send_record(t, 22, hello, hl) < 0) return t->error = TLS_ERR_TRANSPORT;
-
 
     int ml;
     int mt = next_handshake_message(t, &ml);
@@ -350,7 +347,6 @@ int tls_connect(tls_t* t, const char* server_name, tls_send_fn send, tls_recv_fn
     int err = parse_server_hello(t, t->hs + 4, ml - 4, server_pub);
     if (err) { send_alert(t, 2, err == TLS_ERR_CIPHER ? 40 : 70); return t->error = err; }
     sha256_update(&t->transcript, t->hs, (size_t)ml);
-
 
     uint8_t shared[32], early_secret[32], derived[32], empty_hash[32], th[32];
     x25519(shared, priv, server_pub);
@@ -367,7 +363,6 @@ int tls_connect(tls_t* t, const char* server_name, tls_send_fn send, tls_recv_fn
     set_traffic_keys(t, t->client_hs_secret, t->server_hs_secret);
     t->encrypted = 1;
     t->rec_used = t->rec_plain_len;
-
 
     int got_finished = 0;
     while (!got_finished) {
@@ -401,7 +396,6 @@ int tls_connect(tls_t* t, const char* server_name, tls_send_fn send, tls_recv_fn
         sha256_update(&t->transcript, t->hs, (size_t)ml);
     }
 
-
     uint8_t master[32];
     transcript_hash(t, th);
     {
@@ -411,7 +405,6 @@ int tls_connect(tls_t* t, const char* server_name, tls_send_fn send, tls_recv_fn
     }
     derive_secret(master, "c ap traffic", th, t->client_app_secret);
     derive_secret(master, "s ap traffic", th, t->server_app_secret);
-
 
     {
         uint8_t fkey[32], fin[4 + 32];

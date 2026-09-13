@@ -6,7 +6,7 @@
 #include "plugin_manager.h"
 #include "icon_data.h"
 
-#define MENU_USER_H 0     /* header kept for binary-compatible callers */
+#define MENU_USER_H 0
 #define MENU_HEADER_H 0
 
 static const char* start_menu_items[STARTMENU_MAX];
@@ -207,20 +207,17 @@ void start_menu_draw(void) {
     w98_fill(mx, my, mw, mh, W98_MENU_BG);
     w98_bevel(mx, my, mw, mh, W98_BEVEL_RAISED);
 
-
     int sb_w = W98_MENU_SIDEBAR_W;
     w98_vgradient(mx + 2, my + 2, sb_w - 2, mh - 4,
                   W98_CAPTION_START, W98_CAPTION_END);
     w98_text_vertical("SharkOS 98", mx + 6, my + mh - 6, W98_TITLETEXT, 1,
                       NULL);
 
-
     for (int i = 0; i <= start_menu_count; i++) {
         int rx, ry, rw, rh;
         start_menu_item_rect(i, &rx, &ry, &rw, &rh);
 
         bool is_shutdown = (i == start_menu_count);
-
 
         if (is_shutdown) {
             w98_bevel(rx + 2, ry - 3, rw - 4, 2, W98_BEVEL_ETCHED);

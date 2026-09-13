@@ -43,10 +43,8 @@ void rtc_read_time(void) {
     uint8_t month = rtc_read(RTC_MONTH);
     uint8_t year = rtc_read(RTC_YEAR);
 
-
     uint8_t status_b = rtc_read(0x0B);
     bool bcd_mode = !(status_b & 0x04);
-
 
     if (bcd_mode) {
         seconds = bcd_to_bin(seconds);
@@ -57,11 +55,9 @@ void rtc_read_time(void) {
         year = bcd_to_bin(year);
     }
 
-
     if (!(status_b & 0x02) && (hours & 0x80)) {
         hours = ((hours & 0x7F) + 12) % 24;
     }
-
 
     rtc_seconds = seconds;
     rtc_minutes = minutes;

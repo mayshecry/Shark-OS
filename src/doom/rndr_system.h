@@ -9,4 +9,4 @@ void rndr_init_context(rndr_context_t *ctx, rndr_level_t *lvl,
 void rndr_render_frame(rndr_context_t *ctx, int32_t x, int32_t y,
                        rndr_angle_t angle, int eye_z, int view_h);
 
-#endif /* RNDR_SYSTEM_H */
+#endif

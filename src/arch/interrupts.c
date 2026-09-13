@@ -58,7 +58,6 @@ void isr_handler(struct registers* r) {
         return;
     }
 
-
     terminal_capture_buffer = NULL;
     terminal_capture_len = 0;
     if (hw_lfbptr && lfbptr != hw_lfbptr) lfbptr = hw_lfbptr;

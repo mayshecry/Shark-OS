@@ -121,7 +121,6 @@ void app_window_draw_terminal(window_t* w) {
     w98_rect_t clip;
     clip.x = tx + 2; clip.y = ty + 2; clip.w = tw - 4; clip.h = th - 4;
 
-
     int prompt_chars = 2 + terminal_buf_len;
     int prompt_rows = (prompt_chars + cols - 1) / cols;
     if (prompt_rows < 1) prompt_rows = 1;
@@ -145,7 +144,6 @@ void app_window_draw_terminal(window_t* w) {
         if (len >= 2 && line_buf[0] == '$' && line_buf[1] == ' ') fg = 0xFFFFFF55;
         w98_text(line_buf, tx + 4, ty + 4 + row * TERM_LINE_H, fg, 0xFF000000, 1, &clip);
     }
-
 
     int py = ty + 4 + row * TERM_LINE_H;
     w98_text("$ ", tx + 4, py, 0xFF55FF55, 0xFF000000, 1, &clip);
@@ -197,7 +195,6 @@ static bool terminal_cmd_blocked(const char* cmd, char* why, int why_len) {
 static void terminal_run_command(window_t* w) {
     terminal_buffer[terminal_buf_len] = '\0';
 
-
     terminal_output_append("$ ", 2);
     terminal_output_append(terminal_buffer, terminal_buf_len);
     terminal_output_append("\n", 1);
@@ -220,7 +217,6 @@ static void terminal_run_command(window_t* w) {
         terminal_color = saved_color;
 
         if (cleared) terminal_output_clear();
-
 
         const char* out = terminal_capture_store;
         while (len > 0 && *out == '\n') { out++; len--; }
@@ -315,7 +311,6 @@ void app_window_draw_settings(window_t* w) {
     int radio_y, swatch_y, btn_y;
     settings_layout(w, &radio_y, &swatch_y, &btn_y);
 
-
     settings_hover = -1;
     int mxp = desktop_mouse_x, myp = desktop_mouse_y;
     for (int i = 0; i < 3; i++) {
@@ -340,7 +335,6 @@ void app_window_draw_settings(window_t* w) {
     w98_text_bold("Settings - Customize", cx + cw / 2 - 60, cy + 6,
                   W98_BTNTEXT, W98_BTNFACE, 1, NULL);
     w98_bevel(cx + 4, cy + 18, cw - 8, 2, W98_BEVEL_ETCHED);
-
 
     w98_text_bold("Wallpaper:", cx + 8, radio_y - 14, W98_BTNTEXT,
                   W98_BTNFACE, 1, NULL);
@@ -505,7 +499,6 @@ void app_window_draw_faq(window_t* w) {
                   W98_BTNFACE, 1, &clip);
     w98_bevel(cx + 4, cy + 22, cw - 8, 2, W98_BEVEL_ETCHED);
 
-
     int px = cx + 6, py = cy + 30;
     int pw = cw - 12, ph = ch - 36;
     if (pw < 60 || ph < 24) return;
@@ -615,7 +608,6 @@ static void tm_draw_applications(window_t* w, tm_layout_t* L, const w98_rect_t* 
     w98_rect_t lc;
     lc.x = x + 2; lc.y = L->list_y + 2; lc.w = cw - 4; lc.h = L->list_h - 4;
 
-
     int hy = L->list_y + 2;
     w98_fill(x + 2, hy, cw - 4, TM_ROW_H, W98_BTNFACE);
     w98_fill(x + 2, hy + TM_ROW_H - 1, cw - 4, 1, W98_BTNSHADOW);
@@ -625,7 +617,6 @@ static void tm_draw_applications(window_t* w, tm_layout_t* L, const w98_rect_t* 
     int y = hy + TM_ROW_H + 1;
     int rows = (L->list_h - TM_ROW_H - 6) / TM_ROW_H;
     int shown = 0;
-
 
     if (tm_selected >= desktop.window_count || tm_selected < 0 ||
         !desktop.windows[tm_selected].visible) {
@@ -645,7 +636,6 @@ static void tm_draw_applications(window_t* w, tm_layout_t* L, const w98_rect_t* 
         uint32_t bg = sel ? W98_HIGHLIGHT : W98_WINDOW;
         uint32_t fg = sel ? W98_HIGHLIGHTTEXT : W98_WINDOWTEXT;
         if (sel) w98_fill(x + 2, y, cw - 4, TM_ROW_H, bg);
-
 
         const uint32_t* icon = desktop_icon_pixels_for_type(t->type);
         if (icon) {
@@ -669,7 +659,6 @@ static void tm_draw_applications(window_t* w, tm_layout_t* L, const w98_rect_t* 
     if (shown == 0) {
         w98_text("(no applications running)", x + 8, y + 3, W98_GRAYTEXT, W98_WINDOW, 1, &lc);
     }
-
 
     int bw = 78, bh = 22;
     int bx = x + cw - bw;
@@ -721,7 +710,6 @@ static void tm_draw_performance(window_t* w, tm_layout_t* L, const w98_rect_t* c
     int y = L->list_y;
     int bottom = L->btn_y + 22;
 
-
     w98_text_bold("CPU Usage History", x, y, W98_BTNTEXT, W98_BTNFACE, 1, clip);
     y += 12;
     int gh = (bottom - y) / 2 - 40;
@@ -757,7 +745,6 @@ static void tm_draw_performance(window_t* w, tm_layout_t* L, const w98_rect_t* c
         prev_y = py;
     }
     y += gh + 8;
-
 
     char buf[48], num[16];
     int col2 = x + cw / 2;
@@ -840,7 +827,6 @@ static void tm_draw_processes(window_t* w, tm_layout_t* L, const w98_rect_t* cli
     int shown = 0;
     char num[16];
 
-
     w98_text("0", x + 8, y + 3, W98_WINDOWTEXT, W98_WINDOW, 1, &lc);
     w98_text("kernel (sharkos)", x + 44, y + 3, W98_WINDOWTEXT, W98_WINDOW, 1, &lc);
     w98_text("Running", x + 160, y + 3, W98_WINDOWTEXT, W98_WINDOW, 1, &lc);
@@ -865,7 +851,6 @@ static void tm_draw_processes(window_t* w, tm_layout_t* L, const w98_rect_t* cli
         y += TM_ROW_H; shown++;
     }
     spin_unlock(&task_list_lock);
-
 
     int pc = 0;
     plugin_t* pl = plugin_get_list(&pc);
@@ -901,7 +886,6 @@ void app_window_draw_taskmanager(window_t* w) {
         default:           tm_draw_applications(w, &L, &clip); break;
     }
 
-
     char st[80], num[16];
     strcpy(st, "Windows: ");
     int_to_string((uint32_t)tm_count_task_rows(), num); tm_cat(st, num);
@@ -921,7 +905,6 @@ void app_window_mouse_taskmanager(window_t* w, int mx, int my, int buttons) {
     int x = w->rect.client_x + 6;
     int cw = w->rect.client_w - 12;
 
-
     if (my >= L.tabs_y - 2 && my < L.tabs_y + 18) {
         int i = (mx - x) / 84;
         if (mx >= x && i >= 0 && i < 3) {
@@ -933,7 +916,6 @@ void app_window_mouse_taskmanager(window_t* w, int mx, int my, int buttons) {
     }
 
     if (tm_tab != TM_TAB_APPS) return;
-
 
     int first_row_y = L.list_y + 2 + TM_ROW_H + 1;
     if (mx >= x && mx < x + cw && my >= first_row_y && my < L.list_y + L.list_h - 2) {
@@ -954,7 +936,6 @@ void app_window_mouse_taskmanager(window_t* w, int mx, int my, int buttons) {
         desktop.dirty = true;
         return;
     }
-
 
     int bw = 78, bh = 22;
     int bx_end = x + cw - bw;
@@ -1108,7 +1089,6 @@ void app_window_draw_notepad(window_t* w) {
 
     w98_fill(cx, cy, cw, ch, W98_BTNFACE);
 
-
     int mx = cx + 2;
     for (int i = 0; i < 4; i++) {
         int tw = w98_text_width(notepad_menus[i], 1) + 10;
@@ -1124,7 +1104,6 @@ void app_window_draw_notepad(window_t* w) {
     if (notepad_dirty) { strcpy(title + p, " *"); }
     w98_text(title, cx + cw - w98_text_width(title, 1) - 6, cy + 4,
              W98_GRAYTEXT, W98_BTNFACE, 1, NULL);
-
 
     int ta_x = cx + 2, ta_y = cy + NOTEPAD_MENU_H + 2;
     int ta_w = cw - 4, ta_h = ch - NOTEPAD_MENU_H - 6;
@@ -1222,7 +1201,6 @@ void app_window_draw_filemanager(window_t* w) {
 
     if (!fm_current_dir) fm_current_dir = root;
 
-
     char path[128] = "";
     struct fs_node* tmp = fm_current_dir;
     char parts[8][32];
@@ -1239,7 +1217,6 @@ void app_window_draw_filemanager(window_t* w) {
     w98_surface(cx + 2, cy + 2, cw - 4, 16, W98_BEVEL_SUNKEN, W98_WINDOW);
     w98_text(path, cx + 6, cy + 6, W98_WINDOWTEXT, W98_WINDOW, 1, NULL);
 
-
     int lv_y = cy + 22;
     int lv_h = ch - 22 - FM_STATUS_H - 4;
     w98_surface(cx + 2, lv_y, cw - 4, lv_h, W98_BEVEL_SUNKEN, W98_WINDOW);
@@ -1249,7 +1226,6 @@ void app_window_draw_filemanager(window_t* w) {
     if (max_items > 20) max_items = 20;
     fm_hovered_item = -1;
     fm_items_y[0] = y;
-
 
     bool hov0 = (desktop_mouse_x >= cx + 6 && desktop_mouse_x < cx + cw - 6 &&
                  desktop_mouse_y >= y && desktop_mouse_y < y + 16);
@@ -1286,7 +1262,6 @@ void app_window_draw_filemanager(window_t* w) {
                  hovered ? W98_HIGHLIGHT : W98_WINDOW, 1, NULL);
         y += 16;
     }
-
 
     int sb_y = cy + ch - FM_STATUS_H - 2;
     w98_bevel(cx + 2, sb_y, cw - 4, FM_STATUS_H, W98_BEVEL_SUNKEN);
@@ -1390,7 +1365,6 @@ void app_window_draw_network(window_t* w) {
                 !has_nic ? W98_BTNTEXT : net_has_link ? 0xFF008000u : 0xFFA00000u);
     y += 14;
 
-
     int st = net_dhcp_state();
     const char* st_name = !has_nic ? "no adapter" :
                           st == 3 ? "bound (DHCP)" :
@@ -1429,7 +1403,6 @@ void app_window_draw_network(window_t* w) {
         y += 14;
     }
     y += 6;
-
 
     int bw = 92, bh = 22;
     w98_button(cx + 8, y, bw, bh, "Renew DHCP", false, has_nic && net_has_link, false);

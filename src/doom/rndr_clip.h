@@ -12,4 +12,4 @@ typedef struct {
 
 void rndr_clip_reset(rndr_clip_t *c, int view_h);
 
-#endif /* RNDR_CLIP_H */
+#endif

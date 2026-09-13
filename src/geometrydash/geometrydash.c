@@ -604,7 +604,6 @@ void gd_run(void) {
             }
         }
 
-
         uint32_t now = uptime_ticks;
         if (now - last >= STEP_INTERVAL) {
             if (state == PLAYING) {

@@ -16,7 +16,6 @@ void rndr_render_frame(rndr_context_t *ctx, int32_t x, int32_t y,
     rndr_planes_reset(&ctx->planes);
     rndr_drawsegs_reset(&ctx->segs);
 
-
     volatile uint8_t (*vs)[RNDR_W] = ctx->screen;
     for (int yy = 0; yy < view_h; yy++)
         for (int xx = 0; xx < RNDR_W; xx++)

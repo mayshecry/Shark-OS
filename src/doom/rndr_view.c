@@ -13,7 +13,6 @@ void rndr_view_init(rndr_view_t *v, int32_t x, int32_t y, int z,
     v->view_h = view_h;
     v->centery = view_h / 2;
 
-
     rndr_angle_t a = angle - RNDR_ANG45;
     rndr_angle_t step = RNDR_ANG90 / RNDR_W;
     for (int i = 0; i < RNDR_W; i++) {

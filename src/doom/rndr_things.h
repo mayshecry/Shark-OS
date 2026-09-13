@@ -16,4 +16,4 @@ void rndr_clip_sprite_column(const rndr_context_t *ctx, int x,
                              const rndr_sprite_proj_t *sp,
                              int *top, int *bot);
 
-#endif /* RNDR_THINGS_H */
+#endif

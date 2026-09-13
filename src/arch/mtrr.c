@@ -30,7 +30,6 @@ static bool cpu_has_mtrr(void) {
     uint32_t eax, ebx, ecx, edx;
     uint32_t base_max, base_mid;
 
-
     uint32_t before, after;
     asm volatile("pushfl; popl %0; movl %0, %1; xorl $0x200000, %1;"
                  "pushl %1; popfl; pushfl; popl %1"
@@ -60,7 +59,6 @@ void framebuffer_enable_write_combining(uintptr_t fb, uint32_t size) {
     int vcnt = (int)(cap & 0xFF);
     if (vcnt <= 0) return;
 
-
     uint32_t region = round_up_pow2(size);
     uintptr_t base = fb & ~(uintptr_t)(region - 1);
     uint64_t base_phys = ((uint64_t)base & 0xFFFFFFFFu) | MTRR_TYPE_WC;
@@ -77,7 +75,6 @@ void framebuffer_enable_write_combining(uintptr_t fb, uint32_t size) {
             uint64_t rmask = m & 0x0000000FFFFFF000ull;
             uint64_t rsize = (~rmask & 0xFFFFFFFFFull) + 1;
 
-
             if (rbase <= (uint64_t)base &&
                 (uint64_t)base + region <= rbase + rsize) {
                 uint8_t type = (uint8_t)(b & 0xFF);
@@ -93,7 +90,6 @@ void framebuffer_enable_write_combining(uintptr_t fb, uint32_t size) {
 
     if (free_slot < 0) return;
 
-
     for (int i = 0; i < vcnt; i++) {
         uint64_t m = rdmsr(IA32_MTRR_PHYSMASK(i));
         if (!(m & MTRR_MASK_VALID)) continue;
@@ -106,7 +102,6 @@ void framebuffer_enable_write_combining(uintptr_t fb, uint32_t size) {
             return;
         }
     }
-
 
     uint32_t cr0;
     asm volatile("mov %%cr0, %0" : "=r"(cr0) : : "memory");

@@ -442,6 +442,43 @@ static void pn_poll(void) {
 #define E1000_TCTL_EN     (1u << 1)
 #define E1000_TCTL_PSP    (1u << 3)
 
+/* --- PCH2 (Intel 82579LM / 82579V) additions ---------------------------
+ * These MACs live in the PCH chipset (Cougar Point / Panther Point) and
+ * their PHY sits behind an internal interconnect at MDIO address 1.  After
+ * power-on the firmware/ME may leave the PHY powered down or in SMBus
+ * mode, in which case plain MAC register init alone gives no link: the
+ * driver must explicitly wake the PHY up.  (Reference: Linux e1000e,
+ * drivers/net/ethernet/intel/e1000e/ich8lan.c,
+ * e1000_init_phy_workarounds_pchlan / e1000_toggle_lanphypc_pch_lpt.)
+ */
+#define E1000_MDIC        0x0020
+#define E1000_FWSM        0x5B54
+#define E1000_FEXTNVM3    0x003C
+#define E1000_EXTCNF_CTRL 0x0F00
+
+#define E1000_CTRL_LANPHYPC_OVERRIDE (1u << 16)
+#define E1000_CTRL_LANPHYPC_VALUE    (1u << 17)
+#define E1000_EXTCNF_GATE_PHY_CFG    (1u << 7)
+#define E1000_FWSM_PHY_RESET_EN      (1u << 6)  /* ICH_FWSM_RSPCIPHY */
+
+#define E1000_MDIC_PHY_ADDR   1u
+#define E1000_MDIC_ADDR_SHIFT 16
+#define E1000_MDIC_READY      (1u << 28)
+#define E1000_MDIC_ERROR      (1u << 30)
+
+/* Standard MII registers (PHY page 0) */
+#define E1000_MII_BMCR       0
+#define E1000_MII_PHYSID1    2
+#define E1000_MII_PHYSID2    3
+#define E1000_MII_ADVERTISE  4
+#define E1000_BMCR_RESET     0x8000
+#define E1000_BMCR_POWERDOWN 0x0800
+#define E1000_BMCR_ANE       0x1000
+#define E1000_BMCR_RESTART_AN 0x0200
+#define E1000_BMCR_SPEED_MASK 0x2040
+#define E1000_ADV_10_100     0x01E1  /* 10/100 half+full, 802.3 selector */
+#define E1000_ADV_PAUSE      0x0C00  /* symmetric + asymmetric pause */
+
 #define E1000_NRX 32
 #define E1000_NTX 32
 #define E1000_BUF 2048
@@ -473,6 +510,7 @@ static uint8_t* e1000_rxb[E1000_NRX];
 static uint8_t* e1000_txb[E1000_NTX];
 static int e1000_rx_head = 0;
 static int e1000_tx_tail = 0;
+static bool e1000_pch2 = false;   /* true for 82579LM/82579V (PCH2 MACs) */
 
 static inline void e1000_w(uint32_t reg, uint32_t v) { *(volatile uint32_t*)(e1000_mmio + reg) = v; }
 static inline uint32_t e1000_r(uint32_t reg) { return *(volatile uint32_t*)(e1000_mmio + reg); }
@@ -497,14 +535,120 @@ static void e1000_read_link(void) {
     net_has_link = (e1000_r(E1000_STATUS) & 0x2) ? 1 : 0;
 }
 
+/* --- MDIC (MDIO) access for the PCH2-integrated PHY -------------------- */
+
+static int e1000_mdic_read(uint8_t reg, uint16_t* out) {
+    e1000_w(E1000_MDIC, (uint32_t)reg |
+            ((uint32_t)E1000_MDIC_PHY_ADDR << E1000_MDIC_ADDR_SHIFT) |
+            (2u << 26));                       /* opcode: read */
+    for (int i = 0; i < 5000; i++) {
+        uint32_t v = e1000_r(E1000_MDIC);
+        if (v & E1000_MDIC_ERROR) return 0;
+        if (v & E1000_MDIC_READY) { *out = (uint16_t)(v & 0xFFFFu); return 1; }
+    }
+    return 0;
+}
+
+static int e1000_mdic_write(uint8_t reg, uint16_t val) {
+    e1000_w(E1000_MDIC, (uint32_t)val | (uint32_t)reg |
+            ((uint32_t)E1000_MDIC_PHY_ADDR << E1000_MDIC_ADDR_SHIFT) |
+            (1u << 26));                       /* opcode: write */
+    for (int i = 0; i < 5000; i++) {
+        uint32_t v = e1000_r(E1000_MDIC);
+        if (v & E1000_MDIC_ERROR) return 0;
+        if (v & E1000_MDIC_READY) return 1;
+    }
+    return 0;
+}
+
+static int e1000_phy_is_accessible(void) {
+    uint16_t id = 0;
+    for (int retry = 0; retry < 2; retry++) {
+        if (!e1000_mdic_read(E1000_MII_PHYSID1, &id) || id == 0xFFFF) continue;
+        if (!e1000_mdic_read(E1000_MII_PHYSID2, &id) || id == 0xFFFF) continue;
+        return 1;
+    }
+    return 0;
+}
+
+/* Force the MAC-PHY interconnect out of SMBus mode by toggling the
+ * LANPHYPC pin, power-cycling the PHY (needs up to ~50ms). */
+static void e1000_toggle_lanphypc(void) {
+    uint32_t v = e1000_r(E1000_FEXTNVM3);
+    v = (v & ~0x0C000000u) | 0x08000000u;      /* PHY config counter = 50ms */
+    e1000_w(E1000_FEXTNVM3, v);
+
+    v = e1000_r(E1000_CTRL);
+    v |=  E1000_CTRL_LANPHYPC_OVERRIDE;
+    v &= ~E1000_CTRL_LANPHYPC_VALUE;
+    e1000_w(E1000_CTRL, v);
+    (void)e1000_r(E1000_CTRL);                 /* flush the write */
+    for (volatile int i = 0; i < 2000; i++) { } /* ~10-20us */
+    v &= ~E1000_CTRL_LANPHYPC_OVERRIDE;
+    e1000_w(E1000_CTRL, v);
+    (void)e1000_r(E1000_CTRL);
+    delay_ms(50);
+}
+
+/* Bring the 82579 PHY out of firmware/power-down state so the MAC can
+ * establish a link.  Must run after the MAC reset, before programming
+ * the rings. */
+static void e1000_pch2_phy_wake(void) {
+    /* Gate automatic hardware PHY config while we configure the PHY */
+    e1000_w(E1000_EXTCNF_CTRL,
+            e1000_r(E1000_EXTCNF_CTRL) | E1000_EXTCNF_GATE_PHY_CFG);
+
+    /* Wait for the ME/firmware to allow PHY resets (FWSM.RSPCIPHY) */
+    for (int i = 0; i < 30; i++) {
+        if (e1000_r(E1000_FWSM) & E1000_FWSM_PHY_RESET_EN) break;
+        delay_ms(10);
+    }
+
+    /* PHY registers unreadable while the interconnect is in SMBus mode:
+     * toggle LANPHYPC to force it back to PCIe/MDIO mode */
+    if (!e1000_phy_is_accessible()) e1000_toggle_lanphypc();
+
+    /* Software-reset the PHY to get a known state */
+    uint16_t bmcr = 0;
+    if (e1000_mdic_read(E1000_MII_BMCR, &bmcr)) {
+        bmcr &= (uint16_t)~(E1000_BMCR_POWERDOWN | E1000_BMCR_SPEED_MASK);
+        e1000_mdic_write(E1000_MII_BMCR, (uint16_t)(bmcr | E1000_BMCR_RESET));
+        delay_ms(1);
+        for (int i = 0; i < 100; i++) {
+            uint16_t r = 0;
+            if (!e1000_mdic_read(E1000_MII_BMCR, &r)) break;
+            if (!(r & E1000_BMCR_RESET)) break;
+            delay_ms(1);
+        }
+    }
+
+    /* Advertise 10/100 + pause (gigabit capability is left untouched)
+     * and restart auto-negotiation */
+    e1000_mdic_write(E1000_MII_ADVERTISE,
+                     (uint16_t)(E1000_ADV_10_100 | E1000_ADV_PAUSE));
+    if (e1000_mdic_read(E1000_MII_BMCR, &bmcr)) {
+        bmcr &= (uint16_t)~(E1000_BMCR_POWERDOWN | E1000_BMCR_RESET);
+        e1000_mdic_write(E1000_MII_BMCR,
+                         (uint16_t)(bmcr | E1000_BMCR_ANE | E1000_BMCR_RESTART_AN));
+    }
+
+    /* Ungate automatic PHY config; 82579 needs ~10ms of quiet first */
+    delay_ms(10);
+    e1000_w(E1000_EXTCNF_CTRL,
+            e1000_r(E1000_EXTCNF_CTRL) & ~E1000_EXTCNF_GATE_PHY_CFG);
+}
+
 static void e1000_init_chip(void) {
 
     e1000_w(E1000_IMC, 0xFFFFFFFFu);
     e1000_w(E1000_CTRL, e1000_r(E1000_CTRL) | E1000_CTRL_RST);
     delay_ms(10);
-    for (int i = 0; i < 1000 && (e1000_r(E1000_CTRL) & E1000_CTRL_RST); i++) delay_ms(1);
+    int rst_wait = e1000_pch2 ? 100 : 1000;
+    for (int i = 0; i < rst_wait && (e1000_r(E1000_CTRL) & E1000_CTRL_RST); i++) delay_ms(1);
     e1000_w(E1000_IMC, 0xFFFFFFFFu);
     (void)e1000_r(E1000_ICR);
+
+    if (e1000_pch2) e1000_pch2_phy_wake();
 
     uint32_t ctrl = e1000_r(E1000_CTRL);
     ctrl |= E1000_CTRL_SLU | E1000_CTRL_ASDE;
@@ -610,6 +754,7 @@ static int e1000_is_supported(uint16_t did) {
         0x1018, 0x1019, 0x101A, 0x101D, 0x101E, 0x1026, 0x1027, 0x1028, 0x1075,
         0x1076, 0x1077, 0x1078, 0x1079, 0x107A, 0x107B, 0x107C, 0x108A, 0x1099,
         0x10B5, 0x10D3,
+        0x1502, 0x1503,   /* Intel 82579LM / 82579V (PCH2, needs PHY wake) */
     };
     for (unsigned i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) if (ids[i] == did) return 1;
     return 0;
@@ -676,7 +821,12 @@ void net_init(void) {
                         cmd |= 0x6;
                         pci_config_write(bus, slot, func, 0x04, cmd);
                         e1000_mmio = (uintptr_t)(bar0 & 0xFFFFFFF0);
-                        strcpy(net_driver_name, did == 0x10D3 ? "Intel 82574L" : "Intel 8254x (e1000)");
+                        e1000_pch2 = (did == 0x1502 || did == 0x1503);
+                        strcpy(net_driver_name,
+                               did == 0x10D3 ? "Intel 82574L"          :
+                               did == 0x1502 ? "Intel 82579LM (e1000)" :
+                               did == 0x1503 ? "Intel 82579V (e1000)"  :
+                                               "Intel 8254x (e1000)");
                         e1000_present = true;
                         e1000_init_chip();
                         if (e1000_present) return;

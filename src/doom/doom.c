@@ -533,7 +533,6 @@ static void extract_level(void) {
     for (int i = 0; i < num_sectors; i++)
         level_sectors[i].light = sector_lights[i];
 
-
     for (int y = 0; y < MAP_H; y++)
         for (int x = 0; x < MAP_W; x++)
             if (game_map[y][x] == 0 && cell_sector[y][x] < 0) {
@@ -558,7 +557,6 @@ static void extract_level(void) {
             int32_t ex = int_to_fp((x + 1) * CELL_SIZE);
             int32_t ey = int_to_fp((y + 1) * CELL_SIZE);
 
-
             if (x + 1 >= MAP_W || game_map[y][x + 1] > 0 || cell_sector[y][x + 1] < 0) {
                 int wt = 0;
                 if (x + 1 < MAP_W && game_map[y][x + 1] > 0) wt = game_map[y][x + 1] - 1;
@@ -579,7 +577,6 @@ static void extract_level(void) {
                 if (y - 1 >= 0 && game_map[y - 1][x] > 0) wt = game_map[y - 1][x] - 1;
                 add_unit_edge(ex, gy, gx, gy, s, -1, wt, -1, -1);
             }
-
 
             if (cell_open(x + 1, y)) {
                 int s2 = cell_sector[y][x + 1];
@@ -641,7 +638,6 @@ static int bsp_classify(const lv_seg_t *l, const lv_seg_t *sg, int *s1, int *s2)
 static int bsp_build(const int *list, int count, int depth) {
     if (count <= 1 || depth > 24 || num_nodes >= MAX_LEVEL_NODES - 1)
         return bsp_make_leaf(list, count);
-
 
     int best = -1, bestscore = 0x7FFFFFFF;
     for (int i = 0; i < count; i++) {
@@ -905,10 +901,8 @@ static void R_StoreWallRange(int x, int32_t z, lv_seg_t *sg,
                              int sx1, int sx2) {
     int fceil = front->ceilh, ffloor = front->floorh;
 
-
     int topy = proj_row(z, fceil);
     int boty = proj_row(z, ffloor);
-
 
     int ctop = ceilingclip[x] + 1;
     int cbot = topy - 1;
@@ -920,7 +914,6 @@ static void R_StoreWallRange(int x, int32_t z, lv_seg_t *sg,
     if (fbot > view_h_r - 1) fbot = view_h_r - 1;
     if (markceiling) R_SetSpan(ceilingplane, x, ctop, cbot);
     if (markfloor) R_SetSpan(floorplane, x, ftop, fbot);
-
 
     int shade = light_shade(front->light, z);
     int u = 0;
@@ -979,7 +972,6 @@ static void R_StoreWallRange(int x, int32_t z, lv_seg_t *sg,
         }
     }
 
-
     if (!back || sg->midtex >= 0) {
         if (ds_top) {
             if (topy < ds_top[x]) ds_top[x] = (int16_t)topy;
@@ -1016,7 +1008,6 @@ static void R_AddLine(lv_seg_t *sg) {
 
     if (dep1 <= NEAR_DIST && dep2 <= NEAR_DIST) return;
 
-
     if (dep1 <= NEAR_DIST) {
         int64_t t = ((int64_t)(NEAR_DIST - dep1) << 16) / (dep2 - dep1);
         lat1 = lat1 + (int32_t)((t * (lat2 - lat1)) >> 16);
@@ -1039,7 +1030,6 @@ static void R_AddLine(lv_seg_t *sg) {
     if (sx2 > SCREEN_W) sx2 = SCREEN_W;
     if (sx2 - sx1 < 1) return;
 
-
     int start = -1, stop = -1;
     for (int x = sx1; x < sx2; x++) {
         if (ceilingclip[x] + 1 < floorclip[x]) {
@@ -1048,7 +1038,6 @@ static void R_AddLine(lv_seg_t *sg) {
         }
     }
     if (start < 0) return;
-
 
     const lv_sector_t *front, *back;
     if (sg->back >= 0) {
@@ -1079,7 +1068,6 @@ static void R_AddLine(lv_seg_t *sg) {
                       (front->ceilh > viewz);
     }
 
-
     if (markfloor)
         floorplane = R_CheckPlane(front->floorpic, front->floorh, front->light,
                                   start, stop - 1);
@@ -1090,7 +1078,6 @@ static void R_AddLine(lv_seg_t *sg) {
                                     start, stop - 1);
     else
         ceilingplane = NULL;
-
 
     int dsi = -1;
     if (num_drawsegs < MAXDRAWSEGS) {
@@ -1105,7 +1092,6 @@ static void R_AddLine(lv_seg_t *sg) {
         }
         num_drawsegs++;
     }
-
 
     int64_t inv1 = ((int64_t)1 << 40) / dep1;
     int64_t inv2 = ((int64_t)1 << 40) / dep2;
@@ -1146,7 +1132,6 @@ static void render_view(void) {
     viewz = sector_floor[player.sector] + PLAYER_HEIGHT;
     viewsin = fp_sin(player.angle);
     viewcos = fp_cos(player.angle);
-
 
     uint32_t a = player.angle - 0x20000000u;
     uint32_t step = 0x40000000u / SCREEN_W;
@@ -1297,7 +1282,6 @@ static void draw_muzzle_flash(void) {
 
 static void draw_hud(void) {
     int hud_y = SCREEN_H - HUD_HEIGHT;
-
 
     for (int y = hud_y; y < SCREEN_H; y++) {
         for (int x = 0; x < SCREEN_W; x++)
@@ -1509,7 +1493,6 @@ void doom_set_window_rect(int x, int y, int w, int h) {
     window_w = w;
     window_h = h;
 
-
     doom_scale_factor = 1;
     if (w >= 640 && h >= 400) doom_scale_factor = 2;
     if (w >= 1280 && h >= 800) doom_scale_factor = 4;
@@ -1715,7 +1698,6 @@ static void draw_enemies(void) {
         num_vis_sprites++;
     }
 
-
     for (int i = 1; i < num_vis_sprites; i++) {
         vis_sprite_t key = vis_sprites[i];
         int j = i - 1;
@@ -1750,7 +1732,6 @@ static void draw_enemies(void) {
         for (int x = x0; x < x0 + sprite_w; x++) {
             if (x < 0 || x >= SCREEN_W) continue;
             int top = y_top, bot = y_bot;
-
 
             for (int d = 0; d < num_drawsegs; d++) {
                 if (x < drawsegs[d].x1 || x >= drawsegs[d].x2) continue;
@@ -1863,7 +1844,6 @@ void doom_run(void) {
     if (doom_running) return;
     doom_running = true;
 
-
     while (keyboard_getchar() != 0) yield();
 
     game_state = DOOM_MENU;
@@ -1886,12 +1866,10 @@ void doom_run(void) {
             }
         }
 
-
         if (game_state == DOOM_PLAYING) {
             update_player();
             update_enemies();
         }
-
 
         uint32_t now = uptime_ticks;
         if (now - last_frame_time >= FRAME_INTERVAL) {

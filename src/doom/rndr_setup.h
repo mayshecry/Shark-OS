@@ -17,4 +17,4 @@ typedef struct {
 
 void rndr_build_level(rndr_level_t *l, const rndr_map_source_t *src);
 
-#endif /* RNDR_SETUP_H */
+#endif

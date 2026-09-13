@@ -16,7 +16,7 @@ static uint32_t rd16(const uint8_t* p) { return ((uint32_t)p[0] << 8) | p[1]; }
 static int32_t  rds16(const uint8_t* p) { return (int16_t)rd16(p); }
 static uint32_t rd32(const uint8_t* p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
 
-#define FONT_MAX_FACES 12                 /* 6 built-in + up to 6 web fonts per page */
+#define FONT_MAX_FACES 12
 
 typedef struct {
     const uint8_t* data;

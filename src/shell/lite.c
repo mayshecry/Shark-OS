@@ -24,10 +24,8 @@ void lite_kmain(void) {
     terminal_initialize();
     terminal_clear();
 
-
     net_init();
     net_stack_init();
-
 
     plugin_manager_init();
     extern int plugin_init_entry(void);

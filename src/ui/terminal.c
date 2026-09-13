@@ -48,7 +48,6 @@ void draw_char(char c, int x, int y, uint32_t fg, uint32_t bg) {
     int sh = (int)screen_height;
     int cell = 8 * scale;
 
-
     if (x >= sw || y >= sh || x + cell <= 0 || y + cell <= 0) return;
 
     for (int row = 0; row < 8; row++) {
@@ -198,7 +197,6 @@ void terminal_scroll() {
     uint32_t stride = screen_pitch / 4;
     uint32_t px_start = col_px(panes[active_pane].col_start);
     uint32_t px_width = col_px(panes[active_pane].col_end - panes[active_pane].col_start);
-
 
     uint32_t max_y = (uint32_t)screen_height;
     if (px_start + px_width > (uint32_t)screen_width) {
@@ -426,8 +424,6 @@ void terminal_writestring(const char* data) {
                 line_buf[line_len++] = data[i];
             }
         }
-
-
 
         terminal_write_char_internal(data[i]);
     }

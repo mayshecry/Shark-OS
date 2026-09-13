@@ -91,4 +91,4 @@ static inline int64_t rndr_cross64(int32_t ax, int32_t ay, int32_t bx, int32_t b
     return (int64_t)ax * by - (int64_t)ay * bx;
 }
 
-#endif /* RNDR_TYPES_H */
+#endif

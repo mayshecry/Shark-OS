@@ -29,4 +29,4 @@ void rndr_set_span(rndr_visplane_t *pl, int x, int top, int bottom);
 void rndr_draw_planes(rndr_planes_t *ps, const rndr_view_t *v,
                       const rndr_clip_t *clip, uint8_t (*screen)[RNDR_W]);
 
-#endif /* RNDR_PLANE_H */
+#endif

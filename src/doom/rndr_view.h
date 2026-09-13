@@ -23,4 +23,4 @@ void rndr_project(const rndr_view_t *v, int32_t wx, int32_t wy,
 int rndr_screen_x(int32_t lat, int32_t dep);
 int rndr_row(const rndr_view_t *v, int32_t z, int h);
 
-#endif /* RNDR_VIEW_H */
+#endif

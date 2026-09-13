@@ -25,4 +25,4 @@ typedef struct rndr_context_s rndr_context_t;
 void rndr_drawsegs_reset(rndr_drawsegs_t *ds);
 void rndr_render_bsp(rndr_context_t *ctx);
 
-#endif /* RNDR_BSP_H */
+#endif

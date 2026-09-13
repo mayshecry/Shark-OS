@@ -56,7 +56,6 @@ static void draw_shark_logo(int cx, int cy, int size, uint32_t color) {
         }
     }
 
-
     for (int dy = 0; dy < half / 2; dy++) {
         int fw = half / 2 - dy;
         for (int dx = 0; dx < fw; dx++) {

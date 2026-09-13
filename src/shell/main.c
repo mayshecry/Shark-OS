@@ -80,7 +80,6 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     if (screen_width < 320) screen_width = 320;
     if (screen_height < 200) screen_height = 200;
 
-
     uint64_t mem_kb = ((uint64_t)mb_info->mem_upper + (uint64_t)mb_info->mem_lower);
     total_system_memory = mem_kb * 1024;
 
@@ -215,7 +214,6 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     plugin_register_builtin("gdash", geometrydash_plugin_init, geometrydash_plugin_cleanup, geometrydash_plugin_command);
     boot_screen_update("Detecting hardware...", 70);
 
-
     net_init();
     boot_screen_update(net_has_nic() ? "Configuring network (DHCP)..."
                                      : "No network adapter found", 75);
@@ -236,7 +234,6 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
 
     asm volatile("sti");
 
-
     hw_lfbptr = lfbptr;
     {
 
@@ -249,7 +246,6 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             lfbptr = shadow;
         }
     }
-
 
     desktop_render();
 
@@ -276,7 +272,6 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             int my = mouse_cursor_y;
             int buttons = mouse_state.buttons;
 
-
             if (buttons != 0 || (buttons == 0 && desktop_mouse_down)) {
                 desktop_handle_mouse(mx, my, buttons);
             }
@@ -284,7 +279,6 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
                 desktop_mouse_x = mx;
                 desktop_mouse_y = my;
                 pointer_moved = true;
-
 
                 bool repaint = false;
                 if (desktop.start_menu.visible) {
@@ -329,13 +323,11 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             }
         }
 
-
         for (int k = 0; k < 16; k++) {
             char c = keyboard_getchar();
             if (c == 0) break;
             desktop_handle_keyboard(c);
         }
-
 
         if (uptime_ticks - last_net_tick >= 10) {
             last_net_tick = uptime_ticks;
@@ -353,7 +345,6 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             }
         }
 
-
         if (uptime_ticks - last_clock_tick >= 1000) {
             last_clock_tick = uptime_ticks;
             rtc_read_time();
@@ -362,14 +353,12 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
                 desktop.dirty = true;
             }
 
-
             sys_cpu_percent = busy_ms > 1000 ? 100 : busy_ms / 10;
             sys_cpu_history[sys_cpu_history_pos] = sys_cpu_percent;
             sys_cpu_history_pos = (sys_cpu_history_pos + 1) % SYS_CPU_HISTORY;
             sys_frames_per_sec = frames_this_sec;
             busy_ms = 0;
             frames_this_sec = 0;
-
 
             for (int i = 0; i < desktop.window_count; i++) {
                 window_t* tw = &desktop.windows[i];
@@ -381,7 +370,6 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             }
         }
 
-
         window_t* focused = window_get_focused();
         if (focused && !focused->game_tick &&
             (focused->type == WINDOW_TYPE_TERMINAL || focused->type == WINDOW_TYPE_NOTEPAD) &&
@@ -391,13 +379,11 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             desktop.dirty = true;
         }
 
-
         if (focused && focused->game_tick && uptime_ticks - last_game_tick >= 16) {
             last_game_tick = uptime_ticks;
             focused->game_tick();
             desktop.dirty = true;
         }
-
 
         browser_tick();
 

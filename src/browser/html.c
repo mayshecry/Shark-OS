@@ -454,7 +454,6 @@ br_node_t* br_html_parse(const char* html, int len) {
     p->doc = doc;
     push(p, doc);
 
-
     br_node_t* html_el = br_node_new(BR_NODE_ELEMENT); html_el->tag = "html"; br_node_append(doc, html_el);
     br_node_t* head_el = br_node_new(BR_NODE_ELEMENT); head_el->tag = "head"; br_node_append(html_el, head_el);
     br_node_t* body_el = br_node_new(BR_NODE_ELEMENT); body_el->tag = "body"; br_node_append(html_el, body_el);
@@ -530,7 +529,6 @@ br_node_t* br_html_parse(const char* html, int len) {
         if (p->pos < len && s[p->pos] == '>') p->pos++;
         text_start = p->pos;
 
-
         if (br_streq(tag, "html")) {
 
             for (int i = 0; i < n->attr_count; i++) br_set_attr(html_el, n->attrs[i].name, n->attrs[i].value);
@@ -551,7 +549,6 @@ br_node_t* br_html_parse(const char* html, int len) {
             implied_end_tags(p, tag);
             br_node_append(cur(p), n);
         }
-
 
         if (br_streq(tag, "template") || br_streq(tag, "svg") || br_streq(tag, "math")) {
             if (self_closing) continue;

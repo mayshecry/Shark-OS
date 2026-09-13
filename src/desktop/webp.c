@@ -1,6 +1,5 @@
 
 
-
 #include "kernel.h"
 
 #define WEBP_OK      0

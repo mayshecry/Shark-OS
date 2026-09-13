@@ -230,7 +230,6 @@ void desktop_draw_wallpaper(void) {
         return;
     }
 
-
     if (wallpaper_dirty || !wallpaper_cache ||
         wallpaper_cache_w != w || wallpaper_cache_h != h) {
         desktop_wallpaper_rebuild_cache(w, h);
@@ -245,7 +244,6 @@ void desktop_draw_wallpaper(void) {
         }
         return;
     }
-
 
     w98_fill_dither(0, 0, w, h);
 }
@@ -279,7 +277,6 @@ void desktop_draw_icons(void) {
             w98_icon_blit(icon_pixels, ICON_SIZE, W98_DESKTOP_ICON, ix, iy,
                           NULL);
         }
-
 
         char line1[16], line2[16];
         int len = (int)strlen(icon->label);
@@ -342,11 +339,9 @@ void desktop_draw_taskbar(void) {
     int bar_y = (int)screen_height - TASKBAR_HEIGHT;
     int bar_w = (int)screen_width;
 
-
     w98_fill(0, bar_y, bar_w, TASKBAR_HEIGHT, W98_BTNFACE);
     draw_rect(0, bar_y, bar_w, 1, W98_BTNHILITE);
     draw_rect(0, bar_y + 1, bar_w, 1, W98_BTNLIGHT);
-
 
     bool start_pressed = desktop.start_menu.active;
     int sx = 2, sy = bar_y + 2;
@@ -360,11 +355,9 @@ void desktop_draw_taskbar(void) {
     w98_text_bold("Start", sx + 22 + ox, sy + 8 + ox, W98_BTNTEXT,
                   W98_BTNFACE, 1, NULL);
 
-
     int gx = W98_STARTBTN_W + 3;
     draw_rect(gx, bar_y + 3, 1, TASKBAR_HEIGHT - 6, W98_BTNSHADOW);
     draw_rect(gx + 1, bar_y + 3, 1, TASKBAR_HEIGHT - 6, W98_BTNHILITE);
-
 
     int slot = 0;
     for (int i = 0; i < desktop.window_count; i++) {
@@ -409,7 +402,6 @@ void desktop_draw_taskbar(void) {
         slot++;
     }
 
-
     char time_str[16];
     int hh = (int)rtc_hours;
     const char* suffix = "";
@@ -433,7 +425,6 @@ void desktop_draw_taskbar(void) {
     int tray_w = tw + 14;
     int tray_x = bar_w - tray_w - 3;
     int tray_y = bar_y + 3;
-
 
     int net_icon_w = 0;
     int has_nic = net_driver_name[0] && net_driver_name[0] != 'n';
@@ -516,7 +507,6 @@ void desktop_render(void) {
         int y1 = desktop.flush_y1;
         desktop.flush_partial = false;
 
-
         if (y1 - y0 > (int)screen_height * 2 / 3) {
             flush_screen_to_hw();
         } else {
@@ -594,7 +584,6 @@ void desktop_handle_mouse(int mx, int my, int buttons) {
                     desktop.dirty = true;
                     return;
                 }
-
 
                 window_t* focused_click = NULL;
                 int focus_idx = -1;

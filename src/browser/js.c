@@ -104,7 +104,7 @@ static char js_error_msg[128];
 static int global_scope = 0;
 static int depth = 0;
 static int eval_nest = 0;
-#define JS_MAX_EVAL_NEST 200     /* backstop; the real limit is br_stack_headroom() */
+#define JS_MAX_EVAL_NEST 200
 static int parse_nest = 0;
 #define JS_MAX_PARSE_NEST 96
 
@@ -127,7 +127,7 @@ static int timer_next_id = 1;
 
 static void throw_error(const char* msg, const char* detail);
 
-#define JS_STR_MAX (16 * 1024)           /* longest single string */
+#define JS_STR_MAX (16 * 1024)
 static char str_overflow[JS_STR_MAX + 1];
 
 static char* js_alloc_str(int n) {
@@ -2092,8 +2092,8 @@ static int rx_atom(const char* p, int plen, const char* s, int si, int slen, int
 static int rx_match_here(const char* p, int plen, const char* s, int si, int slen, int icase, int* end);
 
 static int rx_nest = 0, rx_budget = 0;
-#define RX_MAX_NEST 40           /* 40 * ~1.2 KB frames */
-#define RX_BUDGET   200000       /* backtracking steps per search */
+#define RX_MAX_NEST 40
+#define RX_BUDGET   200000
 
 static int rx_match_seq_inner(const char* p, int plen, const char* s, int si, int slen, int icase, int* end);
 static int rx_match_seq(const char* p, int plen, const char* s, int si, int slen, int icase, int* end) {
@@ -3568,7 +3568,6 @@ static void setup_globals(void) {
     def_native(g, "postMessage", n_noop);
     def_native(g, "getSelection", n_noop);
 
-
     def_native(g, "String", n_String); objects[get_prop(g, "String").u.obj].name = "String";
     def_native(g, "Number", n_Number); objects[get_prop(g, "Number").u.obj].name = "Number";
     def_native(g, "Boolean", n_Boolean); objects[get_prop(g, "Boolean").u.obj].name = "Boolean";
@@ -3630,12 +3629,10 @@ static void setup_globals(void) {
     def_native(obj_console, "error", n_console_log); def_native(obj_console, "debug", n_console_log); def_native(obj_console, "table", n_console_log);
     def_native(obj_console, "group", n_noop); def_native(obj_console, "groupEnd", n_noop); def_native(obj_console, "time", n_noop); def_native(obj_console, "timeEnd", n_noop); def_native(obj_console, "clear", n_noop); def_native(obj_console, "assert", n_noop); def_native(obj_console, "trace", n_noop); def_native(obj_console, "dir", n_console_log);
 
-
     if (br_doc) {
         obj_document = wrap_node(br_doc);
         set_prop(g, "document", mk_obj(obj_document));
     }
-
 
     int loc = new_object(O_PLAIN);
     obj_location = loc;

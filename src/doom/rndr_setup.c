@@ -87,7 +87,6 @@ static void extract_level(rndr_level_t *l, const rndr_map_source_t *src) {
             int32_t ex = gx + cell;
             int32_t ey = gy + cell;
 
-
             if (x + 1 >= src->map_w || src->grid[y * src->map_w + x + 1] > 0 ||
                 src->cell_sector[y * src->map_w + x + 1] < 0) {
                 int wt = 0;
@@ -116,7 +115,6 @@ static void extract_level(rndr_level_t *l, const rndr_map_source_t *src) {
                     wt = src->grid[(y - 1) * src->map_w + x] - 1;
                 add_unit_edge(ex, gy, gx, gy, s, -1, wt, -1, -1);
             }
-
 
             if (cell_open(src, x + 1, y)) {
                 int s2 = src->cell_sector[y * src->map_w + x + 1];
@@ -177,7 +175,6 @@ static int bsp_classify(const rndr_seg_t *l, const rndr_seg_t *sg,
 static int bsp_build(const int *list, int count, int depth) {
     if (count <= 1 || depth > 24 || tmp_num_nodes >= RNDR_MAX_NODES - 1)
         return bsp_make_leaf(list, count);
-
 
     int best = -1, bestscore = 0x7FFFFFFF;
     for (int i = 0; i < count; i++) {
@@ -273,7 +270,6 @@ void rndr_build_level(rndr_level_t *l, const rndr_map_source_t *src) {
         int n0 = tmp_num_segs;
         l->root = bsp_build(bsp_arena + root_list, n0, 0);
     }
-
 
     l->num_segs = tmp_num_segs;
     for (int i = 0; i < tmp_num_segs; i++)

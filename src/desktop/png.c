@@ -249,7 +249,6 @@ int png_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
     int pal_len = 0;
     for (int i = 0; i < 256; i++) { palette[i][0] = palette[i][1] = palette[i][2] = 0; palette[i][3] = 255; }
 
-
     size_t pos = 8, idat_total = 0;
     int saw_ihdr = 0;
     while (pos + 12 <= len) {
@@ -310,7 +309,6 @@ int png_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
     } else raw_len = (stride + 1) * height;
     if (idat_total + raw_len > scratch_len) return -3;
 
-
     uint8_t* zdata = scratch;
     uint8_t* raw = scratch + idat_total;
     size_t zpos = 0;
@@ -329,7 +327,6 @@ int png_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out_h,
 
         memset(raw + got, 0, raw_len - (size_t)got);
     }
-
 
     struct pass { uint32_t pw, ph, x0, y0, dx, dy; } passes[7];
     int npasses = 0;

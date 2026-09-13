@@ -880,7 +880,6 @@ static int layout_block(br_node_t* n, int x, int y, int width, int list_index) {
 
     n->lx = bx; n->ly = by; n->lw = outer_w;
 
-
     int rect_idx = -1;
     if (st->background || bw) {
         br_box_t* b = new_box(BR_BOX_RECT, n);
@@ -925,7 +924,6 @@ static int layout_block(br_node_t* n, int x, int y, int width, int list_index) {
         if (rect_idx >= 0) boxes[rect_idx].h = h;
         return mt + h + mb;
     }
-
 
     if (st->display == BR_DISPLAY_LIST_ITEM && st->list_style != 2) {
         br_box_t* b = new_box(BR_BOX_BULLET, n);

@@ -405,7 +405,6 @@ static void cmd_taskmanager(const char* args) {
         return;
     }
 
-
     char buf[32];
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     terminal_writestring("\nSharkOS Task Manager\n");

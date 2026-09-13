@@ -90,12 +90,10 @@ void w98_bevel(int x, int y, int w, int h, w98_bevel_t style) {
         return;
     }
 
-
     w98_hline(x, y, w, lt_outer);
     w98_vline(x, y, h, lt_outer);
     w98_hline(x, y + h - 1, w, rb_outer);
     w98_vline(x + w - 1, y, h, rb_outer);
-
 
     w98_hline(x + 1, y + 1, w - 2, lt_inner);
     w98_vline(x + 1, y + 1, h - 2, lt_inner);
@@ -154,7 +152,6 @@ void w98_hgradient(int x, int y, int w, int h, uint32_t left, uint32_t right) {
 
     int x0, y0, x1, y1;
     if (!w98_clip(NULL, x, y, w, h, &x0, &y0, &x1, &y1)) return;
-
 
     static uint32_t ramp[W98_RAMP_MAX];
 
@@ -290,7 +287,6 @@ void w98_text_vertical(const char* s, int x, int y_bottom, uint32_t fg,
     while (s[n]) n++;
     if (n == 0) return;
 
-
     int advance = 6 * scale;
     int total = n * advance;
     int y = y_bottom - total;
@@ -308,7 +304,6 @@ void w98_text_vertical(const char* s, int x, int y_bottom, uint32_t fg,
         if (gidx < 0 || gidx >= n) continue;
         int grow = gcol_row / scale;
         if (grow < 0 || grow > 7) continue;
-
 
         uint8_t bits = font8x8[s[gidx] - 32][grow];
         uint32_t* row = &lfbptr[(uint32_t)py * stride];

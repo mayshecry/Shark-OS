@@ -59,7 +59,6 @@ void desktop_icons_load(void) {
     for (int i = 0; i < desktop.icon_count && i < MAX_DESKTOP_ICONS; i++) {
         const uint32_t* src = desktop_icon_pixels_for_type(desktop.icons[i].type);
 
-
         for (int j = 0; j < ICON_SIZE * ICON_SIZE; j++) {
             icon_images[i].pixels[j] = src[j];
         }

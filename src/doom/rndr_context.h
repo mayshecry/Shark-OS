@@ -17,4 +17,4 @@ typedef struct rndr_context_s {
     uint8_t (*screen)[RNDR_W];
 } rndr_context_t;
 
-#endif /* RNDR_CONTEXT_H */
+#endif

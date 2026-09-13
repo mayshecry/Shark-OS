@@ -652,7 +652,6 @@ void br_navigate(const char* url_in, int push_history) {
         br_strlcat(full, u, sizeof(full));
     }
 
-
     int automatic = nav_is_auto;
     nav_is_auto = 0;
     brs.refresh_pending = 0;
@@ -669,7 +668,6 @@ void br_navigate(const char* url_in, int push_history) {
     brs.address_focus = 0;
     br_status("Connecting...");
     if (brs.win) { brs.win->needs_redraw = true; desktop_render(); }
-
 
     if (!br_streq(full, "about:source")) { source_copy_len = br_page_len; memcpy(source_copy, br_page_src, (size_t)br_page_len); }
 
@@ -1199,7 +1197,6 @@ static void draw_toolbar(window_t* w) {
     w98_fill(x, y + BR_TOOLBAR_H - 1, cw, 1, W98_BTNSHADOW);
     w98_fill(x, y + BR_TOOLBAR_H, cw, 1, W98_BTNHILITE);
 
-
     int ay = y + BR_TOOLBAR_H + 3;
     w98_text("Address", x + 6, ay + 5, W98_BTNTEXT, W98_BTNFACE, 1, NULL);
     int ax = x + 56, aw = cw - 56 - 44 - 6, ah = 20;
@@ -1413,7 +1410,6 @@ void app_window_mouse_browser(window_t* w, int mx, int my, int buttons) {
         if (toolbar_button_at(w, mx, my) == 14) return;
     }
 
-
     int tb = toolbar_button_at(w, mx, my);
     if (tb >= 0) {
         if ((tb == 10 && brs.history_pos <= 0) || (tb == 11 && brs.history_pos >= brs.history_len - 1)) return;
@@ -1442,7 +1438,6 @@ void app_window_mouse_browser(window_t* w, int mx, int my, int buttons) {
     }
     if (my >= y && my < y + BR_TOOLBAR_H + BR_ADDR_H) { brs.address_focus = 0; br_request_repaint(); return; }
 
-
     int sx = x + w->rect.client_w - BR_SCROLL_W;
     int vy = viewport_top(w), vh = viewport_h(w);
     if (mx >= sx && my >= vy && my < vy + vh) {
@@ -1462,7 +1457,6 @@ void app_window_mouse_browser(window_t* w, int mx, int my, int buttons) {
         }
         return;
     }
-
 
     if (my >= vy && my < vy + vh && mx >= x && mx < sx) {
         brs.address_focus = 0;
@@ -1626,7 +1620,6 @@ void browser_tick(void) {
 
     int mx = mouse_cursor_x, my = mouse_cursor_y, buttons = mouse_state.buttons;
 
-
     if (last_mouse_buttons & 1 && !(buttons & 1)) {
         int pb = brs.pressed_btn;
         brs.pressed_btn = 0;
@@ -1662,12 +1655,10 @@ void browser_tick(void) {
     if ((buttons & 1) && (brs.pressed_btn == 1 || brs.pressed_btn == 2) && (uptime_ticks % 80) == 0) scroll_by(w, brs.pressed_btn == 1 ? -BR_LINE_STEP : BR_LINE_STEP);
     last_mouse_buttons = buttons;
 
-
     if (mx != last_tick_mx || my != last_tick_my) {
         last_tick_mx = mx; last_tick_my = my;
         if (w->has_focus) update_hover(w, mx, my);
     }
-
 
     if (br_js_has_timers() && uptime_ticks - last_timer_run >= 20) {
         last_timer_run = uptime_ticks;
@@ -1675,13 +1666,11 @@ void browser_tick(void) {
         run_pending_nav(1);
     }
 
-
     if (brs.refresh_pending && (int32_t)(uptime_ticks - brs.refresh_at) >= 0) {
         brs.refresh_pending = 0;
         nav_is_auto = brs.refresh_auto;
         br_navigate(brs.refresh_url, brs.refresh_replace ? 2 : 1);
     }
-
 
     if (w->has_focus && (brs.address_focus || brs.focus_input >= 0) && uptime_ticks - last_blink >= 500) {
         last_blink = uptime_ticks;

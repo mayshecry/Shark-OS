@@ -94,19 +94,15 @@ void mouse_init(void) {
     mouse_state.dy = 0;
     mouse_cycle = 0;
 
-
     uint32_t eflags;
     asm volatile("pushf; pop %0; cli" : "=r"(eflags) :: "memory");
-
 
     for (int i = 0; i < 32 && (inb(0x64) & 0x01); i++) {
         (void)inb(0x60);
     }
 
-
     mouse_wait();
     outb(0x64, 0xA8);
-
 
     mouse_wait();
     outb(0x64, 0x20);
@@ -118,11 +114,9 @@ void mouse_init(void) {
     mouse_wait();
     outb(0x60, status);
 
-
     mouse_command(0xF6);
     uint8_t ack = mouse_command(0xF4);
     mouse_present = (ack == 0xFA);
-
 
     for (int i = 0; i < 8 && (inb(0x64) & 0x01); i++) {
         (void)inb(0x60);

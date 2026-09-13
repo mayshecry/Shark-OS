@@ -574,7 +574,6 @@ static void add_rule(const char* sel, int seln, const char* body, int bodyn) {
     r->decls = &decl_pool[decl_pool_used];
     memset(r->parts, 0, sizeof(br_selpart_t) * BR_MAX_SELPARTS);
 
-
     int parts_n = 0;
     int e = seln;
     while (e > 0 && parts_n < BR_MAX_SELPARTS) {
@@ -603,7 +602,6 @@ static void add_rule(const char* sel, int seln, const char* body, int bodyn) {
     if (e > 0) return;
     r->part_count = parts_n;
 
-
     int spec = 0;
     for (int i = 0; i < parts_n; i++) {
         if (r->parts[i].id) spec += 100;
@@ -615,7 +613,6 @@ static void add_rule(const char* sel, int seln, const char* body, int bodyn) {
     }
     r->specificity = spec;
     r->order = rule_order++;
-
 
     int i = 0;
     r->var_first = var_decl_count; r->var_count = 0;
@@ -1543,7 +1540,6 @@ static void compute_node(br_node_t* n, const br_style_t* parent) {
 
     if (n->type != BR_NODE_ELEMENT) return;
 
-
     const char* a;
     if ((a = br_attr(n, "bgcolor"))) { int ok; uint32_t c = br_css_parse_color(a, &ok); if (ok) st->background = c; }
     if ((a = br_attr(n, "text")) && br_streq(n->tag, "body")) { int ok; uint32_t c = br_css_parse_color(a, &ok); if (ok) st->color = c; }
@@ -1560,7 +1556,6 @@ static void compute_node(br_node_t* n, const br_style_t* parent) {
     if ((a = br_attr(n, "hidden"))) st->display = BR_DISPLAY_NONE;
     if ((a = br_attr(n, "border")) && br_streq(n->tag, "table")) { st->border = br_atoi(a) > 0 ? 1 : 0; st->border_t = st->border_r = st->border_b = st->border_l = st->border; }
     if ((a = br_attr(n, "width"))) { int ok; int l = parse_length(a, 0, &ok); if (ok) st->width = (a[strlen(a) - 1] == '%') ? -(2 + br_atoi(a)) : l; }
-
 
     int parent_px = parent->font_px > 0 ? parent->font_px : 16;
 

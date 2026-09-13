@@ -205,9 +205,7 @@ static void build_pal(void) {
 static void spawn_pipe(void) {
     if (pipe_count >= 16) return;
 
-
     int spawn_x = (pipe_count == 0) ? 380 : 320;
-
 
     pipes[pipe_count].x = spawn_x;
     pipes[pipe_count].y = 100 + (score * 7 % 40) - 20;
@@ -254,9 +252,7 @@ static void update(void) {
 
     bird_vel_fix += to_fix(1) / 4;
 
-
     if (bird_vel_fix > to_fix(6)) bird_vel_fix = to_fix(6);
-
 
     if (bird_y_fix < to_fix(10)) bird_y_fix = to_fix(10);
 
@@ -487,7 +483,6 @@ void flappybird_set_kernel_mode(void) {
 
 void flappybird_tick(void) {
     if (state == QUIT) return;
-
 
     uint32_t now = uptime_ticks;
     if (now - last_tick_time < 16) {

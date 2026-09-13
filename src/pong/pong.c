@@ -369,7 +369,6 @@ static uint32_t pong_last_tick_time = 0;
 void pong_tick(void) {
     if (state == QUIT) return;
 
-
     uint32_t now = uptime_ticks;
     if (now - pong_last_tick_time < 16) {
         blit();

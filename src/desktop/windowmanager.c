@@ -268,7 +268,6 @@ void window_close(int idx) {
     if (desktop_resize_window > idx) desktop_resize_window--;
     if (caption_press_window > idx) caption_press_window--;
 
-
     window_focus_top_visible();
 
     desktop.dirty = true;
@@ -282,7 +281,6 @@ void window_minimize(int idx) {
     win->state = WINDOW_STATE_MINIMIZED;
     win->visible = false;
     win->needs_redraw = true;
-
 
     if (win->has_focus) {
         win->has_focus = false;
@@ -305,7 +303,6 @@ void window_maximize(int idx) {
     win->rect.prev_y = win->rect.y;
     win->rect.prev_w = win->rect.width;
     win->rect.prev_h = win->rect.height;
-
 
     win->rect.x = -W98_BORDER_W - W98_FRAME_PAD;
     win->rect.y = -W98_BORDER_W - W98_FRAME_PAD;
@@ -436,12 +433,9 @@ void window_draw_frame(window_t* w) {
     int ww = w->rect.width;
     int wh = w->rect.height;
 
-
     w98_fill(x, y, ww, wh, W98_BTNFACE);
 
-
     w98_bevel(x, y, ww, wh, W98_BEVEL_RAISED);
-
 
     int tb_x = x + W98_BORDER_W + W98_FRAME_PAD;
     int tb_y = y + W98_BORDER_W + W98_FRAME_PAD;
@@ -462,7 +456,6 @@ void window_draw_frame(window_t* w) {
         w98_fill(tb_x, tb_y, tb_w, tb_h, W98_INACTIVE_TITLE);
 #endif
     }
-
 
     int text_x = tb_x + 3;
     window_build_title_icon(w);
@@ -488,7 +481,6 @@ void window_draw_frame(window_t* w) {
     window_draw_caption_button(w, W98_GLYPHKIND_MIN);
     window_draw_caption_button(w, W98_GLYPHKIND_MAX);
     window_draw_caption_button(w, W98_GLYPHKIND_CLOSE);
-
 
     w98_fill(w->rect.client_x, w->rect.client_y,
              w->rect.client_w, w->rect.client_h, W98_BTNFACE);
@@ -581,7 +573,6 @@ void window_drag_update(int mx, int my) {
     int new_x = mx - w->drag_off_x;
     int new_y = my - w->drag_off_y;
 
-
     int work_h = (int)screen_height - TASKBAR_HEIGHT;
     if (new_y < 0) new_y = 0;
     if (new_y > work_h - W98_BORDER_W - W98_TITLEBAR_H) {
@@ -598,7 +589,6 @@ void window_drag_update(int mx, int my) {
     w->rect.y = new_y;
     window_update_client_rect(w);
     w->needs_redraw = true;
-
 
     desktop_invalidate_rect(old_x, old_y, old_x + old_w, old_y + old_h);
     desktop_invalidate_rect(new_x, new_y, new_x + old_w, new_y + old_h);
@@ -642,7 +632,6 @@ void window_resize_update(int mx, int my) {
         new_y += dy;
     }
 
-
     if (new_w < min_w) {
         if (desktop_resize_edge & RESIZE_EDGE_LEFT) {
             new_x -= min_w - new_w;
@@ -678,7 +667,6 @@ void window_resize_update(int mx, int my) {
 
     w->needs_redraw = true;
 
-
     desktop_invalidate_rect(old_x, old_y, old_x + old_w, old_y + old_h);
     desktop_invalidate_rect(new_x, new_y, new_x + new_w, new_y + new_h);
 }
@@ -699,7 +687,6 @@ void window_end_drag(void) {
     desktop_drag_window = -1;
     desktop_resize_window = -1;
     desktop_resize_edge = 0;
-
 
     if (caption_press_window >= 0 &&
         caption_press_window < desktop.window_count) {
@@ -732,7 +719,6 @@ void window_draw_all(void) {
             draw_order[draw_count++] = i;
         }
     }
-
 
     for (int i = 1; i < draw_count; i++) {
         int j = i;
