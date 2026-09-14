@@ -80,7 +80,12 @@ flush_segments:
     mov %ax, %gs
     mov %ax, %ss
     call kmain
+    /* kmain never returns (it halts itself on failure). If it ever did,
+       park the CPU instead of falling through into gdt_flush. */
+    cli
+hang:
     hlt
+    jmp hang
 
 .global gdt_flush
 gdt_flush:
