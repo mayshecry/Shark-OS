@@ -22,8 +22,8 @@
 #define STARTMENU_W         168
 #define STARTMENU_MAX       16
 
-#define DESKTOP_BG_TOP      W98_DESKTOP
-#define DESKTOP_BG_BOT      W98_DESKTOP
+#define DESKTOP_BG_TOP      0xFF008080u
+#define DESKTOP_BG_BOT      0xFF008080u
 
 typedef enum {
     WINDOW_TYPE_TERMINAL,
@@ -41,6 +41,7 @@ typedef enum {
     WINDOW_TYPE_NETWORK,
     WINDOW_TYPE_TASKMANAGER,
     WINDOW_TYPE_BROWSER,
+    WINDOW_TYPE_DISKMGMT,
     WINDOW_TYPE_MAX
 } window_type_t;
 
@@ -86,6 +87,10 @@ struct window {
     int z_order;
 
     int pressed_button;
+    int anim_kind;
+    uint32_t anim_start;
+    window_rect_t anim_from;
+    window_rect_t anim_to;
     void (*draw_func)(window_t* w);
     void (*keyboard_func)(window_t* w, char c);
     void (*mouse_func)(window_t* w, int mx, int my, int buttons);
@@ -185,6 +190,8 @@ void window_drag_update(int mx, int my);
 void window_resize_update(int mx, int my);
 void window_end_drag(void);
 void window_redraw_clients(void);
+void desktop_anim_tick(void);
+void window_title_icons_invalidate(void);
 void window_close_by_ptr(window_t* w);
 void window_focus_top_visible(void);
 
@@ -250,6 +257,9 @@ void app_window_keyboard_taskmanager(window_t* w, char c);
 void app_window_draw_browser(window_t* w);
 void app_window_mouse_browser(window_t* w, int mx, int my, int buttons);
 void app_window_keyboard_browser(window_t* w, char c);
+void app_window_draw_diskmgmt(window_t* w);
+void app_window_mouse_diskmgmt(window_t* w, int mx, int my, int buttons);
+void diskmgmt_tick(void);
 void browser_close(void);
 void browser_tick(void);
 void browser_open_url(const char* url);

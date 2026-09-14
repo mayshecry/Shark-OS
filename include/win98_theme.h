@@ -6,30 +6,31 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define W98_DESKTOP          0xFF008080u   /* desktop teal                     */
-#define W98_DESKTOP_DARK     0xFF007070u   /* teal dither partner              */
-#define W98_BTNFACE          0xFFC0C0C0u   /* window bodies, taskbar, menus    */
-#define W98_BTNHILITE        0xFFFFFFFFu   /* outer top/left highlight         */
-#define W98_BTNLIGHT         0xFFDFDFDFu   /* inner top/left highlight         */
-#define W98_BTNSHADOW        0xFF808080u   /* inner bottom/right shadow        */
-#define W98_BTNDKSHADOW      0xFF000000u   /* outer bottom/right shadow        */
-#define W98_BTNTEXT          0xFF000000u
-#define W98_GRAYTEXT         0xFF808080u   /* disabled                         */
-#define W98_ACTIVE_TITLE     0xFF000080u   /* navy, focused titlebar           */
-#define W98_ACTIVE_TITLE2    0xFF1084D0u   /* gradient right stop              */
-#define W98_INACTIVE_TITLE   0xFF808080u
-#define W98_INACTIVE_TITLE2  0xFFB5B5B5u
-#define W98_TITLETEXT        0xFFFFFFFFu
-#define W98_TITLETEXT_INACT  0xFFD4D0C8u
-#define W98_HIGHLIGHT        0xFF000080u   /* selection background             */
-#define W98_HIGHLIGHTTEXT    0xFFFFFFFFu
-#define W98_WINDOW           0xFFFFFFFFu   /* edit/list client areas           */
-#define W98_WINDOWTEXT       0xFF000000u
-#define W98_CAPTION_START    0xFF000040u   /* start-menu sidebar top           */
-#define W98_CAPTION_END      0xFF0000A0u   /* start-menu sidebar bottom        */
-#define W98_MENU_BG          0xFFC0C0C0u
+#include "theme.h"
 
-#define W98_TITLE_GRADIENT   0
+#define W98_DESKTOP          (theme_current->desktop)
+#define W98_DESKTOP_DARK     (theme_current->desktop_dark)
+#define W98_BTNFACE          (theme_current->btnface)
+#define W98_BTNHILITE        (theme_current->btnhilite)
+#define W98_BTNLIGHT         (theme_current->btnlight)
+#define W98_BTNSHADOW        (theme_current->btnshadow)
+#define W98_BTNDKSHADOW      (theme_current->btndkshadow)
+#define W98_BTNTEXT          (theme_current->btntext)
+#define W98_GRAYTEXT         (theme_current->graytext)
+#define W98_ACTIVE_TITLE     (theme_current->active_title)
+#define W98_ACTIVE_TITLE2    (theme_current->active_title2)
+#define W98_INACTIVE_TITLE   (theme_current->inactive_title)
+#define W98_INACTIVE_TITLE2  (theme_current->inactive_title2)
+#define W98_TITLETEXT        (theme_current->titletext)
+#define W98_TITLETEXT_INACT  (theme_current->titletext_inact)
+#define W98_HIGHLIGHT        (theme_current->highlight)
+#define W98_HIGHLIGHTTEXT    (theme_current->highlighttext)
+#define W98_WINDOW           (theme_current->window)
+#define W98_WINDOWTEXT       (theme_current->windowtext)
+#define W98_CAPTION_START    (theme_current->caption_start)
+#define W98_CAPTION_END      (theme_current->caption_end)
+#define W98_MENU_BG          (theme_current->menu_bg)
+#define W98_ICON_LABEL       (theme_current->icon_label)
 
 #define W98_RAMP_MAX         2048
 
@@ -112,6 +113,8 @@ typedef enum {
     W98_WALL_IMAGE
 } w98_wall_mode_t;
 
+extern bool w98_classic_font_force;
+
 void w98_fill_dither(int x, int y, int w, int h);
 
 void w98_fill(int x, int y, int w, int h, uint32_t color);
@@ -135,6 +138,12 @@ void w98_text_bold(const char* s, int x, int y, uint32_t fg, uint32_t bg,
 
 void w98_text_outline(const char* s, int x, int y, uint32_t fg, int scale,
                       const w98_rect_t* clip);
+
+void w98_text_alpha(const char* s, int x, int y, uint32_t fg, int scale,
+                    const w98_rect_t* clip);
+
+void w98_text_alpha_bold(const char* s, int x, int y, uint32_t fg, int scale,
+                         const w98_rect_t* clip);
 
 void w98_text_vertical(const char* s, int x, int y_bottom, uint32_t fg,
                        int scale, const w98_rect_t* clip);
