@@ -11,6 +11,17 @@
 
 #define RESIZE_GRAB        4
 
+#define WIN_ANIM_NONE  0
+#define WIN_ANIM_OPEN  1
+#define WIN_ANIM_CLOSE 2
+#define WIN_ANIM_MIN   3
+#define WIN_ANIM_RECT  4
+
+#define WIN_ANIM_OPEN_MS   140
+#define WIN_ANIM_CLOSE_MS  120
+#define WIN_ANIM_MIN_MS    160
+#define WIN_ANIM_RECT_MS   160
+
 desktop_state_t desktop;
 int desktop_mouse_x = 0;
 int desktop_mouse_y = 0;
@@ -21,6 +32,68 @@ int desktop_resize_edge = 0;
 
 static int caption_press_window = -1;
 static int caption_press_kind = -1;
+
+static int anim_duration(int kind) {
+    switch (kind) {
+    case WIN_ANIM_OPEN:  return WIN_ANIM_OPEN_MS;
+    case WIN_ANIM_CLOSE: return WIN_ANIM_CLOSE_MS;
+    case WIN_ANIM_MIN:   return WIN_ANIM_MIN_MS;
+    case WIN_ANIM_RECT:  return WIN_ANIM_RECT_MS;
+    default:             return 1;
+    }
+}
+
+static int ease_out(int t1024) {
+    if (t1024 < 0) t1024 = 0;
+    if (t1024 > 1024) t1024 = 1024;
+    int64_t inv = 1024 - t1024;
+    int64_t i3 = inv * inv * inv;
+    return (int)(1024 - (i3 >> 20));
+}
+
+static void lerp_rect(const window_rect_t* a, const window_rect_t* b, int e,
+                      window_rect_t* out) {
+    out->x = a->x + (int)(((int64_t)(b->x - a->x) * e) >> 10);
+    out->y = a->y + (int)(((int64_t)(b->y - a->y) * e) >> 10);
+    out->width = a->width + (int)(((int64_t)(b->width - a->width) * e) >> 10);
+    out->height = a->height + (int)(((int64_t)(b->height - a->height) * e) >> 10);
+}
+
+static void scaled_rect(const window_rect_t* r, int pct, window_rect_t* out) {
+    int nw = r->width * pct / 100;
+    int nh = r->height * pct / 100;
+    if (nw < 24) nw = 24;
+    if (nh < 16) nh = 16;
+    out->x = r->x + (r->width - nw) / 2;
+    out->y = r->y + (r->height - nh) / 2;
+    out->width = nw;
+    out->height = nh;
+}
+
+static void taskbar_target_rect(window_t* w, window_rect_t* out) {
+    int slot = 0;
+    for (int i = 0; i < desktop.window_count; i++) {
+        window_t* o = &desktop.windows[i];
+        if (!o->visible && o->state != WINDOW_STATE_MINIMIZED) continue;
+        if (o == w) break;
+        slot++;
+    }
+    out->x = W98_STARTBTN_W + 6 + slot * (W98_TASKBTN_W + 2);
+    out->y = (int)screen_height - TASKBAR_HEIGHT + 2;
+    out->width = W98_TASKBTN_W;
+    out->height = W98_TASKBTN_H;
+}
+
+static bool window_anim_disp(window_t* w, window_rect_t* out) {
+    if (w->anim_kind == WIN_ANIM_NONE) return false;
+    int dur = anim_duration(w->anim_kind);
+    int t = (int)(uptime_ticks - w->anim_start);
+    if (t < 0) t = 0;
+    if (t > dur) t = dur;
+    int e = ease_out(t * 1024 / dur);
+    lerp_rect(&w->anim_from, &w->anim_to, e, out);
+    return true;
+}
 
 void window_update_client_rect(window_t* w) {
     w->rect.client_x = w->rect.x + W98_CLIENT_INSET;
@@ -157,6 +230,7 @@ int window_create(window_type_t type, const char* title, int x, int y, int w, in
     win->needs_redraw = true;
     win->z_order = desktop.next_z_order++;
     win->pressed_button = 0;
+    win->anim_kind = WIN_ANIM_NONE;
 
     win->rect.x = x;
     win->rect.y = y;
@@ -229,6 +303,11 @@ int window_create(window_type_t type, const char* title, int x, int y, int w, in
             win->keyboard_func = app_window_keyboard_browser;
             win->close_func = browser_close;
             break;
+        case WINDOW_TYPE_DISKMGMT:
+            win->draw_func = app_window_draw_diskmgmt;
+            win->mouse_func = app_window_mouse_diskmgmt;
+            win->game_tick = diskmgmt_tick;
+            break;
         default:
             break;
     }
@@ -238,11 +317,19 @@ int window_create(window_type_t type, const char* title, int x, int y, int w, in
     for (int i = 0; i < desktop.window_count; i++) {
         if (i != idx) desktop.windows[i].has_focus = false;
     }
+
+    if (theme_current->animations) {
+        win->anim_kind = WIN_ANIM_OPEN;
+        win->anim_start = uptime_ticks;
+        win->anim_to = win->rect;
+        scaled_rect(&win->rect, 90, &win->anim_from);
+    }
+
     desktop.dirty = true;
     return idx;
 }
 
-void window_close(int idx) {
+static void window_close_now(int idx) {
     if (idx < 0 || idx >= desktop.window_count) return;
     window_t* win = &desktop.windows[idx];
 
@@ -273,11 +360,26 @@ void window_close(int idx) {
     desktop.dirty = true;
 }
 
-void window_minimize(int idx) {
+void window_close(int idx) {
     if (idx < 0 || idx >= desktop.window_count) return;
     window_t* win = &desktop.windows[idx];
-    if (win->state == WINDOW_STATE_MINIMIZED) return;
 
+    if (!theme_current->animations ||
+        win->anim_kind == WIN_ANIM_CLOSE ||
+        win->anim_kind == WIN_ANIM_MIN ||
+        win->state == WINDOW_STATE_MINIMIZED) {
+        window_close_now(idx);
+        return;
+    }
+
+    win->anim_kind = WIN_ANIM_CLOSE;
+    win->anim_start = uptime_ticks;
+    win->anim_from = win->rect;
+    scaled_rect(&win->rect, 88, &win->anim_to);
+    desktop.dirty = true;
+}
+
+static void window_apply_minimize(window_t* win) {
     win->state = WINDOW_STATE_MINIMIZED;
     win->visible = false;
     win->needs_redraw = true;
@@ -290,6 +392,23 @@ void window_minimize(int idx) {
     desktop.dirty = true;
 }
 
+void window_minimize(int idx) {
+    if (idx < 0 || idx >= desktop.window_count) return;
+    window_t* win = &desktop.windows[idx];
+    if (win->state == WINDOW_STATE_MINIMIZED) return;
+
+    if (theme_current->animations && win->anim_kind == WIN_ANIM_NONE) {
+        win->anim_kind = WIN_ANIM_MIN;
+        win->anim_start = uptime_ticks;
+        win->anim_from = win->rect;
+        taskbar_target_rect(win, &win->anim_to);
+        desktop.dirty = true;
+        return;
+    }
+
+    window_apply_minimize(win);
+}
+
 void window_maximize(int idx) {
     if (idx < 0 || idx >= desktop.window_count) return;
     window_t* win = &desktop.windows[idx];
@@ -298,6 +417,8 @@ void window_maximize(int idx) {
         window_restore(idx);
         return;
     }
+
+    window_rect_t before = win->rect;
 
     win->rect.prev_x = win->rect.x;
     win->rect.prev_y = win->rect.y;
@@ -312,6 +433,13 @@ void window_maximize(int idx) {
     win->state = WINDOW_STATE_MAXIMIZED;
     win->needs_redraw = true;
 
+    if (theme_current->animations) {
+        win->anim_kind = WIN_ANIM_RECT;
+        win->anim_start = uptime_ticks;
+        win->anim_from = before;
+        win->anim_to = win->rect;
+    }
+
     window_update_client_rect(win);
     desktop.dirty = true;
 }
@@ -325,16 +453,29 @@ void window_restore(int idx) {
         win->state = WINDOW_STATE_NORMAL;
         win->needs_redraw = true;
         window_focus(idx);
+        if (theme_current->animations) {
+            win->anim_kind = WIN_ANIM_RECT;
+            win->anim_start = uptime_ticks;
+            taskbar_target_rect(win, &win->anim_from);
+            win->anim_to = win->rect;
+        }
         return;
     }
 
     if (win->state == WINDOW_STATE_MAXIMIZED) {
+        window_rect_t before = win->rect;
         win->rect.x = win->rect.prev_x;
         win->rect.y = win->rect.prev_y;
         win->rect.width = win->rect.prev_w;
         win->rect.height = win->rect.prev_h;
         win->state = WINDOW_STATE_NORMAL;
         win->needs_redraw = true;
+        if (theme_current->animations) {
+            win->anim_kind = WIN_ANIM_RECT;
+            win->anim_start = uptime_ticks;
+            win->anim_from = before;
+            win->anim_to = win->rect;
+        }
         window_update_client_rect(win);
         desktop.dirty = true;
     }
@@ -376,6 +517,10 @@ void window_close_by_ptr(window_t* w) {
 static uint32_t title_icon_cache[WINDOW_TYPE_MAX][16 * 16];
 static bool title_icon_ready[WINDOW_TYPE_MAX];
 
+void window_title_icons_invalidate(void) {
+    for (int i = 0; i < WINDOW_TYPE_MAX; i++) title_icon_ready[i] = false;
+}
+
 static void window_build_title_icon(window_t* w) {
     if (w->type < 0 || w->type >= WINDOW_TYPE_MAX) return;
     if (title_icon_ready[w->type]) return;
@@ -410,6 +555,32 @@ static void window_draw_caption_button(window_t* w, int kind) {
     window_caption_button_rect(w, kind, &bx, &by, &bw, &bh);
 
     bool pressed = (w->pressed_button == kind + 1);
+
+    if (theme_current->flat_bevels) {
+        bool hov = desktop_mouse_x >= bx && desktop_mouse_x < bx + bw &&
+                   desktop_mouse_y >= by && desktop_mouse_y < by + bh;
+        bool is_close = (kind == W98_GLYPHKIND_CLOSE);
+        uint32_t fill = W98_BTNFACE;
+        uint32_t fg = w->has_focus ? W98_BTNTEXT : W98_GRAYTEXT;
+        if (pressed) {
+            fill = W98_BTNSHADOW;
+        } else if (hov) {
+            fill = is_close ? 0xFFE81123u : W98_BTNLIGHT;
+        }
+        if (hov && is_close) fg = 0xFFFFFFFFu;
+        w98_fill(bx, by, bw, bh, fill);
+
+        int glyph_kind = kind;
+        if (kind == W98_GLYPHKIND_MAX && w->state == WINDOW_STATE_MAXIMIZED) {
+            glyph_kind = W98_GLYPHKIND_RESTORE;
+        }
+        w98_glyph(glyph_kind,
+                  bx + (bw - W98_GLYPH_W) / 2,
+                  by + (bh - W98_GLYPH_H) / 2,
+                  fg);
+        return;
+    }
+
     w98_fill(bx, by, bw, bh, W98_BTNFACE);
     w98_bevel(bx, by, bw, bh,
               pressed ? W98_BEVEL_RAISED_PRESSED : W98_BEVEL_RAISED);
@@ -443,18 +614,27 @@ void window_draw_frame(window_t* w) {
     int tb_h = W98_TITLEBAR_H;
 
     if (w->has_focus) {
-#if W98_TITLE_GRADIENT
-        w98_hgradient(tb_x, tb_y, tb_w, tb_h, W98_ACTIVE_TITLE, W98_ACTIVE_TITLE2);
-#else
-        w98_fill(tb_x, tb_y, tb_w, tb_h, W98_ACTIVE_TITLE);
-#endif
+        if (theme_current->title_gradient) {
+            w98_hgradient(tb_x, tb_y, tb_w, tb_h,
+                          W98_ACTIVE_TITLE, W98_ACTIVE_TITLE2);
+        } else {
+            w98_fill(tb_x, tb_y, tb_w, tb_h, W98_ACTIVE_TITLE);
+        }
     } else {
-#if W98_TITLE_GRADIENT
-        w98_hgradient(tb_x, tb_y, tb_w, tb_h,
-                      W98_INACTIVE_TITLE, W98_INACTIVE_TITLE2);
-#else
-        w98_fill(tb_x, tb_y, tb_w, tb_h, W98_INACTIVE_TITLE);
-#endif
+        if (theme_current->title_gradient) {
+            w98_hgradient(tb_x, tb_y, tb_w, tb_h,
+                          W98_INACTIVE_TITLE, W98_INACTIVE_TITLE2);
+        } else {
+            w98_fill(tb_x, tb_y, tb_w, tb_h, W98_INACTIVE_TITLE);
+        }
+    }
+
+    if (theme_current->title_accent_line) {
+        if (w->has_focus) {
+            w98_fill(tb_x, tb_y + tb_h - 2, tb_w, 2, W98_HIGHLIGHT);
+        } else {
+            w98_fill(tb_x, tb_y + tb_h - 1, tb_w, 1, W98_BTNSHADOW);
+        }
     }
 
     int text_x = tb_x + 3;
@@ -471,11 +651,21 @@ void window_draw_frame(window_t* w) {
     w98_text_fit(w->title, fit, sizeof(fit), text_max, 1);
 
     if (w->has_focus) {
-        w98_text_bold(fit, text_x, tb_y + (tb_h - 8) / 2, title_fg,
-                      W98_ACTIVE_TITLE, 1, NULL);
+        if (theme_current->title_gradient) {
+            w98_text_alpha_bold(fit, text_x, tb_y + (tb_h - w98_text_height(1)) / 2, title_fg,
+                                1, NULL);
+        } else {
+            w98_text_bold(fit, text_x, tb_y + (tb_h - w98_text_height(1)) / 2, title_fg,
+                          W98_ACTIVE_TITLE, 1, NULL);
+        }
     } else {
-        w98_text(fit, text_x, tb_y + (tb_h - 8) / 2, title_fg,
-                 W98_INACTIVE_TITLE, 1, NULL);
+        if (theme_current->title_gradient) {
+            w98_text_alpha(fit, text_x, tb_y + (tb_h - w98_text_height(1)) / 2, title_fg,
+                           1, NULL);
+        } else {
+            w98_text(fit, text_x, tb_y + (tb_h - w98_text_height(1)) / 2, title_fg,
+                     W98_INACTIVE_TITLE, 1, NULL);
+        }
     }
 
     window_draw_caption_button(w, W98_GLYPHKIND_MIN);
@@ -734,8 +924,22 @@ void window_draw_all(void) {
 
     for (int i = 0; i < draw_count; i++) {
         window_t* w = &desktop.windows[draw_order[i]];
+
+        window_rect_t saved = w->rect;
+        window_rect_t disp;
+        bool animated = window_anim_disp(w, &disp);
+        if (animated) {
+            w->rect = disp;
+            window_update_client_rect(w);
+        }
+
         window_draw_frame(w);
         draw_window_content(w);
+
+        if (animated) {
+            w->rect = saved;
+            window_update_client_rect(w);
+        }
         w->needs_redraw = false;
     }
 }
@@ -745,4 +949,52 @@ void window_redraw_clients(void) {
         desktop.windows[i].needs_redraw = true;
     }
     desktop.dirty = true;
+}
+
+extern bool start_menu_anim_active(void);
+
+void desktop_anim_tick(void) {
+    bool active = false;
+
+    for (int i = 0; i < desktop.window_count; i++) {
+        window_t* w = &desktop.windows[i];
+        if (w->anim_kind == WIN_ANIM_NONE) continue;
+
+        if (!theme_current->animations) {
+            w->anim_kind = WIN_ANIM_NONE;
+            w->needs_redraw = true;
+            desktop.dirty = true;
+            continue;
+        }
+
+        active = true;
+        int dur = anim_duration(w->anim_kind);
+        if ((int)(uptime_ticks - w->anim_start) < dur) continue;
+
+        switch (w->anim_kind) {
+        case WIN_ANIM_CLOSE:
+            w->anim_kind = WIN_ANIM_NONE;
+            window_close_now(i);
+            i--;
+            break;
+        case WIN_ANIM_MIN:
+            w->anim_kind = WIN_ANIM_NONE;
+            window_apply_minimize(w);
+            break;
+        case WIN_ANIM_RECT:
+            w->rect = w->anim_to;
+            window_update_client_rect(w);
+            w->anim_kind = WIN_ANIM_NONE;
+            w->needs_redraw = true;
+            break;
+        default:
+            w->anim_kind = WIN_ANIM_NONE;
+            w->needs_redraw = true;
+            break;
+        }
+    }
+
+    if (start_menu_anim_active()) active = true;
+
+    if (active) desktop.dirty = true;
 }

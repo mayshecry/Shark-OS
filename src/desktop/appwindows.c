@@ -99,6 +99,8 @@ void app_window_draw_terminal(window_t* w) {
     int cw = w->rect.client_w;
     int ch = w->rect.client_h;
 
+    w98_classic_font_force = true;
+
     terminal_blink++;
     if (terminal_blink >= 60) terminal_blink = 0;
 
@@ -108,7 +110,10 @@ void app_window_draw_terminal(window_t* w) {
 
     int tx = cx + 6, ty = cy + 6;
     int tw = cw - 12, th = ch - 12;
-    if (tw <= 8 || th <= 8) return;
+    if (tw <= 8 || th <= 8) {
+        w98_classic_font_force = false;
+        return;
+    }
 
     w98_fill(tx, ty, tw, th, 0xFF000000);
 
@@ -162,6 +167,8 @@ void app_window_draw_terminal(window_t* w) {
         int cy0 = py + prow * TERM_LINE_H;
         if (cy0 + 8 <= clip.y + clip.h) w98_fill(cx0, cy0, 6, 8, 0xFF55FF55);
     }
+
+    w98_classic_font_force = false;
 }
 
 static bool terminal_cmd_blocked(const char* cmd, char* why, int why_len) {
@@ -266,7 +273,7 @@ typedef struct {
 } settings_color_opt_t;
 
 static const settings_color_opt_t settings_colors[] = {
-    { W98_DESKTOP,        "Teal (Default)" },
+    { 0xFF008080u,        "Teal (Default)" },
     { 0xFF1A0A0Au,        "Dark Red" },
     { 0xFF0A1A0Au,        "Dark Green" },
     { 0xFF1A1A0Au,        "Amber" },
@@ -281,12 +288,13 @@ static const settings_color_opt_t settings_colors[] = {
 
 static int settings_hover = -1;
 
-static int settings_layout(window_t* w, int* radio_y, int* swatch_y,
-                           int* btn_y) {
+static int settings_layout(window_t* w, int* theme_y, int* radio_y,
+                           int* swatch_y, int* btn_y) {
     int cy = w->rect.client_y;
     int ch = w->rect.client_h;
 
-    *radio_y = cy + 26;
+    *theme_y = cy + 38;
+    *radio_y = *theme_y + THEME_COUNT * SETTINGS_ROW_H + 20;
     *swatch_y = *radio_y + 3 * SETTINGS_ROW_H + 22;
     *btn_y = cy + ch - 30;
     return *btn_y;
@@ -308,11 +316,17 @@ void app_window_draw_settings(window_t* w) {
     int cy = w->rect.client_y;
     int cw = w->rect.client_w;
 
-    int radio_y, swatch_y, btn_y;
-    settings_layout(w, &radio_y, &swatch_y, &btn_y);
+    int theme_y, radio_y, swatch_y, btn_y;
+    settings_layout(w, &theme_y, &radio_y, &swatch_y, &btn_y);
 
     settings_hover = -1;
     int mxp = desktop_mouse_x, myp = desktop_mouse_y;
+    for (int i = 0; i < THEME_COUNT; i++) {
+        int ry = theme_y + i * SETTINGS_ROW_H;
+        if (mxp >= cx && mxp < cx + cw && myp >= ry && myp < ry + SETTINGS_ROW_H) {
+            settings_hover = 20 + i;
+        }
+    }
     for (int i = 0; i < 3; i++) {
         int ry = radio_y + i * SETTINGS_ROW_H;
         if (mxp >= cx && mxp < cx + cw && myp >= ry && myp < ry + SETTINGS_ROW_H) {
@@ -335,6 +349,14 @@ void app_window_draw_settings(window_t* w) {
     w98_text_bold("Settings - Customize", cx + cw / 2 - 60, cy + 6,
                   W98_BTNTEXT, W98_BTNFACE, 1, NULL);
     w98_bevel(cx + 4, cy + 18, cw - 8, 2, W98_BEVEL_ETCHED);
+
+    w98_text_bold("Theme:", cx + 8, theme_y - 12, W98_BTNTEXT,
+                  W98_BTNFACE, 1, NULL);
+    for (int i = 0; i < THEME_COUNT; i++) {
+        bool on = (theme_get_id() == i);
+        settings_draw_radio(cx + 10, theme_y + i * SETTINGS_ROW_H, on,
+                            theme_get_name(i), settings_hover == 20 + i);
+    }
 
     w98_text_bold("Wallpaper:", cx + 8, radio_y - 14, W98_BTNTEXT,
                   W98_BTNFACE, 1, NULL);
@@ -379,10 +401,18 @@ void app_window_mouse_settings(window_t* w, int mx, int my, int buttons) {
     (void)w;
     if (!(buttons & 1)) return;
 
-    int radio_y, swatch_y, btn_y;
-    settings_layout(w, &radio_y, &swatch_y, &btn_y);
+    int theme_y, radio_y, swatch_y, btn_y;
+    settings_layout(w, &theme_y, &radio_y, &swatch_y, &btn_y);
     int cx = w->rect.client_x;
     int cw = w->rect.client_w;
+
+    for (int i = 0; i < THEME_COUNT; i++) {
+        int ry = theme_y + i * SETTINGS_ROW_H;
+        if (mx >= cx && mx < cx + cw && my >= ry && my < ry + SETTINGS_ROW_H) {
+            theme_set(i);
+            return;
+        }
+    }
 
     for (int i = 0; i < 3; i++) {
         int ry = radio_y + i * SETTINGS_ROW_H;
@@ -442,6 +472,11 @@ static int faq_wrap_text(const char* prefix, const char* text, int x, int y,
         if (first) { for (int j = 0; j < plen; j++) line[ln++] = prefix[j]; }
         for (int j = 0; j < take; j++) line[ln++] = text[p + j];
         line[ln] = '\0';
+
+        while (ln > 1 && w98_text_width(line, 1) > max_w) {
+            ln--;
+            line[ln] = '\0';
+        }
 
         if (bold) w98_text_bold(line, lx, y, fg, bg, 1, clip);
         else      w98_text(line, lx, y, fg, bg, 1, clip);
@@ -1087,6 +1122,8 @@ void app_window_draw_notepad(window_t* w) {
     int cw = w->rect.client_w;
     int ch = w->rect.client_h;
 
+    w98_classic_font_force = true;
+
     w98_fill(cx, cy, cw, ch, W98_BTNFACE);
 
     int mx = cx + 2;
@@ -1149,6 +1186,8 @@ void app_window_draw_notepad(window_t* w) {
         }
     }
     if (blink++ >= 60) blink = 0;
+
+    w98_classic_font_force = false;
 }
 
 void app_window_keyboard_notepad(window_t* w, char c) {

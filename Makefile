@@ -35,9 +35,6 @@ arch/cpu.o: src/arch/cpu.c include/kernel.h | arch
 arch/mtrr.o: src/arch/mtrr.c include/kernel.h | arch
 	$(CC) -c src/arch/mtrr.c -o arch/mtrr.o $(CFLAGS)
 
-arch/early.o: src/arch/early.c include/kernel.h | arch
-	$(CC) -c src/arch/early.c -o arch/early.o $(CFLAGS)
-
 drivers/keyboard.o: src/drivers/keyboard.c include/kernel.h | drivers
 	$(CC) -c src/drivers/keyboard.c -o drivers/keyboard.o $(CFLAGS)
 
@@ -58,6 +55,9 @@ drivers/mouse.o: src/drivers/mouse.c include/kernel.h | drivers
 
 drivers/rtc.o: src/drivers/rtc.c include/kernel.h | drivers
 	$(CC) -c src/drivers/rtc.c -o drivers/rtc.o $(CFLAGS)
+
+drivers/ata.o: src/drivers/ata.c include/kernel.h include/ata.h | drivers
+	$(CC) -c src/drivers/ata.c -o drivers/ata.o $(CFLAGS)
 
 fs/fs.o: src/fs/fs.c include/kernel.h | fs
 	$(CC) -c src/fs/fs.c -o fs/fs.o $(CFLAGS)
@@ -101,7 +101,7 @@ desktop/gif.o: src/desktop/gif.c include/kernel.h | desktop
 desktop/jpeg.o: src/desktop/jpeg.c include/kernel.h | desktop
 	$(CC) -c src/desktop/jpeg.c -o desktop/jpeg.o $(CFLAGS)
 
-BROWSER_HDRS = include/browser.h include/browser_internal.h include/font.h include/kernel.h include/desktop.h include/win98_theme.h include/net.h
+BROWSER_HDRS = include/browser.h include/browser_internal.h include/font.h include/kernel.h include/desktop.h include/win98_theme.h include/theme.h include/net.h
 
 browser/font.o: src/browser/font.c $(BROWSER_HDRS) include/font_data.h | browser
 	$(CC) -c src/browser/font.c -o browser/font.o $(CFLAGS)
@@ -121,8 +121,14 @@ browser/js.o: src/browser/js.c $(BROWSER_HDRS) | browser
 browser/browser.o: src/browser/browser.c $(BROWSER_HDRS) | browser
 	$(CC) -c src/browser/browser.c -o browser/browser.o $(CFLAGS)
 
-desktop/win98_widgets.o: src/desktop/win98_widgets.c include/kernel.h include/win98_theme.h | desktop
+desktop/win98_widgets.o: src/desktop/win98_widgets.c include/kernel.h include/win98_theme.h include/theme.h | desktop
 	$(CC) -c src/desktop/win98_widgets.c -o desktop/win98_widgets.o $(CFLAGS)
+
+desktop/theme.o: src/desktop/theme.c include/kernel.h include/desktop.h include/theme.h | desktop
+	$(CC) -c src/desktop/theme.c -o desktop/theme.o $(CFLAGS)
+
+desktop/diskmgmt.o: src/desktop/diskmgmt.c include/kernel.h include/desktop.h include/ata.h | desktop
+	$(CC) -c src/desktop/diskmgmt.c -o desktop/diskmgmt.o $(CFLAGS)
 
 shell/commands.o: src/shell/commands.c include/kernel.h include/sharkscript.h | shell
 	$(CC) -c src/shell/commands.c -o shell/commands.o $(CFLAGS)
@@ -190,17 +196,17 @@ geometrydash/geometrydash.o: src/geometrydash/geometrydash.c include/kernel.h in
 sharkscript/shs.o: src/sharkscript/shs.c include/kernel.h include/sharkscript.h | sharkscript
 	$(CC) -c src/sharkscript/shs.c -o sharkscript/shs.o $(CFLAGS)
 
-sharkos.bin: boot.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o arch/early.o drivers/keyboard.o drivers/pci.o \
-             drivers/mouse.o drivers/rtc.o fs/fs.o ui/terminal.o ui/ui.o ui/fastfetch.o ui/mouse.o \
+sharkos.bin: boot.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o drivers/keyboard.o drivers/pci.o \
+             drivers/mouse.o drivers/rtc.o drivers/ata.o fs/fs.o ui/terminal.o ui/ui.o ui/fastfetch.o ui/mouse.o \
              shell/commands.o shell/spkg.o shell/main.o shell/lite.o \
              lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o \
              plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o \
-             desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/png.o desktop/gif.o desktop/jpeg.o net/net.o net/crypto.o net/tls.o \
+             desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/theme.o desktop/diskmgmt.o desktop/png.o desktop/gif.o desktop/jpeg.o net/net.o net/crypto.o net/tls.o \
              browser/html.o browser/css.o browser/layout.o browser/js.o browser/browser.o browser/font.o linker.ld
-	$(CC) -T linker.ld -o sharkos.bin $(LDFLAGS) boot.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o arch/early.o \
-		drivers/keyboard.o drivers/pci.o drivers/mouse.o drivers/rtc.o fs/fs.o ui/terminal.o ui/ui.o \
+	$(CC) -T linker.ld -o sharkos.bin $(LDFLAGS) boot.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o \
+		drivers/keyboard.o drivers/pci.o drivers/mouse.o drivers/rtc.o drivers/ata.o fs/fs.o ui/terminal.o ui/ui.o \
 		ui/fastfetch.o ui/mouse.o shell/commands.o shell/spkg.o shell/main.o shell/lite.o lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o \
-		desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/png.o desktop/gif.o desktop/jpeg.o net/net.o net/crypto.o net/tls.o \
+		desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/theme.o desktop/diskmgmt.o desktop/png.o desktop/gif.o desktop/jpeg.o net/net.o net/crypto.o net/tls.o \
 		browser/html.o browser/css.o browser/layout.o browser/js.o browser/browser.o browser/font.o -lgcc
 
 sharkos.iso: sharkos.bin grub.cfg

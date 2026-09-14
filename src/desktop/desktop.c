@@ -12,6 +12,7 @@
 #include "geometrydash.h"
 #include "wallpaper_data.h"
 #include "icon_data.h"
+#include "font.h"
 
 uint32_t wallpaper_top = DESKTOP_BG_TOP;
 uint32_t wallpaper_bot = DESKTOP_BG_BOT;
@@ -113,6 +114,10 @@ void desktop_icon_launch_offset(window_type_t type, const char* title) {
         win_w = 640; win_h = 480;
     } else if (type == WINDOW_TYPE_TASKMANAGER) {
         win_w = 420; win_h = 360;
+    } else if (type == WINDOW_TYPE_SETTINGS) {
+        win_w = 400; win_h = 368;
+    } else if (type == WINDOW_TYPE_DISKMGMT) {
+        win_w = 540; win_h = 400;
     } else if (type == WINDOW_TYPE_FAQ) {
         win_w = 480; win_h = 420;
     } else if (type == WINDOW_TYPE_BROWSER) {
@@ -226,7 +231,7 @@ void desktop_draw_wallpaper(void) {
     }
 
     if (desktop.wallpaper_mode == W98_WALL_SOLID) {
-        w98_fill(0, 0, w, h, W98_DESKTOP);
+        w98_fill(0, 0, w, h, wallpaper_top);
         return;
     }
 
@@ -303,7 +308,7 @@ void desktop_draw_icons(void) {
                          W98_HIGHLIGHT, 1, NULL);
             } else {
                 w98_text_outline(ln, label_x, label_y + row * 8,
-                                 W98_BTNHILITE, 1, NULL);
+                                 W98_ICON_LABEL, 1, NULL);
             }
         }
     }
@@ -335,74 +340,7 @@ void desktop_update_taskbar(void) {
     desktop.dirty = true;
 }
 
-void desktop_draw_taskbar(void) {
-    int bar_y = (int)screen_height - TASKBAR_HEIGHT;
-    int bar_w = (int)screen_width;
-
-    w98_fill(0, bar_y, bar_w, TASKBAR_HEIGHT, W98_BTNFACE);
-    draw_rect(0, bar_y, bar_w, 1, W98_BTNHILITE);
-    draw_rect(0, bar_y + 1, bar_w, 1, W98_BTNLIGHT);
-
-    bool start_pressed = desktop.start_menu.active;
-    int sx = 2, sy = bar_y + 2;
-    w98_fill(sx, sy, W98_STARTBTN_W, W98_STARTBTN_H, W98_BTNFACE);
-    w98_bevel(sx, sy, W98_STARTBTN_W, W98_STARTBTN_H,
-              start_pressed ? W98_BEVEL_RAISED_PRESSED : W98_BEVEL_RAISED);
-
-    int ox = start_pressed ? 1 : 0;
-    const uint32_t* start_pix = desktop_icon_get_start();
-    w98_icon_blit(start_pix, 16, 16, sx + 3 + ox, sy + 4 + ox, NULL);
-    w98_text_bold("Start", sx + 22 + ox, sy + 8 + ox, W98_BTNTEXT,
-                  W98_BTNFACE, 1, NULL);
-
-    int gx = W98_STARTBTN_W + 3;
-    draw_rect(gx, bar_y + 3, 1, TASKBAR_HEIGHT - 6, W98_BTNSHADOW);
-    draw_rect(gx + 1, bar_y + 3, 1, TASKBAR_HEIGHT - 6, W98_BTNHILITE);
-
-    int slot = 0;
-    for (int i = 0; i < desktop.window_count; i++) {
-        window_t* w = &desktop.windows[i];
-        if (!w->visible && w->state != WINDOW_STATE_MINIMIZED) continue;
-
-        int bx = taskbar_button_x(slot);
-        int bw = W98_TASKBTN_W;
-        if (bx + bw > bar_w - 80) {
-            bw = bar_w - 80 - bx;
-            if (bw < 24) break;
-        }
-
-        bool active = w->has_focus && w->visible;
-        w98_fill(bx, bar_y + 2, bw, W98_TASKBTN_H, W98_BTNFACE);
-        w98_bevel(bx, bar_y + 2, bw, W98_TASKBTN_H,
-                  active ? W98_BEVEL_RAISED_PRESSED : W98_BEVEL_RAISED);
-
-        int cx = bx + 3;
-        uint32_t* pix = desktop_icon_pixels_for_type(w->type);
-        if (pix) {
-            w98_icon_blit_small(pix, ICON_SIZE, 16, cx, bar_y + 6, NULL);
-            cx += 18;
-        }
-
-        char fit[WINDOW_TITLE_MAX];
-        w98_text_fit(w->title, fit, sizeof(fit),
-                     bx + bw - cx - (active ? 16 : 5), 1);
-
-        if (active) {
-
-            for (int dx = bx + 3; dx < bx + bw - 3; dx += 2) {
-                for (int dy = bar_y + 5; dy < bar_y + TASKBAR_HEIGHT - 5; dy += 2) {
-                    draw_pixel(dx, dy, W98_BTNSHADOW);
-                }
-            }
-            w98_text_bold(fit, cx + 1, bar_y + 10, W98_BTNTEXT, W98_BTNFACE,
-                          1, NULL);
-        } else {
-            w98_text(fit, cx, bar_y + 9, W98_BTNTEXT, W98_BTNFACE, 1, NULL);
-        }
-        slot++;
-    }
-
-    char time_str[16];
+static void taskbar_time_string(char* time_str) {
     int hh = (int)rtc_hours;
     const char* suffix = "";
     if (hh >= 12) suffix = " PM";
@@ -420,6 +358,106 @@ void desktop_draw_taskbar(void) {
     p = (int)strlen(time_str);
     for (int k = 0; suffix[k]; k++) time_str[p++] = suffix[k];
     time_str[p] = '\0';
+}
+
+void desktop_draw_taskbar(void) {
+    int bar_y = (int)screen_height - TASKBAR_HEIGHT;
+    int bar_w = (int)screen_width;
+
+    w98_fill(0, bar_y, bar_w, TASKBAR_HEIGHT, W98_BTNFACE);
+
+    if (theme_current->flat_taskbar) {
+        draw_rect(0, bar_y, bar_w, 1, W98_BTNSHADOW);
+    } else {
+        draw_rect(0, bar_y, bar_w, 1, W98_BTNHILITE);
+        draw_rect(0, bar_y + 1, bar_w, 1, W98_BTNLIGHT);
+    }
+
+    int hover = desktop_get_taskbar_hover(desktop_mouse_x, desktop_mouse_y);
+
+    bool start_pressed = desktop.start_menu.active;
+    int sx = 2, sy = bar_y + 2;
+    if (theme_current->flat_taskbar) {
+        uint32_t fill = W98_BTNFACE;
+        if (start_pressed) fill = W98_BTNSHADOW;
+        else if (hover == -2) fill = W98_BTNLIGHT;
+        w98_fill(sx, sy, W98_STARTBTN_W, W98_STARTBTN_H, fill);
+    } else {
+        w98_fill(sx, sy, W98_STARTBTN_W, W98_STARTBTN_H, W98_BTNFACE);
+        w98_bevel(sx, sy, W98_STARTBTN_W, W98_STARTBTN_H,
+                  start_pressed ? W98_BEVEL_RAISED_PRESSED : W98_BEVEL_RAISED);
+    }
+
+    int ox = (start_pressed && !theme_current->flat_taskbar) ? 1 : 0;
+    const uint32_t* start_pix = desktop_icon_get_start();
+    w98_icon_blit(start_pix, 16, 16, sx + 3 + ox, sy + 4 + ox, NULL);
+    w98_text_bold("Start", sx + 22 + ox, sy + 8 + ox, W98_BTNTEXT,
+                  W98_BTNFACE, 1, NULL);
+
+    int gx = W98_STARTBTN_W + 3;
+    if (theme_current->flat_taskbar) {
+        draw_rect(gx, bar_y + 3, 1, TASKBAR_HEIGHT - 6, W98_BTNSHADOW);
+    } else {
+        draw_rect(gx, bar_y + 3, 1, TASKBAR_HEIGHT - 6, W98_BTNSHADOW);
+        draw_rect(gx + 1, bar_y + 3, 1, TASKBAR_HEIGHT - 6, W98_BTNHILITE);
+    }
+
+    int slot = 0;
+    for (int i = 0; i < desktop.window_count; i++) {
+        window_t* w = &desktop.windows[i];
+        if (!w->visible && w->state != WINDOW_STATE_MINIMIZED) continue;
+
+        int bx = taskbar_button_x(slot);
+        int bw = W98_TASKBTN_W;
+        if (bx + bw > bar_w - 80) {
+            bw = bar_w - 80 - bx;
+            if (bw < 24) break;
+        }
+
+        bool active = w->has_focus && w->visible;
+        if (theme_current->flat_taskbar) {
+            uint32_t fill = W98_BTNFACE;
+            if (active) fill = W98_BTNLIGHT;
+            else if (hover == i) fill = W98_BTNLIGHT;
+            w98_fill(bx, bar_y + 2, bw, W98_TASKBTN_H, fill);
+            if (active) {
+                w98_fill(bx, bar_y + TASKBAR_HEIGHT - 4, bw, 2, W98_HIGHLIGHT);
+            }
+        } else {
+            w98_fill(bx, bar_y + 2, bw, W98_TASKBTN_H, W98_BTNFACE);
+            w98_bevel(bx, bar_y + 2, bw, W98_TASKBTN_H,
+                      active ? W98_BEVEL_RAISED_PRESSED : W98_BEVEL_RAISED);
+        }
+
+        int cx = bx + 3;
+        uint32_t* pix = desktop_icon_pixels_for_type(w->type);
+        if (pix) {
+            w98_icon_blit_small(pix, ICON_SIZE, 16, cx, bar_y + 6, NULL);
+            cx += 18;
+        }
+
+        char fit[WINDOW_TITLE_MAX];
+        w98_text_fit(w->title, fit, sizeof(fit),
+                     bx + bw - cx - (active ? 16 : 5), 1);
+
+        if (active) {
+            if (!theme_current->flat_taskbar) {
+                for (int dx = bx + 3; dx < bx + bw - 3; dx += 2) {
+                    for (int dy = bar_y + 5; dy < bar_y + TASKBAR_HEIGHT - 5; dy += 2) {
+                        draw_pixel(dx, dy, W98_BTNSHADOW);
+                    }
+                }
+            }
+            w98_text_bold(fit, cx + 1, bar_y + 10, W98_BTNTEXT, W98_BTNFACE,
+                          1, NULL);
+        } else {
+            w98_text(fit, cx, bar_y + 9, W98_BTNTEXT, W98_BTNFACE, 1, NULL);
+        }
+        slot++;
+    }
+
+    char time_str[16];
+    taskbar_time_string(time_str);
 
     int tw = w98_text_width(time_str, 1);
     int tray_w = tw + 14;
@@ -433,7 +471,11 @@ void desktop_draw_taskbar(void) {
     tray_x -= net_icon_w;
 
     w98_fill(tray_x, tray_y, tray_w, W98_TRAY_H, W98_BTNFACE);
-    w98_bevel(tray_x, tray_y, tray_w, W98_TRAY_H, W98_BEVEL_SUNKEN);
+    if (theme_current->flat_taskbar) {
+        draw_rect(tray_x, bar_y + 3, 1, TASKBAR_HEIGHT - 6, W98_BTNSHADOW);
+    } else {
+        w98_bevel(tray_x, tray_y, tray_w, W98_TRAY_H, W98_BEVEL_SUNKEN);
+    }
 
     if (has_nic) {
 
@@ -535,7 +577,8 @@ bool desktop_pointer_needs_repaint(int mx, int my) {
     for (int i = 0; i < desktop.window_count; i++) {
         window_t* w = &desktop.windows[i];
         if (!w->visible || w->state == WINDOW_STATE_MINIMIZED) continue;
-        if (w->type != WINDOW_TYPE_SETTINGS && w->type != WINDOW_TYPE_FILEMANAGER) continue;
+        if (w->type != WINDOW_TYPE_SETTINGS && w->type != WINDOW_TYPE_FILEMANAGER &&
+            w->type != WINDOW_TYPE_DISKMGMT) continue;
         if (mx >= w->rect.x && mx < w->rect.x + w->rect.width &&
             my >= w->rect.y && my < w->rect.y + w->rect.height) {
             return true;
@@ -716,6 +759,7 @@ void boot_screen_show(void);
 void boot_screen_hide(void);
 
 void desktop_init(void) {
+    br_font_init();
     memset(&desktop, 0, sizeof(desktop_state_t));
     desktop.desktop_mode = true;
     desktop.initialized = true;
@@ -735,6 +779,7 @@ void desktop_init(void) {
     desktop_icon_add("Notepad", WINDOW_TYPE_NOTEPAD);
     desktop_icon_add("File Manager", WINDOW_TYPE_FILEMANAGER);
     desktop_icon_add("Settings", WINDOW_TYPE_SETTINGS);
+    desktop_icon_add("Disk Mgmt", WINDOW_TYPE_DISKMGMT);
     desktop_icon_add("Network", WINDOW_TYPE_NETWORK);
     desktop_icon_add("Browser", WINDOW_TYPE_BROWSER);
     desktop_icon_add("Task Manager", WINDOW_TYPE_TASKMANAGER);

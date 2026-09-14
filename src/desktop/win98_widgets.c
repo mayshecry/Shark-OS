@@ -2,6 +2,35 @@
 
 #include "kernel.h"
 #include "win98_theme.h"
+#include "font.h"
+
+bool w98_classic_font_force = false;
+
+static bool w98_nice_font(void) {
+    return theme_current->nice_font && !w98_classic_font_force;
+}
+
+static int w98_nice_face(bool bold) {
+    return br_font_face(FONT_FAMILY_SANS, bold ? 1 : 0);
+}
+
+static int w98_nice_size(int scale) {
+    int s = theme_current->ui_font_size;
+    if (s < 6) s = 12;
+    if (scale < 1) scale = 1;
+    return s * scale;
+}
+
+static void w98_screen_clip(w98_rect_t* r, const w98_rect_t* in) {
+    if (in) {
+        *r = *in;
+        return;
+    }
+    r->x = 0;
+    r->y = 0;
+    r->w = (int)screen_width;
+    r->h = (int)screen_height;
+}
 
 static const uint16_t w98_glyph_min[W98_GLYPH_H]     = W98_GLYPH_MIN;
 static const uint16_t w98_glyph_max[W98_GLYPH_H]     = W98_GLYPH_MAX;
@@ -65,6 +94,19 @@ static void w98_vline(int x, int y, int h, uint32_t c) {
 void w98_bevel(int x, int y, int w, int h, w98_bevel_t style) {
     if (w < 2 || h < 2) return;
 
+    if (theme_current->flat_bevels) {
+        uint32_t edge = (style == W98_BEVEL_RAISED_PRESSED ||
+                         style == W98_BEVEL_SUNKEN)
+                            ? theme_current->btndkshadow
+                            : theme_current->btnshadow;
+        if (style == W98_BEVEL_ETCHED) edge = theme_current->btnshadow;
+        w98_hline(x, y, w, edge);
+        w98_hline(x, y + h - 1, w, edge);
+        w98_vline(x, y, h, edge);
+        w98_vline(x + w - 1, y, h, edge);
+        return;
+    }
+
     uint32_t lt_outer, lt_inner, rb_inner, rb_outer;
 
     switch (style) {
@@ -108,13 +150,18 @@ void w98_surface(int x, int y, int w, int h, w98_bevel_t style, uint32_t fill) {
 
 void w98_button(int x, int y, int w, int h, const char* label,
                 bool pressed, bool enabled, bool focused) {
-    w98_fill(x, y, w, h, W98_BTNFACE);
-    w98_bevel(x, y, w, h,
-              pressed ? W98_BEVEL_RAISED_PRESSED : W98_BEVEL_RAISED);
+    if (theme_current->flat_bevels) {
+        w98_fill(x, y, w, h, pressed ? W98_BTNLIGHT : W98_BTNFACE);
+        w98_bevel(x, y, w, h, W98_BEVEL_RAISED);
+    } else {
+        w98_fill(x, y, w, h, W98_BTNFACE);
+        w98_bevel(x, y, w, h,
+                  pressed ? W98_BEVEL_RAISED_PRESSED : W98_BEVEL_RAISED);
+    }
 
     if (!label) return;
 
-    int ox = pressed ? 1 : 0;
+    int ox = (pressed && !theme_current->flat_bevels) ? 1 : 0;
     uint32_t fg = enabled ? W98_BTNTEXT : W98_GRAYTEXT;
     int tw = w98_text_width(label, 1);
     int th = w98_text_height(1);
@@ -243,18 +290,42 @@ int w98_text_width(const char* s, int scale) {
     if (scale < 1) scale = 1;
     int n = 0;
     while (s && s[n]) n++;
+    if (w98_nice_font()) {
+        return br_font_text_width(w98_nice_face(false), w98_nice_size(scale),
+                                  s, n);
+    }
     return n * 6 * scale;
 }
 
 int w98_text_height(int scale) {
     if (scale < 1) scale = 1;
+    if (w98_nice_font()) {
+        return br_font_line_height(w98_nice_face(false), w98_nice_size(scale));
+    }
     return 8 * scale;
+}
+
+static void w98_nice_draw(const char* s, int x, int y, uint32_t fg, int scale,
+                          const w98_rect_t* clip, bool bold) {
+    int n = 0;
+    while (s[n]) n++;
+    if (!n) return;
+    int face = w98_nice_face(bold);
+    int size = w98_nice_size(scale);
+    w98_rect_t cr;
+    w98_screen_clip(&cr, clip);
+    br_font_draw_ex(face, size, s, n, x, y + br_font_ascent(face, size), fg,
+                    &cr, 0);
 }
 
 void w98_text(const char* s, int x, int y, uint32_t fg, uint32_t bg,
               int scale, const w98_rect_t* clip) {
     if (!s) return;
     if (scale < 1) scale = 1;
+    if (w98_nice_font()) {
+        w98_nice_draw(s, x, y, fg, scale, clip, false);
+        return;
+    }
     for (int i = 0; s[i]; i++) {
         w98_glyph_cell(s[i], x + i * 6 * scale, y, fg, bg, scale, clip);
     }
@@ -263,6 +334,10 @@ void w98_text(const char* s, int x, int y, uint32_t fg, uint32_t bg,
 void w98_text_bold(const char* s, int x, int y, uint32_t fg, uint32_t bg,
                    int scale, const w98_rect_t* clip) {
     if (!s) return;
+    if (w98_nice_font()) {
+        w98_nice_draw(s, x, y, fg, scale, clip, true);
+        return;
+    }
     w98_text(s, x + 1, y, fg, bg, scale, clip);
     w98_text(s, x, y, fg, bg, scale, clip);
 }
@@ -276,6 +351,55 @@ void w98_text_outline(const char* s, int x, int y, uint32_t fg, int scale,
     w98_text(s, x,     y - 1, halo, halo, scale, clip);
     w98_text(s, x,     y + 1, halo, halo, scale, clip);
     w98_text(s, x,     y,     fg,   halo, scale, clip);
+}
+
+static void w98_glyph_cell_alpha(char c, int x, int y, uint32_t fg, int scale,
+                                 const w98_rect_t* clip) {
+    if (c < 32 || c > 126) return;
+
+    uint8_t glyph[8];
+    for (int r = 0; r < 8; r++) glyph[r] = font8x8[c - 32][r];
+
+    int x0, y0, x1, y1;
+    if (!w98_clip(clip, x, y, 8 * scale, 8 * scale, &x0, &y0, &x1, &y1)) return;
+
+    uint32_t stride = screen_pitch / 4;
+
+    for (int py = y0; py < y1; py++) {
+        int grow = (py - y) / scale;
+        if (grow < 0 || grow > 7) continue;
+        uint8_t bits = glyph[grow];
+        uint32_t* row = &lfbptr[(uint32_t)py * stride];
+        for (int px = x0; px < x1; px++) {
+            int gcol = (px - x) / scale;
+            if (gcol < 0 || gcol > 7) continue;
+            if ((bits >> (7 - gcol)) & 1) row[px] = fg;
+        }
+    }
+}
+
+void w98_text_alpha(const char* s, int x, int y, uint32_t fg, int scale,
+                    const w98_rect_t* clip) {
+    if (!s) return;
+    if (scale < 1) scale = 1;
+    if (w98_nice_font()) {
+        w98_nice_draw(s, x, y, fg, scale, clip, false);
+        return;
+    }
+    for (int i = 0; s[i]; i++) {
+        w98_glyph_cell_alpha(s[i], x + i * 6 * scale, y, fg, scale, clip);
+    }
+}
+
+void w98_text_alpha_bold(const char* s, int x, int y, uint32_t fg, int scale,
+                         const w98_rect_t* clip) {
+    if (!s) return;
+    if (w98_nice_font()) {
+        w98_nice_draw(s, x, y, fg, scale, clip, true);
+        return;
+    }
+    w98_text_alpha(s, x + 1, y, fg, scale, clip);
+    w98_text_alpha(s, x, y, fg, scale, clip);
 }
 
 void w98_text_vertical(const char* s, int x, int y_bottom, uint32_t fg,
@@ -322,12 +446,31 @@ void w98_text_fit(const char* src, char* dst, int dstlen, int maxw, int scale) {
     if (!src || !dst || dstlen <= 0) return;
     if (dstlen == 1) { dst[0] = '\0'; return; }
 
+    int n = 0;
+    while (src[n] && n < dstlen - 1) n++;
+
+    if (w98_nice_font()) {
+        for (int i = 0; i < n; i++) dst[i] = src[i];
+        dst[n] = '\0';
+        if (w98_text_width(dst, scale) <= maxw) return;
+
+        int keep = n;
+        while (keep > 1 && keep + 3 < dstlen) {
+            keep--;
+            dst[keep] = '.';
+            dst[keep + 1] = '.';
+            dst[keep + 2] = '.';
+            dst[keep + 3] = '\0';
+            if (w98_text_width(dst, scale) <= maxw) return;
+        }
+        dst[0] = '.';
+        dst[1] = '\0';
+        return;
+    }
+
     int adv = 6 * (scale < 1 ? 1 : scale);
     int avail = maxw / adv;
     if (avail < 1) avail = 1;
-
-    int n = 0;
-    while (src[n] && n < dstlen - 1) n++;
 
     if (n <= avail) {
         for (int i = 0; i < n; i++) dst[i] = src[i];
@@ -382,9 +525,24 @@ void w98_icon_blit(const uint32_t* src, int src_size, int dst_size,
             if (sx < 0) sx = 0;
             if (sx >= src_size) sx = src_size - 1;
             uint32_t p = srow[sx];
-            if ((p >> 24) > 128) {
-                drow[px] = 0xFF000000u | (p & 0x00FFFFFFu);
+            uint32_t pa = (p >> 24) & 0xFF;
+            if (pa == 0) continue;
+            uint32_t rgb = 0xFF000000u | (p & 0x00FFFFFFu);
+            if (pa == 255) {
+                drow[px] = rgb;
+                continue;
             }
+            uint32_t d = drow[px];
+            int sr = (int)((p >> 16) & 0xFF), sg = (int)((p >> 8) & 0xFF),
+                sb = (int)(p & 0xFF);
+            int dr = (int)((d >> 16) & 0xFF), dg = (int)((d >> 8) & 0xFF),
+                db = (int)(d & 0xFF);
+            int ia = 255 - (int)pa;
+            dr = (sr * (int)pa + dr * ia) / 255;
+            dg = (sg * (int)pa + dg * ia) / 255;
+            db = (sb * (int)pa + db * ia) / 255;
+            drow[px] = 0xFF000000u | ((uint32_t)dr << 16) |
+                       ((uint32_t)dg << 8) | (uint32_t)db;
         }
     }
 }

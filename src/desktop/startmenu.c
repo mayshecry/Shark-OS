@@ -9,6 +9,10 @@
 #define MENU_USER_H 0
 #define MENU_HEADER_H 0
 
+#define MENU_SLIDE_MS 150
+
+static uint32_t sm_anim_start = 0;
+
 static const char* start_menu_items[STARTMENU_MAX];
 static window_type_t start_menu_types[STARTMENU_MAX];
 static int start_menu_count = 0;
@@ -38,7 +42,25 @@ static bool start_menu_item_rect(int index, int* rx, int* ry, int* rw,
     return true;
 }
 
+static int start_menu_slide(void) {
+    if (!theme_current->animations) return 0;
+    int t = (int)(uptime_ticks - sm_anim_start);
+    if (t < 0) t = 0;
+    if (t > MENU_SLIDE_MS) t = MENU_SLIDE_MS;
+    int64_t inv = 1024 - (int64_t)t * 1024 / MENU_SLIDE_MS;
+    int64_t i3 = inv * inv * inv;
+    int e = (int)(1024 - (i3 >> 20));
+    return (1024 - e) * 28 / 1024;
+}
+
+bool start_menu_anim_active(void) {
+    if (!theme_current->animations) return false;
+    if (!desktop.start_menu.visible) return false;
+    return (int)(uptime_ticks - sm_anim_start) < MENU_SLIDE_MS;
+}
+
 void start_menu_open(void) {
+    sm_anim_start = uptime_ticks;
     desktop.start_menu.active = true;
     desktop.start_menu.visible = true;
     desktop.start_menu.scroll_offset = 0;
@@ -56,6 +78,10 @@ void start_menu_open(void) {
 
     names[start_menu_count] = "Settings";
     types[start_menu_count] = WINDOW_TYPE_SETTINGS;
+    start_menu_count++;
+
+    names[start_menu_count] = "Disk Management";
+    types[start_menu_count] = WINDOW_TYPE_DISKMGMT;
     start_menu_count++;
 
     names[start_menu_count] = "Notepad";
@@ -204,6 +230,9 @@ void start_menu_draw(void) {
     int mw = STARTMENU_W;
     int mh = start_menu_height();
 
+    int slide = start_menu_slide();
+    my += slide;
+
     w98_fill(mx, my, mw, mh, W98_MENU_BG);
     w98_bevel(mx, my, mw, mh, W98_BEVEL_RAISED);
 
@@ -216,6 +245,7 @@ void start_menu_draw(void) {
     for (int i = 0; i <= start_menu_count; i++) {
         int rx, ry, rw, rh;
         start_menu_item_rect(i, &rx, &ry, &rw, &rh);
+        ry += slide;
 
         bool is_shutdown = (i == start_menu_count);
 
