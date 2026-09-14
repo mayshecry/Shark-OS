@@ -35,6 +35,9 @@ arch/cpu.o: src/arch/cpu.c include/kernel.h | arch
 arch/mtrr.o: src/arch/mtrr.c include/kernel.h | arch
 	$(CC) -c src/arch/mtrr.c -o arch/mtrr.o $(CFLAGS)
 
+arch/early.o: src/arch/early.c include/kernel.h | arch
+	$(CC) -c src/arch/early.c -o arch/early.o $(CFLAGS)
+
 drivers/keyboard.o: src/drivers/keyboard.c include/kernel.h | drivers
 	$(CC) -c src/drivers/keyboard.c -o drivers/keyboard.o $(CFLAGS)
 
@@ -187,14 +190,14 @@ geometrydash/geometrydash.o: src/geometrydash/geometrydash.c include/kernel.h in
 sharkscript/shs.o: src/sharkscript/shs.c include/kernel.h include/sharkscript.h | sharkscript
 	$(CC) -c src/sharkscript/shs.c -o sharkscript/shs.o $(CFLAGS)
 
-sharkos.bin: boot.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o drivers/keyboard.o drivers/pci.o \
+sharkos.bin: boot.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o arch/early.o drivers/keyboard.o drivers/pci.o \
              drivers/mouse.o drivers/rtc.o fs/fs.o ui/terminal.o ui/ui.o ui/fastfetch.o ui/mouse.o \
              shell/commands.o shell/spkg.o shell/main.o shell/lite.o \
              lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o \
              plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o \
              desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/png.o desktop/gif.o desktop/jpeg.o net/net.o net/crypto.o net/tls.o \
              browser/html.o browser/css.o browser/layout.o browser/js.o browser/browser.o browser/font.o linker.ld
-	$(CC) -T linker.ld -o sharkos.bin $(LDFLAGS) boot.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o \
+	$(CC) -T linker.ld -o sharkos.bin $(LDFLAGS) boot.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o arch/early.o \
 		drivers/keyboard.o drivers/pci.o drivers/mouse.o drivers/rtc.o fs/fs.o ui/terminal.o ui/ui.o \
 		ui/fastfetch.o ui/mouse.o shell/commands.o shell/spkg.o shell/main.o shell/lite.o lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o \
 		desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/png.o desktop/gif.o desktop/jpeg.o net/net.o net/crypto.o net/tls.o \
