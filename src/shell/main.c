@@ -48,8 +48,12 @@ struct multiboot_mmap_entry { uint32_t size, addr_low, addr_high, len_low, len_h
 static void boot_print(const char* s) { terminal_writestring(s); }
 
 void kmain(uint32_t magic, struct multiboot_info* mb_info) {
-    if (magic != 0x2BADB002) return;
+    serial_init(); /* safe with no UART; enables pre-video diagnosis */
+    if (magic != 0x2BADB002) {
+        early_panic(0, "bad multiboot magic (not booted via GRUB multiboot).");
+    }
     asm volatile("cli");
+    serial_puts("SharkOS early boot: multiboot ok\n");
 
     if (mb_info->flags & (1 << 2)) {
         char* cmdline = (char*)(uintptr_t)mb_info->cmdline;
@@ -73,14 +77,60 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         }
     }
 
+    /* Validate the framebuffer BEFORE the first screen write. The old code
+       trusted these fields blindly: with no FB info (or a FB mapped above
+       4 GB, standard for discrete GPUs with "Above 4G Decoding"), the boot
+       drawing scribbled over random RAM with no IDT installed -> triple
+       fault -> instant reboot with zero information (the Ryzen symptom). */
+    if (!(mb_info->flags & (1u << 12))) {
+        early_panic(1, "bootloader passed no framebuffer info (multiboot flags bit 12 clear).");
+    }
+    if (mb_info->framebuffer_addr_hi != 0) {
+        serial_puts("FB phys: hi=");
+        serial_puthex32(mb_info->framebuffer_addr_hi);
+        serial_puts(" lo=");
+        serial_puthex32(mb_info->framebuffer_addr_lo);
+        serial_puts("\n");
+        early_panic(2, "framebuffer is mapped ABOVE 4GB (discrete GPU + 'Above 4G Decoding' / Resizable BAR). "
+                       "This 32-bit build cannot reach it. Workaround: disable 'Above 4G Decoding' and "
+                       "'Resizable BAR'/'SAM' in BIOS setup, then boot again.");
+    }
+    if (mb_info->framebuffer_type != 1 || mb_info->framebuffer_bpp != 32) {
+        early_panic(3, "framebuffer is not 32-bit RGB (need type=1, bpp=32).");
+    }
+    {
+        uint32_t fb_w = mb_info->framebuffer_width;
+        uint32_t fb_h = mb_info->framebuffer_height;
+        uint32_t fb_p = mb_info->framebuffer_pitch;
+        if (fb_w < 320 || fb_w > 4096 || fb_h < 200 || fb_h > 4096 ||
+            fb_p < fb_w * 4u || fb_p > 65536u || (fb_p & 3)) {
+            early_panic(4, "insane framebuffer geometry from bootloader.");
+        }
+    }
+
     lfbptr = (uint32_t*)(uintptr_t)mb_info->framebuffer_addr_lo;
+    fb_addr_hi = mb_info->framebuffer_addr_hi; /* 0 here; kept for Task Manager */
     screen_width = mb_info->framebuffer_width;
     screen_height = mb_info->framebuffer_height;
     screen_pitch = mb_info->framebuffer_pitch;
-    if (screen_width < 320) screen_width = 320;
-    if (screen_height < 200) screen_height = 200;
 
-    uint64_t mem_kb = ((uint64_t)mb_info->mem_upper + (uint64_t)mb_info->mem_lower);
+    serial_puts("FB ok: ");
+    serial_puthex32((uint32_t)(uintptr_t)lfbptr);
+    serial_puts(" ");
+    serial_putdec((uint32_t)screen_width);
+    serial_puts("x");
+    serial_putdec((uint32_t)screen_height);
+    serial_puts(" pitch=");
+    serial_putdec((uint32_t)screen_pitch);
+    serial_puts("\n");
+
+    if (!(mb_info->flags & ((1u << 6) | (1u << 0)))) {
+        early_panic(5, "bootloader passed no memory info (need mmap or mem_lower/mem_upper).");
+    }
+    uint64_t mem_kb = 0;
+    if (mb_info->flags & (1u << 0)) {
+        mem_kb = (uint64_t)mb_info->mem_upper + (uint64_t)mb_info->mem_lower;
+    }
     total_system_memory = mem_kb * 1024;
 
     if (mb_info->flags & (1 << 6)) {
@@ -103,9 +153,15 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         }
     }
 
+    if (total_system_memory == 0) {
+        early_panic(5, "bootloader reported 0 bytes of memory.");
+    }
     if (total_system_memory > 2147483648) {
         total_system_memory = 2147483648;
     }
+    serial_puts("RAM ok: ");
+    serial_putdec((uint32_t)(total_system_memory >> 20));
+    serial_puts(" MB\n");
 
     pmm_init(total_system_memory);
     ui_init_metrics();
@@ -171,6 +227,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     outb(0x40, divisor & 0xFF);
     outb(0x40, (divisor >> 8) & 0xFF);
     asm volatile("sti");
+    serial_puts("IDT+PIC+PIT ok\n");
     boot_screen_update("Setting up filesystem...", 25);
     terminal_clear();
     strcpy(current_user, "sharkuser");
@@ -231,6 +288,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
 
     for (volatile int i = 0; i < 1000000; i++);
     boot_screen_hide();
+    serial_puts("entering desktop\n");
 
     asm volatile("sti");
 
@@ -339,9 +397,15 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
                 for (int i = 0; i < desktop.window_count; i++) {
                     if (desktop.windows[i].type == WINDOW_TYPE_NETWORK) {
                         desktop.windows[i].needs_redraw = true;
+                        desktop_invalidate_rect(desktop.windows[i].rect.x,
+                                                desktop.windows[i].rect.y,
+                                                desktop.windows[i].rect.x + desktop.windows[i].rect.width,
+                                                desktop.windows[i].rect.y + desktop.windows[i].rect.height);
                     }
                 }
-                desktop.dirty = true;
+                /* Tray icon mirrors link/DHCP state: repaint taskbar rows only. */
+                desktop_invalidate_rect(0, (int)screen_height - TASKBAR_HEIGHT,
+                                        (int)screen_width, (int)screen_height);
             }
         }
 
@@ -350,7 +414,10 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             rtc_read_time();
             if ((int)rtc_minutes != last_rtc_minute) {
                 last_rtc_minute = (int)rtc_minutes;
-                desktop.dirty = true;
+                /* Only the tray clock changed: flush the taskbar rows, not
+                   the whole multi-megabyte framebuffer. */
+                desktop_invalidate_rect(0, (int)screen_height - TASKBAR_HEIGHT,
+                                        (int)screen_width, (int)screen_height);
             }
 
             sys_cpu_percent = busy_ms > 1000 ? 100 : busy_ms / 10;
@@ -365,7 +432,9 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
                 if (tw->type == WINDOW_TYPE_TASKMANAGER && tw->visible &&
                     tw->state != WINDOW_STATE_MINIMIZED) {
                     tw->needs_redraw = true;
-                    desktop.dirty = true;
+                    desktop_invalidate_rect(tw->rect.x, tw->rect.y,
+                                            tw->rect.x + tw->rect.width,
+                                            tw->rect.y + tw->rect.height);
                 }
             }
         }
@@ -376,13 +445,17 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             uptime_ticks - last_blink_tick >= 500) {
             last_blink_tick = uptime_ticks;
             focused->needs_redraw = true;
-            desktop.dirty = true;
+            desktop_invalidate_rect(focused->rect.x, focused->rect.y,
+                                    focused->rect.x + focused->rect.width,
+                                    focused->rect.y + focused->rect.height);
         }
 
         if (focused && focused->game_tick && uptime_ticks - last_game_tick >= 16) {
             last_game_tick = uptime_ticks;
-            focused->game_tick();
-            desktop.dirty = true;
+            focused->game_tick();/
+            desktop_invalidate_rect(focused->rect.x, focused->rect.y,
+                                    focused->rect.x + focused->rect.width,
+                                    focused->rect.y + focused->rect.height);
         }
 
         browser_tick();
