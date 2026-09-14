@@ -141,6 +141,7 @@ int settings_selected = 0;
 int selected_theme = THEME_SHARKOS;
 bool lite_mode = false;
 bool legacy_mode = false;
+bool kawaii_mode = false;
 
 theme_t themes[MAX_THEMES] = {
     {

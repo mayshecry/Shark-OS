@@ -75,12 +75,15 @@ static void ata_probe_slot(int chan, bool master) {
     outb(c->io + ATA_REG_STAT, ATA_CMD_IDENTIFY);
 
     uint8_t st = inb(c->io + ATA_REG_STAT);
-    if (st == 0) return;
+    if (st == 0) return;          /* channel not present */
+    if (st == 0xFF) return;       /* floating bus: no device on this slot */
 
     for (int i = 0; i < ATA_POLL_TIMEOUT; i++) {
         st = inb(c->io + ATA_REG_STAT);
         if (!(st & ATA_SR_BSY)) break;
     }
+
+    if (st == 0 || st == 0xFF) return;
 
     if (st & ATA_SR_ERR) {
         uint8_t l1 = inb(c->io + ATA_REG_LBA1);
@@ -97,6 +100,7 @@ static void ata_probe_slot(int chan, bool master) {
 
     uint32_t lba28 = (uint32_t)id[60] | ((uint32_t)id[61] << 16);
     if (lba28 == 0) return;
+    if (lba28 == 0xFFFFFFFFu) return;   /* garbage identify from floating bus */
 
     ata_drive_t* d = &ata_drives[ata_count];
     d->present = true;
@@ -150,6 +154,7 @@ static bool ata_transfer(int drive, uint32_t lba, uint8_t count,
     outb(d->io_base + ATA_REG_DRV,
          (uint8_t)(0xE0 | (d->master ? 0x00 : 0x10) | ((lba >> 24) & 0x0F)));
     ata_io_delay(&ata_chans[d->io_base == ata_chans[0].io ? 0 : 1]);
+    if (!ata_wait_ready(d)) return false;   /* BSY must clear after select */
     outb(d->io_base + ATA_REG_ERR, 0);
     outb(d->io_base + ATA_REG_SECCNT, count);
     outb(d->io_base + ATA_REG_LBA0, (uint8_t)(lba & 0xFF));
@@ -166,6 +171,12 @@ static bool ata_transfer(int drive, uint32_t lba, uint8_t count,
             for (int i = 0; i < 256; i++) w[i] = inw(d->io_base + ATA_REG_DATA);
         }
         w += 256;
+    }
+
+    /* Final status: catch errors the per-sector DRQ poll can miss. */
+    {
+        uint8_t st = ata_status(d);
+        if (st & (ATA_SR_ERR | ATA_SR_DF)) return false;
     }
 
     if (write) {

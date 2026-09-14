@@ -26,6 +26,7 @@ static uint32_t dm_wsum = 0;
 static uint32_t dm_vsum = 0;
 static bool dm_has_install = false;
 static uint32_t dm_install_ver = 0;
+static bool dm_first_refresh = false;
 static char dm_msg[72] = "Select a disk.";
 
 static uint8_t dm_buf[DM_CHUNK * 512];
@@ -144,7 +145,17 @@ void app_window_draw_diskmgmt(window_t* w) {
                 W98_BEVEL_SUNKEN, W98_WINDOW);
 
     int n = ata_drive_count();
-    if (dm_selected >= n) dm_selected = n > 0 ? n - 1 : 0;
+    if (dm_selected >= n) {
+        dm_selected = n > 0 ? n - 1 : 0;
+        dm_refresh_install();
+    }
+
+    /* One-shot: show a pre-existing install the first time the window
+     * opens, without making the user hit Refresh. */
+    if (!dm_first_refresh && dm_state == DM_IDLE && n > 0) {
+        dm_first_refresh = true;
+        dm_refresh_install();
+    }
 
     for (int i = 0; i < n; i++) {
         const ata_drive_t* d = ata_drive_get(i);
@@ -274,6 +285,10 @@ void app_window_mouse_diskmgmt(window_t* w, int mx, int my, int buttons) {
     (void)det_y;
     (void)bar_y;
 
+    /* Never let clicks re-target or cancel an in-flight write/verify. */
+    bool busy = (dm_state == DM_WRITING || dm_state == DM_VERIFYING);
+    if (busy) return;
+
     int n = ata_drive_count();
     for (int i = 0; i < n; i++) {
         int ry = list_y + 2 + i * DM_ROW_H;
@@ -288,9 +303,6 @@ void app_window_mouse_diskmgmt(window_t* w, int mx, int my, int buttons) {
             return;
         }
     }
-
-    bool busy = (dm_state == DM_WRITING || dm_state == DM_VERIFYING);
-    if (busy) return;
 
     if (my >= btn_y && my < btn_y + 23 && mx >= cx + 8 && mx < cx + 98) {
         ata_init();
@@ -344,6 +356,7 @@ static void dm_sum_verify(uint32_t words) {
 
 void diskmgmt_tick(void) {
     if (dm_state != DM_WRITING && dm_state != DM_VERIFYING) return;
+    desktop.dirty = true;   /* we tick globally; drive our own repaints */
     const ata_drive_t* d = ata_drive_get(dm_selected);
     if (!d) {
         dm_state = DM_ERR;

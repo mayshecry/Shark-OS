@@ -11,6 +11,11 @@
 #include "pong.h"
 #include "geometrydash.h"
 #include "wallpaper_data.h"
+#include "kawaii_wallpaper_data.h"
+#include "wallpaper_cottage_data.h"
+#include "wallpaper_sakura_data.h"
+#include "wallpaper_neko_data.h"
+#include "wallpaper_thumbs_data.h"
 #include "icon_data.h"
 #include "font.h"
 
@@ -32,6 +37,60 @@ void desktop_set_wallpaper_color(uint32_t top, uint32_t bottom) {
 
 void desktop_set_wallpaper_mode(int mode) {
     desktop.wallpaper_mode = mode;
+    wallpaper_dirty = true;
+    desktop.dirty = true;
+}
+
+/* ------------------------------------------------------------------ */
+/* Bundled wallpaper catalog                                           */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    const char* name;
+    const uint32_t* pixels;
+    int w;
+    int h;
+    const uint32_t* thumb;
+} wallpaper_entry_t;
+
+static const wallpaper_entry_t wallpaper_catalog[WP_COUNT] = {
+    { "SharkOS Classic", wallpaper_pixels,
+      WALLPAPER_WIDTH, WALLPAPER_HEIGHT, wallpaper_thumb_classic },
+    { "Kawaii", kawaii_wallpaper_pixels,
+      KAWAII_WALLPAPER_WIDTH, KAWAII_WALLPAPER_HEIGHT, wallpaper_thumb_kawaii },
+    { "Cliffside Cottage", cottage_pixels,
+      COTTAGE_WIDTH, COTTAGE_HEIGHT, wallpaper_thumb_cottage },
+    { "Sakura Bridge", sakura_pixels,
+      SAKURA_WIDTH, SAKURA_HEIGHT, wallpaper_thumb_sakura },
+    { "Mono Neko", neko_pixels,
+      NEKO_WIDTH, NEKO_HEIGHT, wallpaper_thumb_neko },
+};
+
+int desktop_wallpaper_count(void) {
+    return WP_COUNT;
+}
+
+const char* desktop_wallpaper_name(int id) {
+    if (id < 0 || id >= WP_COUNT) return "";
+    return wallpaper_catalog[id].name;
+}
+
+const uint32_t* desktop_wallpaper_thumb(int id) {
+    if (id < 0 || id >= WP_COUNT) return NULL;
+    return wallpaper_catalog[id].thumb;
+}
+
+void desktop_set_wallpaper(int id) {
+    if (id < 0 || id >= WP_COUNT) return;
+    desktop.wallpaper_id = id;
+    desktop.wallpaper_mode = W98_WALL_IMAGE;
+    wallpaper_dirty = true;
+    desktop.dirty = true;
+}
+
+void desktop_set_wallpaper_fit(int fit) {
+    if (fit < 0 || fit > W98_WALLFIT_STRETCH) return;
+    desktop.wallpaper_fit = fit;
     wallpaper_dirty = true;
     desktop.dirty = true;
 }
@@ -115,7 +174,7 @@ void desktop_icon_launch_offset(window_type_t type, const char* title) {
     } else if (type == WINDOW_TYPE_TASKMANAGER) {
         win_w = 420; win_h = 360;
     } else if (type == WINDOW_TYPE_SETTINGS) {
-        win_w = 400; win_h = 368;
+        win_w = 400; win_h = 545;
     } else if (type == WINDOW_TYPE_DISKMGMT) {
         win_w = 540; win_h = 400;
     } else if (type == WINDOW_TYPE_FAQ) {
@@ -183,6 +242,8 @@ void desktop_icon_launch(int idx) {
     desktop_icon_launch_offset(desktop.icons[idx].type, desktop.icons[idx].label);
 }
 
+static uint32_t wp_bilerp(const uint32_t* s, int sw, int sh, int sxf, int syf);
+
 static void desktop_wallpaper_rebuild_cache(int w, int h) {
     if (w <= 0 || h <= 0) return;
 
@@ -203,21 +264,113 @@ static void desktop_wallpaper_rebuild_cache(int w, int h) {
         wallpaper_cache_h = h;
     }
 
-    uint32_t ww = (uint32_t)WALLPAPER_WIDTH;
-    uint32_t wh = (uint32_t)WALLPAPER_HEIGHT;
+    int id = desktop.wallpaper_id;
+    if (id < 0 || id >= WP_COUNT) id = WP_ID_CLASSIC;
+    const wallpaper_entry_t* e = &wallpaper_catalog[id];
+    const uint32_t* src = e->pixels;
+    int sw = e->w;
+    int sh = e->h;
+    if (!src || sw < 2 || sh < 2) return;
+
+    int fit = desktop.wallpaper_fit;
+    if (fit < W98_WALLFIT_FILL || fit > W98_WALLFIT_STRETCH) {
+        fit = W98_WALLFIT_FILL;
+    }
+
+    /* 16.16 fixed point: source steps per destination pixel. */
+    uint64_t step_x = ((uint64_t)sw << 16) / (uint64_t)w;
+    uint64_t step_y = ((uint64_t)sh << 16) / (uint64_t)h;
+    uint64_t step = 0, off_x = 0, off_y = 0;
+    int bx0 = 0, by0 = 0, bx1 = w, by1 = h;
+
+    if (fit == W98_WALLFIT_FILL) {
+        /* cover: keep aspect, crop the overflow, centre the crop */
+        step = (step_x < step_y) ? step_x : step_y;
+        off_x = (((uint64_t)sw << 16) - step * (uint64_t)w) / 2;
+        off_y = (((uint64_t)sh << 16) - step * (uint64_t)h) / 2;
+    } else if (fit == W98_WALLFIT_FIT) {
+        /* contain: keep aspect, letterbox with the desktop colour */
+        step = (step_x > step_y) ? step_x : step_y;
+        int dw = (int)(((uint64_t)sw << 16) / step);
+        int dh = (int)(((uint64_t)sh << 16) / step);
+        if (dw > w) dw = w;
+        if (dh > h) dh = h;
+        bx0 = (w - dw) / 2;
+        by0 = (h - dh) / 2;
+        bx1 = bx0 + dw;
+        by1 = by0 + dh;
+    }
+
+    uint32_t bar = 0xFF000000u | (theme_current->desktop_dark & 0x00FFFFFFu);
+    uint64_t max_x = (uint64_t)(sw - 1) << 16;
+    uint64_t max_y = (uint64_t)(sh - 1) << 16;
 
     for (int y = 0; y < h; y++) {
-        uint32_t sy = 0;
-        if (wh) sy = ((uint32_t)y * wh) / (uint32_t)h;
-        if (sy >= wh) sy = wh - 1;
-        const uint32_t* srow = &wallpaper_pixels[sy * ww];
         uint32_t* drow = &wallpaper_cache[y * w];
+
+        if (fit == W98_WALLFIT_FIT && (y < by0 || y >= by1)) {
+            for (int x = 0; x < w; x++) drow[x] = bar;
+            continue;
+        }
+
+        uint64_t syf;
+        if (fit == W98_WALLFIT_FILL) syf = off_y + step * (uint64_t)y;
+        else if (fit == W98_WALLFIT_FIT) syf = step * (uint64_t)(y - by0);
+        else syf = step_y * (uint64_t)y;
+        if (syf > max_y) syf = max_y;
+
         for (int x = 0; x < w; x++) {
-            uint32_t sx = ((uint32_t)x * ww) / (uint32_t)w;
-            if (sx >= ww) sx = ww - 1;
-            drow[x] = 0xFF000000u | (srow[sx] & 0x00FFFFFFu);
+            if (fit == W98_WALLFIT_FIT && (x < bx0 || x >= bx1)) {
+                drow[x] = bar;
+                continue;
+            }
+
+            uint64_t sxf;
+            if (fit == W98_WALLFIT_FILL) sxf = off_x + step * (uint64_t)x;
+            else if (fit == W98_WALLFIT_FIT) sxf = step * (uint64_t)(x - bx0);
+            else sxf = step_x * (uint64_t)x;
+            if (sxf > max_x) sxf = max_x;
+
+            drow[x] = wp_bilerp(src, sw, sh, (int)sxf, (int)syf);
         }
     }
+}
+
+/* Bilinear sample of the source image at a 16.16 fixed-point point. */
+static uint32_t wp_bilerp(const uint32_t* s, int sw, int sh, int sxf, int syf) {
+    int x0 = sxf >> 16;
+    int y0 = syf >> 16;
+    int fx = sxf & 0xFFFF;
+    int fy = syf & 0xFFFF;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x0 > sw - 1) x0 = sw - 1;
+    if (y0 > sh - 1) y0 = sh - 1;
+    int x1 = (x0 + 1 < sw) ? x0 + 1 : sw - 1;
+    int y1 = (y0 + 1 < sh) ? y0 + 1 : sh - 1;
+
+    uint32_t c00 = s[y0 * sw + x0];
+    uint32_t c10 = s[y0 * sw + x1];
+    uint32_t c01 = s[y1 * sw + x0];
+    uint32_t c11 = s[y1 * sw + x1];
+
+    int r00 = (int)((c00 >> 16) & 0xFF), g00 = (int)((c00 >> 8) & 0xFF), b00 = (int)(c00 & 0xFF);
+    int r10 = (int)((c10 >> 16) & 0xFF), g10 = (int)((c10 >> 8) & 0xFF), b10 = (int)(c10 & 0xFF);
+    int r01 = (int)((c01 >> 16) & 0xFF), g01 = (int)((c01 >> 8) & 0xFF), b01 = (int)(c01 & 0xFF);
+    int r11 = (int)((c11 >> 16) & 0xFF), g11 = (int)((c11 >> 8) & 0xFF), b11 = (int)(c11 & 0xFF);
+
+    int rt = r00 + ((r10 - r00) * fx >> 16);
+    int gt = g00 + ((g10 - g00) * fx >> 16);
+    int bt = b00 + ((b10 - b00) * fx >> 16);
+    int rb = r01 + ((r11 - r01) * fx >> 16);
+    int gb = g01 + ((g11 - g01) * fx >> 16);
+    int bb = b01 + ((b11 - b01) * fx >> 16);
+
+    int r = rt + ((rb - rt) * fy >> 16);
+    int g = gt + ((gb - gt) * fy >> 16);
+    int b = bt + ((bb - bt) * fy >> 16);
+
+    return 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
 }
 
 void desktop_draw_wallpaper(void) {
@@ -769,6 +922,8 @@ void desktop_init(void) {
     desktop.start_menu.active = false;
     desktop.start_menu.visible = false;
     desktop.wallpaper_mode = W98_WALL_DITHER;
+    desktop.wallpaper_id = WP_ID_CLASSIC;
+    desktop.wallpaper_fit = W98_WALLFIT_FILL;
     desktop.selected_icon = -1;
     desktop.last_click_icon = -1;
     desktop_drag_window = -1;

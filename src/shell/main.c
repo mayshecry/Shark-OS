@@ -46,7 +46,6 @@ struct multiboot_info {
 
 struct multiboot_mmap_entry { uint32_t size, addr_low, addr_high, len_low, len_high, type; } __attribute__((packed));
 
-static void boot_print(const char* s) { terminal_writestring(s); }
 
 void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     if (magic != 0x2BADB002) return;
@@ -70,6 +69,14 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
                     break;
                 }
                 legacy_pos++;
+            }
+            char* kawaii_pos = cmdline;
+            while (*kawaii_pos) {
+                if (*kawaii_pos == 'k' && *(kawaii_pos+1) == 'a' && *(kawaii_pos+2) == 'w' && *(kawaii_pos+3) == 'a' && *(kawaii_pos+4) == 'i' && *(kawaii_pos+5) == 'i') {
+                    kawaii_mode = true;
+                    break;
+                }
+                kawaii_pos++;
             }
         }
     }
@@ -127,27 +134,51 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         lite_kmain();
     }
 
-    char buf[64];
-    terminal_writestring("SharkOS V2 [");
-    hex_to_string((uint32_t)total_system_memory >> 20, buf);
-    terminal_writestring(buf);
-    terminal_writestring(" MB RAM]\nBooting nemo...\n");
-    boot_print("[    0.000000] nemo (SharkOS V2 Lite) (gcc)\n");
-    char cpu_model[49];
-    get_cpu_model(cpu_model);
-    boot_print(cpu_model);
-    boot_print("\n");
-    boot_print("[    0.000001] ");
-    hex_to_string((uint32_t)total_system_memory >> 20, buf);
-    terminal_writestring(buf);
-    boot_print(" MB RAM\n");
-    boot_print("[    0.000002] Framebuffer: ");
-    int_to_string(screen_width, buf); terminal_writestring(buf);
-    terminal_writestring("x");
-    int_to_string(screen_height, buf); terminal_writestring(buf);
-    terminal_writestring("\n[    0.000003] SHKRNL boot complete.\n");
+    /* "SharkOS Kawaii" GRUB entry: boot straight into the Kawaii theme
+     * so the boot log already wears pink. */
+    if (kawaii_mode) theme_set(THEME_ID_KAWAII);
 
+    /* systemd-style verbose boot log: everything below is printed on
+     * the boot screen, then the desktop takes over after ~5 s. */
     boot_screen_show();
+
+    boot_screen_info("nemo (SharkOS V2) — SHKRNL, gcc, ring zero");
+    {
+        char cpu_model[49];
+        get_cpu_model(cpu_model);
+        boot_screen_info(cpu_model);
+    }
+    {
+        char line[64];
+        int p = 0;
+        const char* pre = "Memory: ";
+        for (int k = 0; pre[k]; k++) line[p++] = pre[k];
+        char num[12];
+        int_to_string((uint32_t)(total_system_memory >> 20), num);
+        for (int k = 0; num[k]; k++) line[p++] = num[k];
+        const char* suf = " MB available";
+        for (int k = 0; suf[k]; k++) line[p++] = suf[k];
+        line[p] = '\0';
+        boot_screen_info(line);
+    }
+    {
+        char line[48];
+        int p = 0;
+        const char* pre = "Framebuffer: ";
+        for (int k = 0; pre[k]; k++) line[p++] = pre[k];
+        char num[12];
+        int_to_string(screen_width, num);
+        for (int k = 0; num[k]; k++) line[p++] = num[k];
+        line[p++] = 'x';
+        int_to_string(screen_height, num);
+        for (int k = 0; num[k]; k++) line[p++] = num[k];
+        const char* suf = "x32";
+        for (int k = 0; suf[k]; k++) line[p++] = suf[k];
+        line[p] = '\0';
+        boot_screen_info(line);
+    }
+    boot_screen_info("SHKRNL boot complete.");
+
     boot_screen_update("Loading kernel...", 5);
 
     terminal_initialize();
@@ -231,6 +262,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     current_kernel_mode = KERNEL_MODE_DESKTOP;
     rtc_init();
     desktop_init();
+    if (kawaii_mode) desktop_set_wallpaper(WP_ID_KAWAII);
     boot_screen_update("Ready!", 100);
 
     for (volatile int i = 0; i < 1000000; i++);
@@ -410,6 +442,10 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         }
 
         browser_tick();
+
+        /* Disk installs must not stall just because the window lost
+         * focus: tick the disk manager every pass, like the browser. */
+        diskmgmt_tick();
 
         if (desktop.dirty) {
             desktop_render();

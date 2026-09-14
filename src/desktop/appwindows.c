@@ -30,21 +30,28 @@ static void label_value(int lx, int vx, int y, const char* label,
 
 #define TERM_SCROLLBACK   8192
 #define TERM_CAPTURE_MAX  4096
-#define TERM_LINE_H       10
+#define TERM_CELL_W       8
+#define TERM_CELL_H       16
 #define TERM_MAX_COLS     160
 
 static char terminal_buffer[256] = "";
 static int terminal_buf_len = 0;
 static char terminal_output[TERM_SCROLLBACK] = "";
+static uint8_t terminal_output_colors[TERM_SCROLLBACK];
 static int terminal_output_len = 0;
 static char terminal_capture_store[TERM_CAPTURE_MAX];
+static uint8_t terminal_capture_colors_store[TERM_CAPTURE_MAX];
 static int terminal_blink = 0;
 static int terminal_history_pos = 0;
+int desktop_terminal_cols = 46;
 
-static void terminal_output_append(const char* text, int len) {
+/* len <= 0 or colors == NULL -> default light grey on black */
+static void terminal_output_append(const char* text, const uint8_t* colors, int len) {
     if (len <= 0) return;
     if (len >= TERM_SCROLLBACK - 1) {
-        text += len - (TERM_SCROLLBACK - 1);
+        int skip = len - (TERM_SCROLLBACK - 1);
+        text += skip;
+        if (colors) colors += skip;
         len = TERM_SCROLLBACK - 1;
     }
     if (terminal_output_len + len >= TERM_SCROLLBACK - 1) {
@@ -53,13 +60,25 @@ static void terminal_output_append(const char* text, int len) {
         while (drop < terminal_output_len && terminal_output[drop] != '\n') drop++;
         if (drop < terminal_output_len) drop++;
         kmemmove(terminal_output, terminal_output + drop, terminal_output_len - drop);
+        kmemmove(terminal_output_colors, terminal_output_colors + drop,
+                 terminal_output_len - drop);
         terminal_output_len -= drop;
     }
     for (int i = 0; i < len; i++) {
-        terminal_output[terminal_output_len++] = text[i];
+        terminal_output[terminal_output_len] = text[i];
+        terminal_output_colors[terminal_output_len] =
+            colors ? colors[i] : VGA_COLOR_LIGHT_GREY;
+        terminal_output_len++;
     }
     terminal_output[terminal_output_len] = '\0';
     terminal_history_pos++;
+}
+
+static void term_append_fixed(const char* text, int len, uint8_t color) {
+    uint8_t cols[260];
+    if (len > (int)sizeof(cols)) len = (int)sizeof(cols);
+    for (int i = 0; i < len; i++) cols[i] = color;
+    terminal_output_append(text, cols, len);
 }
 
 static void terminal_output_clear(void) {
@@ -99,8 +118,6 @@ void app_window_draw_terminal(window_t* w) {
     int cw = w->rect.client_w;
     int ch = w->rect.client_h;
 
-    w98_classic_font_force = true;
-
     terminal_blink++;
     if (terminal_blink >= 60) terminal_blink = 0;
 
@@ -110,21 +127,19 @@ void app_window_draw_terminal(window_t* w) {
 
     int tx = cx + 6, ty = cy + 6;
     int tw = cw - 12, th = ch - 12;
-    if (tw <= 8 || th <= 8) {
-        w98_classic_font_force = false;
-        return;
-    }
+    if (tw <= TERM_CELL_W + 2 || th <= TERM_CELL_H + 2) return;
 
     w98_fill(tx, ty, tw, th, 0xFF000000);
 
-    int cols = (tw - 8) / 6;
+    int cols = (tw - 8) / TERM_CELL_W;
     if (cols > TERM_MAX_COLS) cols = TERM_MAX_COLS;
     if (cols < 4) cols = 4;
-    int max_lines = (th - 8) / TERM_LINE_H;
+    desktop_terminal_cols = cols;
+    int max_lines = (th - 8) / TERM_CELL_H;
     if (max_lines < 1) max_lines = 1;
 
-    w98_rect_t clip;
-    clip.x = tx + 2; clip.y = ty + 2; clip.w = tw - 4; clip.h = th - 4;
+    int clipx0 = tx + 2, clipy0 = ty + 2;
+    int clipx1 = tx + tw - 2, clipy1 = ty + th - 2;
 
     int prompt_chars = 2 + terminal_buf_len;
     int prompt_rows = (prompt_chars + cols - 1) / cols;
@@ -136,39 +151,39 @@ void app_window_draw_terminal(window_t* w) {
     int first = total - avail;
     if (first < 0) first = 0;
 
-    char line_buf[TERM_MAX_COLS + 1];
     int row = 0;
     for (int li = first; li < total && row < avail; li++, row++) {
         int start = 0, len = 0;
         terminal_layout_lines(cols, li, &start, &len);
         if (len > TERM_MAX_COLS) len = TERM_MAX_COLS;
-        for (int j = 0; j < len; j++) line_buf[j] = terminal_output[start + j];
-        line_buf[len] = '\0';
-
-        uint32_t fg = 0xFFAAAAAA;
-        if (len >= 2 && line_buf[0] == '$' && line_buf[1] == ' ') fg = 0xFFFFFF55;
-        w98_text(line_buf, tx + 4, ty + 4 + row * TERM_LINE_H, fg, 0xFF000000, 1, &clip);
+        for (int j = 0; j < len; j++) {
+            char c = terminal_output[start + j];
+            uint32_t fg = vga_to_rgb[terminal_output_colors[start + j] & 0x0F];
+            term_put_char_win(c, tx + 4 + j * TERM_CELL_W,
+                              ty + 4 + row * TERM_CELL_H, fg, 0xFF000000,
+                              clipx0, clipy0, clipx1, clipy1);
+        }
     }
 
-    int py = ty + 4 + row * TERM_LINE_H;
-    w98_text("$ ", tx + 4, py, 0xFF55FF55, 0xFF000000, 1, &clip);
+    int py = ty + 4 + row * TERM_CELL_H;
+    term_put_char_win('$', tx + 4, py, 0xFF55FF55, 0xFF000000,
+                      clipx0, clipy0, clipx1, clipy1);
     int col = 2;
     int prow = 0;
     for (int i = 0; i < terminal_buf_len; i++) {
         if (col >= cols) { col = 0; prow++; }
-        char str[2] = { terminal_buffer[i], 0 };
-        w98_text(str, tx + 4 + col * 6, py + prow * TERM_LINE_H,
-                 0xFFFFFF55, 0xFF000000, 1, &clip);
+        term_put_char_win(terminal_buffer[i], tx + 4 + col * TERM_CELL_W,
+                          py + prow * TERM_CELL_H, 0xFFFFFF55, 0xFF000000,
+                          clipx0, clipy0, clipx1, clipy1);
         col++;
     }
     if (terminal_blink < 30) {
         if (col >= cols) { col = 0; prow++; }
-        int cx0 = tx + 4 + col * 6;
-        int cy0 = py + prow * TERM_LINE_H;
-        if (cy0 + 8 <= clip.y + clip.h) w98_fill(cx0, cy0, 6, 8, 0xFF55FF55);
+        int cur_x = tx + 4 + col * TERM_CELL_W;
+        int cur_y = py + prow * TERM_CELL_H;
+        if (cur_x + TERM_CELL_W <= clipx1 && cur_y + TERM_CELL_H <= clipy1)
+            w98_fill(cur_x, cur_y, TERM_CELL_W, TERM_CELL_H, 0xFF55FF55);
     }
-
-    w98_classic_font_force = false;
 }
 
 static bool terminal_cmd_blocked(const char* cmd, char* why, int why_len) {
@@ -202,20 +217,22 @@ static bool terminal_cmd_blocked(const char* cmd, char* why, int why_len) {
 static void terminal_run_command(window_t* w) {
     terminal_buffer[terminal_buf_len] = '\0';
 
-    terminal_output_append("$ ", 2);
-    terminal_output_append(terminal_buffer, terminal_buf_len);
-    terminal_output_append("\n", 1);
+    term_append_fixed("$ ", 2, VGA_COLOR_LIGHT_GREEN);
+    term_append_fixed(terminal_buffer, terminal_buf_len, VGA_COLOR_LIGHT_BROWN);
+    terminal_output_append("\n", NULL, 1);
 
     char why[96];
     if (terminal_cmd_blocked(terminal_buffer, why, sizeof(why))) {
-        terminal_output_append(why, (int)strlen(why));
+        terminal_output_append(why, NULL, (int)strlen(why));
     } else if (strcmp(terminal_buffer, "clear") == 0 || strcmp(terminal_buffer, "cls") == 0) {
         terminal_output_clear();
     } else {
 
         uint8_t saved_color = terminal_color;
         terminal_in_desktop_window = true;
-        terminal_capture_begin(terminal_capture_store, TERM_CAPTURE_MAX);
+        terminal_capture_begin(terminal_capture_store,
+                               terminal_capture_colors_store,
+                               TERM_CAPTURE_MAX);
         execute_command(terminal_buffer);
         bool cleared = terminal_capture_cleared;
         int len = terminal_capture_len;
@@ -226,12 +243,13 @@ static void terminal_run_command(window_t* w) {
         if (cleared) terminal_output_clear();
 
         const char* out = terminal_capture_store;
-        while (len > 0 && *out == '\n') { out++; len--; }
+        const uint8_t* out_colors = terminal_capture_colors_store;
+        while (len > 0 && *out == '\n') { out++; out_colors++; len--; }
 
         while (len > 1 && out[len - 1] == '\n' && out[len - 2] == '\n') len--;
         if (len > 0) {
-            terminal_output_append(out, len);
-            if (out[len - 1] != '\n') terminal_output_append("\n", 1);
+            terminal_output_append(out, out_colors, len);
+            if (out[len - 1] != '\n') terminal_output_append("\n", NULL, 1);
         }
     }
 
@@ -288,16 +306,28 @@ static const settings_color_opt_t settings_colors[] = {
 
 static int settings_hover = -1;
 
-static int settings_layout(window_t* w, int* theme_y, int* radio_y,
-                           int* swatch_y, int* btn_y) {
+#define SETTINGS_THUMB_CELL_W (WALLPAPER_THUMB_W + 4)
+#define SETTINGS_THUMB_CELL_H (WALLPAPER_THUMB_H + 4)
+#define SETTINGS_THUMB_STEP_X (SETTINGS_THUMB_CELL_W + 8)
+#define SETTINGS_THUMB_STEP_Y (SETTINGS_THUMB_CELL_H + 8)
+
+static void settings_thumb_pos(int cx, int thumb_y, int i, int* tx, int* ty) {
+    *tx = cx + 10 + (i % 3) * SETTINGS_THUMB_STEP_X;
+    *ty = thumb_y + (i / 3) * SETTINGS_THUMB_STEP_Y;
+}
+
+static void settings_layout(window_t* w, int* theme_y, int* radio_y,
+                            int* swatch_y, int* thumb_y, int* fit_y,
+                            int* btn_y) {
     int cy = w->rect.client_y;
     int ch = w->rect.client_h;
 
     *theme_y = cy + 38;
     *radio_y = *theme_y + THEME_COUNT * SETTINGS_ROW_H + 20;
     *swatch_y = *radio_y + 3 * SETTINGS_ROW_H + 22;
+    *thumb_y = *swatch_y + SETTINGS_COLOR_COUNT * SETTINGS_ROW_H + 22;
+    *fit_y = *thumb_y + 2 * SETTINGS_THUMB_STEP_Y + 14;
     *btn_y = cy + ch - 30;
-    return *btn_y;
 }
 
 static void settings_draw_radio(int x, int y, bool on, const char* label,
@@ -316,8 +346,9 @@ void app_window_draw_settings(window_t* w) {
     int cy = w->rect.client_y;
     int cw = w->rect.client_w;
 
-    int theme_y, radio_y, swatch_y, btn_y;
-    settings_layout(w, &theme_y, &radio_y, &swatch_y, &btn_y);
+    int theme_y, radio_y, swatch_y, thumb_y, fit_y, btn_y;
+    settings_layout(w, &theme_y, &radio_y, &swatch_y, &thumb_y, &fit_y,
+                    &btn_y);
 
     settings_hover = -1;
     int mxp = desktop_mouse_x, myp = desktop_mouse_y;
@@ -337,6 +368,20 @@ void app_window_draw_settings(window_t* w) {
         int ry = swatch_y + i * SETTINGS_ROW_H;
         if (mxp >= cx && mxp < cx + cw && myp >= ry && myp < ry + SETTINGS_ROW_H) {
             settings_hover = 10 + i;
+        }
+    }
+    for (int i = 0; i < desktop_wallpaper_count(); i++) {
+        int tx, ty;
+        settings_thumb_pos(cx, thumb_y, i, &tx, &ty);
+        if (mxp >= tx - 3 && mxp < tx + SETTINGS_THUMB_CELL_W + 3 &&
+            myp >= ty - 3 && myp < ty + SETTINGS_THUMB_CELL_H + 3) {
+            settings_hover = 30 + i;
+        }
+    }
+    for (int i = 0; i < 3; i++) {
+        int fx = cx + 10 + i * 90;
+        if (mxp >= fx && mxp < fx + 86 && myp >= fit_y && myp < fit_y + 14) {
+            settings_hover = 40 + i;
         }
     }
     if (mxp >= cx + cw / 2 - 37 && mxp < cx + cw / 2 - 37 + 75 &&
@@ -361,7 +406,7 @@ void app_window_draw_settings(window_t* w) {
     w98_text_bold("Wallpaper:", cx + 8, radio_y - 14, W98_BTNTEXT,
                   W98_BTNFACE, 1, NULL);
     const char* modes[3] = { "Teal (dithered)", "Solid colour",
-                             "SharkOS image" };
+                             "Bundled image" };
     for (int i = 0; i < 3; i++) {
         bool on = (desktop.wallpaper_mode == i);
         settings_draw_radio(cx + 10, radio_y + i * SETTINGS_ROW_H, on,
@@ -393,6 +438,46 @@ void app_window_draw_settings(window_t* w) {
         }
     }
 
+    w98_text_bold("Wallpaper image:", cx + 8, thumb_y - 14, W98_BTNTEXT,
+                  W98_BTNFACE, 1, NULL);
+    w98_text(desktop_wallpaper_name(desktop.wallpaper_id),
+             cx + 8 + w98_text_width("Wallpaper image:", 1) + 8,
+             thumb_y - 14, W98_GRAYTEXT, W98_BTNFACE, 1, NULL);
+    for (int i = 0; i < desktop_wallpaper_count(); i++) {
+        int tx, ty;
+        settings_thumb_pos(cx, thumb_y, i, &tx, &ty);
+        bool selected = (desktop.wallpaper_id == i);
+
+        if (selected) {
+            w98_fill(tx - 3, ty - 3, SETTINGS_THUMB_CELL_W + 6,
+                     SETTINGS_THUMB_CELL_H + 6, W98_HIGHLIGHT);
+        }
+        w98_surface(tx - 2, ty - 2, SETTINGS_THUMB_CELL_W + 4,
+                    SETTINGS_THUMB_CELL_H + 4, W98_BEVEL_SUNKEN,
+                    0xFF000000u);
+        w98_blit_rgb(desktop_wallpaper_thumb(i), WALLPAPER_THUMB_W,
+                     WALLPAPER_THUMB_H, tx, ty, NULL);
+        if (!selected && settings_hover == 30 + i) {
+            w98_fill(tx - 3, ty - 3, SETTINGS_THUMB_CELL_W + 6, 1,
+                     W98_BTNSHADOW);
+            w98_fill(tx - 3, ty + SETTINGS_THUMB_CELL_H + 2,
+                     SETTINGS_THUMB_CELL_W + 6, 1, W98_BTNSHADOW);
+            w98_fill(tx - 3, ty - 3, 1, SETTINGS_THUMB_CELL_H + 6,
+                     W98_BTNSHADOW);
+            w98_fill(tx + SETTINGS_THUMB_CELL_W + 2, ty - 3, 1,
+                     SETTINGS_THUMB_CELL_H + 6, W98_BTNSHADOW);
+        }
+    }
+
+    w98_text_bold("Scaling:", cx + 8, fit_y - 14, W98_BTNTEXT,
+                  W98_BTNFACE, 1, NULL);
+    const char* fits[3] = { "Fill", "Fit", "Stretch" };
+    for (int i = 0; i < 3; i++) {
+        settings_draw_radio(cx + 10 + i * 90, fit_y,
+                            desktop.wallpaper_fit == i, fits[i],
+                            settings_hover == 40 + i);
+    }
+
     w98_button(cx + cw / 2 - 37, btn_y, 75, 23, "Shut Down...",
                settings_hover == 99, true, false);
 }
@@ -401,8 +486,9 @@ void app_window_mouse_settings(window_t* w, int mx, int my, int buttons) {
     (void)w;
     if (!(buttons & 1)) return;
 
-    int theme_y, radio_y, swatch_y, btn_y;
-    settings_layout(w, &theme_y, &radio_y, &swatch_y, &btn_y);
+    int theme_y, radio_y, swatch_y, thumb_y, fit_y, btn_y;
+    settings_layout(w, &theme_y, &radio_y, &swatch_y, &thumb_y, &fit_y,
+                    &btn_y);
     int cx = w->rect.client_x;
     int cw = w->rect.client_w;
 
@@ -432,6 +518,24 @@ void app_window_mouse_settings(window_t* w, int mx, int my, int buttons) {
             desktop_set_wallpaper_color(color,
                 0xFF000000u | ((r / 2) << 16) | ((g / 2) << 8) | (b / 2));
             desktop_set_wallpaper_mode(W98_WALL_SOLID);
+            return;
+        }
+    }
+
+    for (int i = 0; i < desktop_wallpaper_count(); i++) {
+        int tx, ty;
+        settings_thumb_pos(cx, thumb_y, i, &tx, &ty);
+        if (mx >= tx - 3 && mx < tx + SETTINGS_THUMB_CELL_W + 3 &&
+            my >= ty - 3 && my < ty + SETTINGS_THUMB_CELL_H + 3) {
+            desktop_set_wallpaper(i);
+            return;
+        }
+    }
+
+    for (int i = 0; i < 3; i++) {
+        int fx = cx + 10 + i * 90;
+        if (mx >= fx && mx < fx + 86 && my >= fit_y && my < fit_y + 14) {
+            desktop_set_wallpaper_fit(i);
             return;
         }
     }
@@ -1102,8 +1206,8 @@ void app_window_draw_fastfetch(window_t* w) {
     int_to_string((uint32_t)task_count, buf);
     w98_text(buf, value_x, y, W98_BTNTEXT, W98_BTNFACE, 1, NULL);
     y += line_h;
-    label_value(label_x, value_x, y, "Theme:", "Windows 98 (SharkOS 98)",
-                W98_BTNTEXT);
+    label_value(label_x, value_x, y, "Theme:",
+                theme_get_name(theme_get_id()), W98_BTNTEXT);
 }
 
 static char notepad_buffer[4096] = "";
@@ -1360,6 +1464,11 @@ void app_window_draw_about(window_t* w) {
              W98_BTNTEXT, W98_BTNFACE, 1, NULL);
     w98_text("Created by Mayshecry", cx + cw / 2 - 66, cy + 128,
              W98_GRAYTEXT, W98_BTNFACE, 1, NULL);
+
+    /* The real SharkOS logo — same shark in every theme, but wearing
+     * the theme's colours (sailor pink under the Kawaii theme). */
+    draw_shark_logo(cx + cw / 2, cy + 200, 46, W98_BTNDKSHADOW);
+    draw_shark_logo(cx + cw / 2, cy + 200, 43, W98_LOGO);
 }
 
 static void append_u8(char* dst, uint32_t v) {
@@ -1478,7 +1587,10 @@ void app_window_keyboard_terminal(window_t* w, char c) {
         if (terminal_buf_len > 0) {
             terminal_run_command(w);
         } else {
-            terminal_output_append("$ \n", 3);
+            static const uint8_t prompt_cols[3] = {
+                VGA_COLOR_LIGHT_GREEN, VGA_COLOR_LIGHT_GREEN, VGA_COLOR_LIGHT_GREY
+            };
+            terminal_output_append("$ \n", prompt_cols, 3);
         }
         w->needs_redraw = true;
         desktop.dirty = true;

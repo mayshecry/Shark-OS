@@ -1,4 +1,5 @@
 #include "kernel.h"
+#include "term_font16_data.h"
 
 void ui_init_metrics(void) {
     uint32_t w = (uint32_t)screen_width;
@@ -8,7 +9,7 @@ void ui_init_metrics(void) {
     if (font_scale > 3) font_scale = 3;
 
     font_cell_w = 8 * font_scale;
-    font_cell_h = 8 * font_scale;
+    font_cell_h = 16 * font_scale;   /* crisp 8x16 terminal font */
     ui_tab_y = font_cell_h + 8;
     ui_chrome_top = ui_tab_y + font_cell_h;
     ui_footer_h = font_cell_h + 4;
@@ -46,12 +47,15 @@ void draw_char(char c, int x, int y, uint32_t fg, uint32_t bg) {
 
     int sw = (int)screen_width;
     int sh = (int)screen_height;
-    int cell = 8 * scale;
+    int cw = 8 * scale;
+    int chh = 16 * scale;
 
-    if (x >= sw || y >= sh || x + cell <= 0 || y + cell <= 0) return;
+    if (x >= sw || y >= sh || x + cw <= 0 || y + chh <= 0) return;
 
-    for (int row = 0; row < 8; row++) {
-        uint8_t font_byte = font8x8[font_idx][row];
+    const unsigned char* glyph = term_font8x16[font_idx];
+
+    for (int row = 0; row < 16; row++) {
+        uint8_t font_byte = glyph[row];
         int py0 = y + row * scale;
         if (py0 < 0 || py0 >= sh) continue;
         int rows = scale;
@@ -68,6 +72,35 @@ void draw_char(char c, int x, int y, uint32_t fg, uint32_t bg) {
                     row_ptr[px + sx] = color;
                 }
             }
+        }
+    }
+}
+
+/* Fixed 8x16 glyph with clipping, for the desktop Terminal window. */
+void term_put_char_win(char c, int x, int y, uint32_t fg, uint32_t bg,
+                       int cx0, int cy0, int cx1, int cy1) {
+    (void)bg;   /* window background is always black */
+    if (c < 32 || c > 126) return;
+    if (c == ' ') {
+        /* leave background as-is (window already painted black) */
+        return;
+    }
+    const unsigned char* glyph = term_font8x16[c - 32];
+    uint32_t stride = screen_pitch / 4;
+    int sw = (int)screen_width;
+    int sh = (int)screen_height;
+
+    for (int row = 0; row < 16; row++) {
+        uint8_t bits = glyph[row];
+        if (!bits) continue;
+        int py = y + row;
+        if (py < cy0 || py >= cy1 || py < 0 || py >= sh) continue;
+        uint32_t* row_ptr = &lfbptr[(uint32_t)py * stride];
+        for (int col = 0; col < 8; col++) {
+            if (!((bits >> (7 - col)) & 1)) continue;
+            int px = x + col;
+            if (px < cx0 || px >= cx1 || px < 0 || px >= sw) continue;
+            row_ptr[px] = fg;
         }
     }
 }
@@ -105,17 +138,23 @@ static inline bool terminal_capturing(void) {
     return terminal_capture_buffer != NULL;
 }
 
-static void terminal_capture_char(char c) {
+uint8_t* terminal_capture_colorbuf = NULL;
+
+static void terminal_capture_char(char c, uint8_t color) {
     if (!terminal_capture_buffer) return;
 
     if (terminal_capture_len < terminal_capture_cap - 1) {
-        terminal_capture_buffer[terminal_capture_len++] = c;
+        terminal_capture_buffer[terminal_capture_len] = c;
+        if (terminal_capture_colorbuf)
+            terminal_capture_colorbuf[terminal_capture_len] = color;
+        terminal_capture_len++;
         terminal_capture_buffer[terminal_capture_len] = '\0';
     }
 }
 
-void terminal_capture_begin(char* buf, int cap) {
+void terminal_capture_begin(char* buf, uint8_t* colors, int cap) {
     terminal_capture_buffer = buf;
+    terminal_capture_colorbuf = colors;
     terminal_capture_cap = cap;
     terminal_capture_len = 0;
     terminal_capture_cleared = false;
@@ -130,6 +169,7 @@ void terminal_capture_end(void) {
         terminal_capture_buffer[terminal_capture_len] = '\0';
     }
     terminal_capture_buffer = NULL;
+    terminal_capture_colorbuf = NULL;
     terminal_capture_cap = 0;
 }
 
@@ -235,7 +275,7 @@ void terminal_clear(void) {
 void terminal_write_char_internal(char c) {
     if (terminal_ansi_filter(c)) return;
     if (terminal_capturing()) {
-        terminal_capture_char(c);
+        terminal_capture_char(c, terminal_color);
         return;
     }
     size_t pane_start = panes[active_pane].col_start;
@@ -269,7 +309,7 @@ void terminal_write_char_internal(char c) {
 void terminal_write_direct(const char* data) {
     if (terminal_capturing()) {
         for (size_t i = 0; data[i] != '\0'; i++) {
-            if (!terminal_ansi_filter(data[i])) terminal_capture_char(data[i]);
+            if (!terminal_ansi_filter(data[i])) terminal_capture_char(data[i], terminal_color);
         }
         return;
     }

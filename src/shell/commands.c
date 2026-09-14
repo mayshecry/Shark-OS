@@ -4,6 +4,7 @@
 #include "doom.h"
 #include "net.h"
 #include "desktop.h"
+#include "theme.h"
 #include <stdint.h>
 
 static int simple_atoi(const char* s) {
@@ -274,7 +275,7 @@ static void cmd_help(const char* args) {
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("APPS        - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    terminal_writestring("clear, colors, credits, help, whatis, fortune, cowsay, sl, banner, doom, browser [url]\n");
+    terminal_writestring("clear, colors, credits, help, whatis, fortune, cowsay, sl, banner, sharkfetch, doom, browser [url]\n");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("POWER       - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
@@ -650,6 +651,193 @@ static void cmd_netstat(const char* args) {
     net_cmd_netstat();
 }
 
+/* ---------------------------- sharkfetch ------------------------------ */
+/* 8-bit pixel shark + detailed system info, ANSI-coloured so it works in
+ * both the full-screen console and the desktop Terminal window.          */
+
+static const char* shark_art[] = {
+    "...........DDD........",
+    "..........DBBBD.......",
+    ".........DBBBBD.......",
+    "..DDD...DBBBBBBBD.....",
+    ".DBBD.DBBBBBBBBBBD....",
+    ".DBBDDDBBBBBBBBBBBBD..",
+    "..DBBDBBBBBBBBBBBBBBD.",
+    "...DDBBBBBBBBEEBBBBBD.",
+    "....DBBBBBBBBEEEBMMBD.",
+    "....DBBBBBBBBBBBBBBDD.",
+    "...DBWWBBBBBBBBBBBBD..",
+    "....DWWWWBBBBBBBBBD...",
+    "....DWWWWWBBBBBBD.....",
+    ".....DWWWWWBBBBD......",
+    "......DWWWWBBBBD......",
+    ".......DDBBBBBDD......",
+};
+#define SHARK_ART_ROWS 16
+
+static const char* shark_ansi_for(char c) {
+    switch (c) {
+        case 'D': return "\x1b[94m";  /* fins / outline  */
+        case 'B': return "\x1b[96m";  /* body            */
+        case 'W': return "\x1b[97m";  /* belly           */
+        case 'E': return "\x1b[34m";  /* eye             */
+        case 'M': return "\x1b[91m";  /* mouth           */
+        default:  return NULL;
+    }
+}
+
+static void fetch_cat(char* dst, const char* src) {
+    while (*dst) dst++;
+    while ((*dst++ = *src++));
+}
+
+static void fetch_num(char* dst, uint32_t v) {
+    char b[16];
+    int_to_string(v, b);
+    fetch_cat(dst, b);
+}
+
+static void shark_fetch_row(const char* art, const char* info) {
+    char buf[200];
+    int p = 0;
+    int i = 0;
+    while (art[i] && p < 150) {
+        char c = art[i];
+        int run = 0;
+        while (art[i + run] && art[i + run] == c) run++;
+        if (c == '.') {
+            for (int k = 0; k < run && p < 150; k++) buf[p++] = ' ';
+        } else {
+            const char* code = shark_ansi_for(c);
+            if (code) while (*code && p < 150) buf[p++] = *code++;
+            for (int k = 0; k < run && p < 148; k++) {
+                buf[p++] = '#';
+                buf[p++] = '#';
+            }
+        }
+        i += run;
+    }
+    fetch_cat(buf, "\x1b[0m");
+    if (info && *info) {
+        while (p < 48) buf[p++] = ' ';   /* align the info column */
+        while (*info && p < 190) buf[p++] = *info++;
+    }
+    buf[p++] = '\n';
+    buf[p] = '\0';
+    terminal_writestring(buf);
+}
+
+static void fetch_kv(char* dst, const char* key) {
+    fetch_cat(dst, "\x1b[96m");
+    fetch_cat(dst, key);
+    fetch_cat(dst, ":\x1b[97m ");
+}
+
+static void cmd_sharkfetch(const char* args) {
+    (void)args;
+    static char info[SHARK_ART_ROWS][128];
+
+    for (int r = 0; r < SHARK_ART_ROWS; r++) info[r][0] = '\0';
+
+    /* ---- info column ------------------------------------------------ */
+    strcpy(info[0], "\x1b[92mshark\x1b[97m@\x1b[92msharkos");
+    strcpy(info[1], "\x1b[90m------------------------");
+
+    fetch_kv(info[2], "OS");
+    fetch_cat(info[2], "SharkOS 98 (Sharkslayer) x86");
+
+    fetch_kv(info[3], "Kernel");
+    fetch_cat(info[3], "SHKRNL V2.2");
+
+    fetch_kv(info[4], "Uptime");
+    uint32_t up = uptime_ticks / TICKS_PER_SEC;
+    fetch_num(info[4], up / 3600); fetch_cat(info[4], "h ");
+    fetch_num(info[4], (up / 60) % 60); fetch_cat(info[4], "m ");
+    fetch_num(info[4], up % 60); fetch_cat(info[4], "s");
+
+    fetch_kv(info[5], "Shell");
+    fetch_cat(info[5], "nemo-shell");
+
+    fetch_kv(info[6], "CPU");
+    char cpu[49];
+    get_cpu_model(cpu);
+    fetch_cat(info[6], cpu);
+
+    fetch_kv(info[7], "Memory");
+    uint32_t total_mb = (uint32_t)(total_system_memory >> 20);
+    uintptr_t used = (free_memory_start > 0x100000u)
+                         ? free_memory_start - 0x100000u : 0;
+    fetch_num(info[7], (uint32_t)(used >> 20));
+    fetch_cat(info[7], " MiB / ");
+    fetch_num(info[7], total_mb);
+    fetch_cat(info[7], " MiB");
+
+    fetch_kv(info[8], "Disk");
+    fetch_cat(info[8], "shmfs ");
+    fetch_num(info[8], (uint32_t)pool_index);
+    fetch_cat(info[8], "/");
+    fetch_num(info[8], MAX_NODES);
+    fetch_cat(info[8], " nodes (in-memory)");
+
+    fetch_kv(info[9], "Tasks");
+    int tasks = 1;
+    for (task_t* t = task_list; t; t = t->next) tasks++;
+    fetch_num(info[9], (uint32_t)tasks);
+    fetch_cat(info[9], " running");
+
+    fetch_kv(info[10], "Display");
+    fetch_num(info[10], (uint32_t)screen_width);
+    fetch_cat(info[10], "x");
+    fetch_num(info[10], (uint32_t)screen_height);
+    fetch_cat(info[10], " @ 32bpp");
+
+    fetch_kv(info[11], "Theme");
+    fetch_cat(info[11], theme_get_name(theme_get_id()));
+
+    fetch_kv(info[12], "Wallpaper");
+    fetch_cat(info[12], desktop_wallpaper_name(desktop.wallpaper_id));
+    fetch_cat(info[12], " (");
+    fetch_cat(info[12], desktop.wallpaper_fit == 1 ? "fit"
+              : desktop.wallpaper_fit == 2 ? "stretch" : "fill");
+    fetch_cat(info[12], ")");
+
+    fetch_kv(info[13], "Network");
+    int has_nic = net_driver_name[0] && net_driver_name[0] != 'n';
+    if (has_nic) {
+        fetch_cat(info[13], net_driver_name);
+        fetch_cat(info[13], " ");
+        fetch_num(info[13], net_ip[0]); fetch_cat(info[13], ".");
+        fetch_num(info[13], net_ip[1]); fetch_cat(info[13], ".");
+        fetch_num(info[13], net_ip[2]); fetch_cat(info[13], ".");
+        fetch_num(info[13], net_ip[3]);
+        if (!net_has_link) fetch_cat(info[13], " (no link)");
+    } else {
+        fetch_cat(info[13], "no adapter");
+    }
+
+    fetch_kv(info[14], "Font");
+    fetch_cat(info[14], "DejaVu Sans Mono 8x16");
+
+    /* ---- layout: side-by-side when wide, stacked when narrow ------- */
+    int cols = terminal_in_desktop_window ? desktop_terminal_cols
+                                          : (int)term_cols;
+    terminal_writestring("\n");
+    for (int r = 0; r < SHARK_ART_ROWS; r++) {
+        shark_fetch_row(shark_art[r], (cols >= 96) ? info[r] : NULL);
+    }
+    terminal_writestring(
+        " \x1b[90m###\x1b[91m ###\x1b[92m ###\x1b[93m ###"
+        "\x1b[94m ###\x1b[95m ###\x1b[96m ###\x1b[97m ###\x1b[0m\n\n");
+    if (cols < 96) {
+        for (int r = 0; r < 15; r++) {
+            terminal_writestring(info[r]);
+            terminal_writestring("\n");
+        }
+        terminal_writestring("\n");
+    }
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+}
+
 static const cmd_entry_t cmd_table[] = {
     {"ls", cmd_ls},
     {"dir", cmd_ls},
@@ -674,6 +862,8 @@ static const cmd_entry_t cmd_table[] = {
     {"www", cmd_browser},
     {"uptime", cmd_uptime},
     {"neofetch", cmd_neofetch},
+    {"sharkfetch", cmd_sharkfetch},
+    {"sfetch", cmd_sharkfetch},
     {"poweroff", cmd_poweroff},
     {"reboot", cmd_reboot},
     {"bokop", cmd_bokop},

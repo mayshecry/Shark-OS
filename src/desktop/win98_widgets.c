@@ -590,3 +590,28 @@ void w98_icon_blit_small(const uint32_t* src, int src_size, int dst_size,
         }
     }
 }
+
+/* Opaque raw RGB block blit (wallpaper thumbnails in the Settings app). */
+void w98_blit_rgb(const uint32_t* src, int sw, int sh, int x, int y,
+                  const w98_rect_t* clip) {
+    if (!src || sw < 1 || sh < 1) return;
+
+    int x0, y0, x1, y1;
+    if (!w98_clip(clip, x, y, sw, sh, &x0, &y0, &x1, &y1)) return;
+
+    uint32_t stride = screen_pitch / 4;
+
+    for (int py = y0; py < y1; py++) {
+        int sy = py - y;
+        if (sy < 0) sy = 0;
+        if (sy >= sh) sy = sh - 1;
+        const uint32_t* srow = &src[(uint32_t)sy * (uint32_t)sw];
+        uint32_t* drow = &lfbptr[(uint32_t)py * stride];
+        for (int px = x0; px < x1; px++) {
+            int sx = px - x;
+            if (sx < 0) sx = 0;
+            if (sx >= sw) sx = sw - 1;
+            drow[px] = 0xFF000000u | (srow[sx] & 0x00FFFFFFu);
+        }
+    }
+}

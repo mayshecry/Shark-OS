@@ -1,17 +1,39 @@
-
+/* systemd-style verbose boot log.
+ *
+ * The old Win98-shaped splash (logo + progress bar) is gone: boot now
+ * prints a scrolling service log — "[  OK  ] Started ..." style — on a
+ * black screen for about five seconds, then hands over to the desktop.
+ * Colours follow the active theme (the Kawaii GRUB entry boots pink).
+ */
 
 #include "kernel.h"
 #include "desktop.h"
 #include "win98_theme.h"
+#include "theme.h"
 
-#define BOOT_BAR_W 320
-#define BOOT_BAR_H 20
-#define BOOT_BAR_X (((int)screen_width - BOOT_BAR_W) / 2)
-#define BOOT_BAR_Y ((int)screen_height * 3 / 4)
+#define BOOT_LINE_MAX  64
+#define BOOT_MSG_MAX   56
 
-static int boot_progress = 0;
-static char boot_message[64] = "Initializing...";
-static volatile uint32_t boot_spinner_counter = 0;
+#define BOOT_BG        0xFF000000u
+#define BOOT_GRAY      0xFF9E9E9Eu
+#define BOOT_TEXT      0xFFCCCCCCu
+#define BOOT_OK_GREEN  0xFF33B944u
+#define BOOT_FAIL_RED  0xFFCC3333u
+
+typedef struct {
+    char msg[BOOT_MSG_MAX];
+    bool done;
+    bool banner;      /* drawn without the [ OK ] tag column */
+    uint32_t color;   /* banner colour */
+} boot_line_t;
+
+static boot_line_t boot_lines[BOOT_LINE_MAX];
+static int boot_line_count = 0;
+static int boot_spin = 0;
+
+/* ------------------------------------------------------------------ */
+/* The SharkOS logo painter lives here (also used by the About box).  */
+/* ------------------------------------------------------------------ */
 
 static void draw_pixel_safe(int x, int y, uint32_t color) {
     if (x < 0 || y < 0) return;
@@ -20,25 +42,7 @@ static void draw_pixel_safe(int x, int y, uint32_t color) {
     lfbptr[(uint32_t)y * stride + (uint32_t)x] = color;
 }
 
-static void draw_rect_safe(int x, int y, int w, int h, uint32_t color) {
-    draw_rect(x, y, w, h, color);
-}
-
-static void draw_dither_bg(void) {
-    int w = (int)screen_width;
-    int h = (int)screen_height;
-    uint32_t stride = screen_pitch / 4;
-    for (int y = 0; y < h; y++) {
-        uint32_t first = (y & 1) ? W98_DESKTOP_DARK : W98_DESKTOP;
-        uint32_t second = (y & 1) ? W98_DESKTOP : W98_DESKTOP_DARK;
-        uint32_t* row = &lfbptr[(uint32_t)y * stride];
-        for (int x = 0; x < w; x++) {
-            row[x] = (x & 1) ? second : first;
-        }
-    }
-}
-
-static void draw_shark_logo(int cx, int cy, int size, uint32_t color) {
+void draw_shark_logo(int cx, int cy, int size, uint32_t color) {
     int half = size / 2;
 
     for (int dy = -half; dy <= half; dy++) {
@@ -64,105 +68,149 @@ static void draw_shark_logo(int cx, int cy, int size, uint32_t color) {
     }
 }
 
-static void draw_progress_bar(int progress) {
-    int bar_x = BOOT_BAR_X;
-    int bar_y = BOOT_BAR_Y;
+/* ------------------------------------------------------------------ */
+/* Boot log renderer                                                  */
+/* ------------------------------------------------------------------ */
 
-    w98_surface(bar_x - 4, bar_y - 4, BOOT_BAR_W + 8, BOOT_BAR_H + 8,
-                W98_BEVEL_SUNKEN, W98_BTNFACE);
+static int boot_scale(void) {
+    return screen_height >= 900 ? 2 : 1;
+}
 
-    int blocks = (progress * 10) / 100;
-    for (int i = 0; i < blocks; i++) {
-        int bx = bar_x + i * (BOOT_BAR_W / 10);
-        w98_fill(bx + 2, bar_y, BOOT_BAR_W / 10 - 4, BOOT_BAR_H,
-                 W98_ACTIVE_TITLE);
+static uint32_t boot_ok_color(void) {
+    return (theme_get_id() == THEME_ID_KAWAII) ? theme_current->highlight
+                                               : BOOT_OK_GREEN;
+}
+
+static void boot_delay(volatile int iters) {
+    for (volatile int i = 0; i < iters; i++);
+}
+
+/* Pace a line: once the PIT ticks we wait in real time; before the IDT
+ * is up (uptime frozen) we fall back to a rough busy loop. */
+static void boot_wait_ms(uint32_t ms) {
+    uint32_t a = uptime_ticks;
+    boot_delay(200000);
+    if (uptime_ticks != a) {
+        uint32_t t0 = uptime_ticks;
+        while (uptime_ticks - t0 < ms) asm volatile("hlt");
+    } else {
+        boot_delay((int)(ms * 400000u));
     }
-
-    char pct_buf[8];
-    int_to_string((uint32_t)progress, pct_buf);
-    int pct_len = (int)strlen(pct_buf);
-    w98_text(pct_buf, bar_x + BOOT_BAR_W + 12, bar_y + 6, W98_BTNTEXT,
-             W98_BTNFACE, 1, NULL);
-    w98_text("%", bar_x + BOOT_BAR_W + 12 + pct_len * 6, bar_y + 6,
-             W98_BTNTEXT, W98_BTNFACE, 1, NULL);
 }
 
-static void draw_boot_message(const char* msg) {
-    int msg_w = BOOT_BAR_W + 60;
-    int msg_x = ((int)screen_width - msg_w) / 2;
-    int msg_y = BOOT_BAR_Y - 26;
+static void boot_render(void) {
+    int s = boot_scale();
+    int lh = w98_text_height(s) + 6 * s;
+    int maxlines = ((int)screen_height - 16 * s) / lh;
+    if (maxlines < 1) maxlines = 1;
 
-    w98_text(msg, msg_x, msg_y, W98_BTNTEXT, W98_BTNFACE, 1, NULL);
-    (void)msg_w;
+    draw_rect(0, 0, (int)screen_width, (int)screen_height, BOOT_BG);
+
+    int start = boot_line_count - maxlines;
+    if (start < 0) start = 0;
+
+    int x0 = 6 * s;
+    char tagpre[4] = "[ ";
+    char tagpost[4] = " ]";
+    int wpre = w98_text_width(tagpre, s);
+    int wok = w98_text_width("  OK  ", s);
+    int wpost = w98_text_width(tagpost, s);
+    int x_msg = x0 + wpre + wok + wpost;
+
+    const char* spin = "|/-\\";
+
+    for (int i = start; i < boot_line_count; i++) {
+        boot_line_t* ln = &boot_lines[i];
+        int y = 8 * s + (i - start) * lh;
+
+        if (ln->banner) {
+            w98_text_bold(ln->msg, x0, y, ln->color, BOOT_BG, s, NULL);
+            continue;
+        }
+
+        if (ln->done) {
+            w98_text(tagpre, x0, y, BOOT_GRAY, BOOT_BG, s, NULL);
+            w98_text_bold("  OK  ", x0 + wpre, y, boot_ok_color(), BOOT_BG,
+                          s, NULL);
+            w98_text(tagpost, x0 + wpre + wok, y, BOOT_GRAY, BOOT_BG, s, NULL);
+        } else {
+            char sp[2] = { spin[boot_spin & 3], '\0' };
+            w98_text(sp, x0 + wpre / 2, y, BOOT_GRAY, BOOT_BG, s, NULL);
+        }
+
+        w98_text(ln->msg, x_msg, y, BOOT_TEXT, BOOT_BG, s, NULL);
+    }
 }
 
-static void draw_version_string(void) {
-    w98_text_bold("SharkOS 98", BOOT_BAR_X, BOOT_BAR_Y - 60, W98_BTNTEXT,
-                  W98_BTNFACE, 2, NULL);
-    w98_text("Starting...", BOOT_BAR_X + w98_text_width("SharkOS 98", 2) + 12,
-             BOOT_BAR_Y - 52, W98_GRAYTEXT, W98_BTNFACE, 1, NULL);
+static void boot_add_line(const char* msg, bool banner, uint32_t color) {
+    /* an arriving update completes the previous pending line */
+    for (int i = 0; i < boot_line_count; i++) boot_lines[i].done = true;
+
+    if (boot_line_count >= BOOT_LINE_MAX) {
+        for (int i = 1; i < BOOT_LINE_MAX; i++) boot_lines[i - 1] = boot_lines[i];
+        boot_line_count = BOOT_LINE_MAX - 1;
+    }
+    boot_line_t* ln = &boot_lines[boot_line_count++];
+    int k = 0;
+    for (k = 0; msg[k] && k < BOOT_MSG_MAX - 1; k++) ln->msg[k] = msg[k];
+    ln->msg[k] = '\0';
+    ln->done = false;
+    ln->banner = banner;
+    ln->color = color;
+    boot_spin++;
 }
 
-static void draw_spinner(int frame) {
-    const char* spinner = "|/-\\";
-    int idx = frame % 4;
-    char spin_str[2] = { spinner[idx], '\0' };
-    w98_text(spin_str, BOOT_BAR_X + BOOT_BAR_W + 44, BOOT_BAR_Y + 6,
-             W98_GRAYTEXT, W98_BTNFACE, 1, NULL);
-}
+/* ------------------------------------------------------------------ */
+/* Public API (same signatures as the old splash)                     */
+/* ------------------------------------------------------------------ */
 
 void boot_screen_show(void) {
-    boot_progress = 0;
+    boot_line_count = 0;
 
-    draw_dither_bg();
+    char banner[BOOT_MSG_MAX];
+    int p = 0;
+    const char* b = "SharkOS 2.2 (Sharkslayer)";
+    for (int k = 0; b[k] && p < BOOT_MSG_MAX - 1; k++) banner[p++] = b[k];
+    banner[p] = '\0';
+    boot_add_line(banner, true, theme_current->logo);
+    boot_lines[0].done = true;
 
-    int logo_cx = (int)screen_width / 2;
-    int logo_cy = (int)screen_height / 3;
-    draw_shark_logo(logo_cx, logo_cy, 80, W98_BTNHILITE);
+    boot_add_line("nemo kernel 0.0.7 — ring zero, single address space",
+                  true, BOOT_GRAY);
+    boot_lines[1].done = true;
 
-    draw_version_string();
-    draw_progress_bar(0);
-    draw_boot_message("Initializing...");
+    boot_add_line("", true, BOOT_GRAY);
+    boot_lines[2].done = true;
+
+    boot_render();
 }
 
 void boot_screen_update(const char* message, int progress) {
-    if (progress > 100) progress = 100;
-    if (progress < 0) progress = 0;
+    (void)progress;
+    if (!message) return;
+    boot_add_line(message, false, 0);
+    boot_render();
+    boot_wait_ms(220);   /* let it read like a real init */
+}
 
-    boot_progress = progress;
-    if (message) {
-        strcpy(boot_message, message);
-    }
-
-    draw_progress_bar(progress);
-    draw_boot_message(boot_message);
-    draw_spinner((int)(boot_spinner_counter++));
-
-    for (volatile int i = 0; i < 500000; i++);
+void boot_screen_info(const char* message) {
+    if (!message) return;
+    boot_add_line(message, true, BOOT_GRAY);
+    boot_lines[boot_line_count - 1].done = true;
+    boot_render();
+    boot_wait_ms(120);
 }
 
 void boot_screen_hide(void) {
-    uint32_t stride = (uint32_t)(screen_pitch / 4);
-    uint32_t sc_h = (uint32_t)screen_height;
-    uint32_t sc_w = (uint32_t)screen_width;
+    boot_add_line("Reached target SharkOS 98 desktop.", false, 0);
+    for (int i = 0; i < boot_line_count; i++) boot_lines[i].done = true;
+    boot_render();
 
-    for (int fade = 15; fade >= 0; fade--) {
-        for (uint32_t y = 0; y < sc_h; y++) {
-            uint32_t* pixel = &lfbptr[y * stride];
-            for (uint32_t x = 0; x < sc_w; x++) {
-                uint8_t r = (pixel[x] >> 16) & 0xFF;
-                uint8_t g = (pixel[x] >> 8) & 0xFF;
-                uint8_t b = pixel[x] & 0xFF;
-                r = (uint8_t)((r * (uint32_t)fade) / 15);
-                g = (uint8_t)((g * (uint32_t)fade) / 15);
-                b = (uint8_t)((b * (uint32_t)fade) / 15);
-                pixel[x] = 0xFF000000u | ((uint32_t)r << 16) |
-                           ((uint32_t)g << 8) | b;
-            }
-        }
-        for (volatile int i = 0; i < 2000000; i++);
-    }
+    /* Pace the whole sequence to ~5 s once the PIT is ticking; on slow
+     * machines that already took longer we don't add extra waiting. */
+    boot_wait_ms(400);
+    while (uptime_ticks < 4600) asm volatile("hlt");
+    boot_wait_ms(300);
 
-    draw_rect_safe(0, 0, (int)screen_width, (int)screen_height,
-                   W98_BTNDKSHADOW);
+    draw_rect(0, 0, (int)screen_width, (int)screen_height, BOOT_BG);
 }

@@ -306,7 +306,9 @@ int window_create(window_type_t type, const char* title, int x, int y, int w, in
         case WINDOW_TYPE_DISKMGMT:
             win->draw_func = app_window_draw_diskmgmt;
             win->mouse_func = app_window_mouse_diskmgmt;
-            win->game_tick = diskmgmt_tick;
+            /* diskmgmt_tick() runs globally from the desktop loop (like
+             * browser_tick) so installs keep going even when the window
+             * is not focused; do NOT route it through game_tick. */
             break;
         default:
             break;
