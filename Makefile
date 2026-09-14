@@ -86,7 +86,7 @@ desktop/appwindows.o: src/desktop/appwindows.c include/kernel.h include/desktop.
 desktop/startmenu.o: src/desktop/startmenu.c include/kernel.h include/desktop.h | desktop
 	$(CC) -c src/desktop/startmenu.c -o desktop/startmenu.o $(CFLAGS)
 
-desktop/desktop.o: src/desktop/desktop.c include/kernel.h include/desktop.h | desktop
+desktop/desktop.o: src/desktop/desktop.c include/kernel.h include/desktop.h include/wallpaper_data.h include/kawaii_wallpaper_data.h include/wallpaper_cottage_data.h include/wallpaper_sakura_data.h include/wallpaper_neko_data.h include/wallpaper_thumbs_data.h | desktop
 	$(CC) -c src/desktop/desktop.c -o desktop/desktop.o $(CFLAGS)
 
 desktop/icons.o: src/desktop/icons.c include/kernel.h include/desktop.h include/icon_data.h | desktop
