@@ -6,7 +6,8 @@
 
 #define THEME_ID_WIN98   0
 #define THEME_ID_MODERN  1
-#define THEME_COUNT      2
+#define THEME_ID_KAWAII  2
+#define THEME_COUNT      3
 
 typedef struct {
     const char* name;
@@ -33,6 +34,7 @@ typedef struct {
     uint32_t caption_end;
     uint32_t menu_bg;
     uint32_t icon_label;
+    uint32_t logo;
     bool title_gradient;
     bool flat_bevels;
     bool nice_font;
@@ -45,6 +47,7 @@ typedef struct {
 
 extern const desktop_theme_t theme_win98;
 extern const desktop_theme_t theme_modern;
+extern const desktop_theme_t theme_kawaii;
 extern const desktop_theme_t* theme_current;
 
 int theme_get_id(void);

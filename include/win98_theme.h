@@ -31,6 +31,7 @@
 #define W98_CAPTION_END      (theme_current->caption_end)
 #define W98_MENU_BG          (theme_current->menu_bg)
 #define W98_ICON_LABEL       (theme_current->icon_label)
+#define W98_LOGO             (theme_current->logo)
 
 #define W98_RAMP_MAX         2048
 
@@ -113,6 +114,12 @@ typedef enum {
     W98_WALL_IMAGE
 } w98_wall_mode_t;
 
+typedef enum {
+    W98_WALLFIT_FILL = 0,   /* cover the screen, crop overflow (aspect kept) */
+    W98_WALLFIT_FIT,        /* contain in the screen, letterbox bars        */
+    W98_WALLFIT_STRETCH     /* ignore aspect, fill the screen               */
+} w98_wall_fit_t;
+
 extern bool w98_classic_font_force;
 
 void w98_fill_dither(int x, int y, int w, int h);
@@ -160,5 +167,8 @@ void w98_icon_blit(const uint32_t* src, int src_size, int dst_size,
 
 void w98_icon_blit_small(const uint32_t* src, int src_size, int dst_size,
                          int x, int y, const w98_rect_t* clip);
+
+void w98_blit_rgb(const uint32_t* src, int sw, int sh, int x, int y,
+                  const w98_rect_t* clip);
 
 #endif /* WIN98_THEME_H */

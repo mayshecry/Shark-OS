@@ -153,6 +153,7 @@ extern bool mouse_enabled;
 extern int selected_theme;
 extern bool lite_mode;
 extern bool legacy_mode;
+extern bool kawaii_mode;
 
 #define MAX_PANES 4
 #define PANE_GAP 1
@@ -197,13 +198,15 @@ extern uint32_t sys_frames_per_sec;
 
 extern char* terminal_capture_buffer;
 extern int terminal_capture_len;
+extern uint8_t* terminal_capture_colorbuf;
 
 extern int terminal_capture_cap;
 extern bool terminal_capture_cleared;
-void terminal_capture_begin(char* buf, int cap);
+void terminal_capture_begin(char* buf, uint8_t* colors, int cap);
 void terminal_capture_end(void);
 
 extern bool terminal_in_desktop_window;
+extern int desktop_terminal_cols;   /* visible columns of the desktop Terminal */
 
 #define terminal_row     (panes[active_pane].row)
 #define terminal_column  (panes[active_pane].col)
@@ -304,6 +307,8 @@ void fs_initialize(void);
 void execute_command(char* cmd);
 
 void draw_char(char c, int x, int y, uint32_t fg, uint32_t bg);
+void term_put_char_win(char c, int x, int y, uint32_t fg, uint32_t bg,
+                       int cx0, int cy0, int cx1, int cy1);
 void draw_pixel(int x, int y, uint32_t color);
 void draw_rect(int x, int y, int w, int h, uint32_t color);
 void draw_string_px(const char* s, int x, int y, uint32_t fg, uint32_t bg);

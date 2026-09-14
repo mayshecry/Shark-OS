@@ -136,6 +136,9 @@ typedef struct {
     uint32_t* desktop_wallpaper;
     int wallpaper_w;
     int wallpaper_h;
+
+    int wallpaper_id;      /* which bundled image (see wallpaper catalog) */
+    int wallpaper_fit;     /* w98_wall_fit_t: fill / fit / stretch        */
     bool alt_tab_active;
     int alt_tab_index;
     int wallpaper_mode;
@@ -153,7 +156,9 @@ extern uint32_t wallpaper_bot;
 
 void boot_screen_show(void);
 void boot_screen_update(const char* message, int progress);
+void boot_screen_info(const char* message);
 void boot_screen_hide(void);
+void draw_shark_logo(int cx, int cy, int size, uint32_t color);
 
 void desktop_init(void);
 void desktop_draw_wallpaper(void);
@@ -170,6 +175,23 @@ void desktop_update_taskbar(void);
 int desktop_get_taskbar_hover(int mx, int my);
 void desktop_set_wallpaper_color(uint32_t top, uint32_t bottom);
 void desktop_set_wallpaper_mode(int mode);
+
+/* Bundled wallpaper catalog (classic shark, kawaii, cottage, sakura, neko). */
+#define WP_ID_CLASSIC 0
+#define WP_ID_KAWAII  1
+#define WP_ID_COTTAGE 2
+#define WP_ID_SAKURA  3
+#define WP_ID_NEKO    4
+#define WP_COUNT      5
+
+#define WALLPAPER_THUMB_W 72
+#define WALLPAPER_THUMB_H 45
+
+int desktop_wallpaper_count(void);
+const char* desktop_wallpaper_name(int id);
+const uint32_t* desktop_wallpaper_thumb(int id);
+void desktop_set_wallpaper(int id);
+void desktop_set_wallpaper_fit(int fit);
 void desktop_icons_clear_selection(void);
 
 int window_create(window_type_t type, const char* title, int x, int y, int w, int h);
