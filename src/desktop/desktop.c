@@ -189,7 +189,17 @@ void desktop_icon_launch_offset(window_type_t type, const char* title) {
                 return;
             }
         }
-        win_w = 660; win_h = 500;
+        /* Open the browser at a "normal" desktop-browser size: most of the
+         * screen, centred, so pages lay out at a realistic viewport width
+         * (1180 px on a 1280-wide display) instead of a 660 px keyhole. */
+        int sw = (int)screen_width, sh = (int)screen_height - TASKBAR_HEIGHT;
+        win_w = sw - 100; if (win_w > 1400) win_w = 1400; if (win_w < 660) win_w = sw - 8;
+        win_h = sh - 70;  if (win_h > 1000) win_h = 1000; if (win_h < 500) win_h = sh - 8;
+        if (win_w < 320) win_w = 320;
+        if (win_h < 240) win_h = 240;
+        win_x = (sw - win_w) / 2;
+        win_y = (sh - win_h) / 2 - 4;
+        if (win_y < 4) win_y = 4;
     }
     if (win_x + win_w > (int)screen_width) {
         win_x = screen_width - win_w - 20;

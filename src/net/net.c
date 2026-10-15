@@ -1236,8 +1236,30 @@ static uint32_t dns_encode_name(uint8_t* out, const char* name) {
     return o;
 }
 
+#define DNS_CACHE_N 32
+static struct { char host[128]; uint8_t ip[4]; uint32_t at; int valid; } dns_cache[DNS_CACHE_N];
+static int dns_cache_next = 0;
+
+static int dns_cache_get(const char* host, uint8_t* ip_out) {
+    for (int i = 0; i < DNS_CACHE_N; i++) {
+        if (!dns_cache[i].valid) continue;
+        if (uptime_ticks - dns_cache[i].at > 600u * TICKS_PER_SEC) { dns_cache[i].valid = 0; continue; }
+        int k = 0;
+        while (host[k] && dns_cache[i].host[k] == host[k]) k++;
+        if (host[k] == 0 && dns_cache[i].host[k] == 0) { for (int q = 0; q < 4; q++) ip_out[q] = dns_cache[i].ip[q]; return 1; }
+    }
+    return 0;
+}
+static void dns_cache_put(const char* host, const uint8_t* ip) {
+    int i = dns_cache_next; dns_cache_next = (dns_cache_next + 1) % DNS_CACHE_N;
+    int k = 0; while (host[k] && k < 127) { dns_cache[i].host[k] = host[k]; k++; } dns_cache[i].host[k] = 0;
+    for (int q = 0; q < 4; q++) dns_cache[i].ip[q] = ip[q];
+    dns_cache[i].at = uptime_ticks; dns_cache[i].valid = 1;
+}
+
 int net_dns_lookup(const char* hostname, uint8_t* ip_out) {
     if (!net_configured) { terminal_writestring("net: DNS not configured\n"); return -1; }
+    if (dns_cache_get(hostname, ip_out)) return 1;
     if (net_dns[0] == 0 && net_dns[1] == 0 && net_dns[2] == 0 && net_dns[3] == 0) {
         terminal_writestring("net: no DNS server\n"); return -1;
     }
@@ -1287,9 +1309,13 @@ int net_dns_lookup(const char* hostname, uint8_t* ip_out) {
     dns_got = 0;
     udp_cb = dns_recv;
     net_send_raw(pkt, off + 20 + udplen);
-    for (int w = 0; w < 20; w++) { delay_ms(100); net_poll(); if (dns_got) break; }
+    for (int w = 0; w < 3000; w++) {
+        delay_ms(1); net_poll();
+        if (dns_got) break;
+        if (w == 1000 || w == 2000) net_send_raw(pkt, off + 20 + udplen);   /* retransmit */
+    }
     udp_cb = NULL;
-    if (dns_got) { for (int k = 0; k < 4; k++) ip_out[k] = dns_resp_ip[k]; return 1; }
+    if (dns_got) { for (int k = 0; k < 4; k++) ip_out[k] = dns_resp_ip[k]; dns_cache_put(hostname, ip_out); return 1; }
     return 0;
 }
 
@@ -1302,7 +1328,7 @@ static uint16_t tcp_src_port = 0x4000;
 static volatile int tcp_connected = 0;
 static volatile int tcp_fin = 0;
 static volatile int tcp_reset = 0;
-static uint8_t tcp_rx_buf[65536];
+static uint8_t tcp_rx_buf[262144];
 static volatile uint32_t tcp_rx_len = 0;
 static uint32_t tcp_rx_rd = 0;
 
@@ -1347,7 +1373,12 @@ static void tcp_send_flags(uint8_t flags, const uint8_t* data, uint32_t dlen) {
     tcp[10] = (tcp_ack >> 8) & 0xFF; tcp[11] = tcp_ack & 0xFF;
     tcp[12] = 0x50;
     tcp[13] = flags;
-    tcp[14] = 0x72; tcp[15] = 0x10;
+    {
+        uint32_t used = tcp_rx_len - tcp_rx_rd;
+        uint32_t win = sizeof(tcp_rx_buf) > used ? (uint32_t)sizeof(tcp_rx_buf) - used : 0;
+        if (win > 65535) win = 65535;
+        tcp[14] = (uint8_t)(win >> 8); tcp[15] = (uint8_t)(win & 0xFF);
+    }
     tcp[16] = 0; tcp[17] = 0;
     for (uint32_t i = 0; i < dlen; i++) tcp[20 + i] = data[i];
     uint16_t cs = tcp_csum(ip, tcp, 20 + dlen);
@@ -1433,11 +1464,11 @@ int net_tcp_open(const uint8_t* ip, uint16_t port) {
 
     tcp_send_flags(0x02, NULL, 0);
     int connected = 0;
-    for (int w = 0; w < 300; w++) {
-        delay_ms(10); net_poll();
+    for (int w = 0; w < 4000; w++) {
+        delay_ms(1); net_poll();
         if (tcp_connected) { connected = 1; break; }
         if (tcp_reset) break;
-        if (w == 100 || w == 200) tcp_send_flags(0x02, NULL, 0);
+        if (w == 1000 || w == 2000 || w == 3000) tcp_send_flags(0x02, NULL, 0);
     }
     if (!connected) {
         tcp_cb = NULL;
@@ -1512,41 +1543,77 @@ int net_tcp_connect(const uint8_t* ip, uint16_t port,
     return total > 0 ? (int)total : -1;
 }
 
-static uint8_t http_resp[65536];
+/* ------------------------------------------------------------------ */
+/*  HTTP/1.1 client                                                    */
+/*                                                                     */
+/*  - one persistent connection (keep-alive) that is reused for        */
+/*    consecutive requests to the same host:port, so a page with 40    */
+/*    images costs one TCP + TLS handshake instead of 41               */
+/*  - Content-Length / chunked / read-until-close framing              */
+/*  - Content-Encoding: gzip and deflate                               */
+/*  - a browser-like request header set                                */
+/* ------------------------------------------------------------------ */
 
 int  net_http_last_status = 0;
-char net_http_last_location[512];
+char net_http_last_location[1024];
+char net_http_last_content_type[128];
 
 static tls_t https_tls;
 int  net_tls_last_error = 0;
 char net_tls_peer_cn[64];
 
+#define HTTP_HDR_MAX   (16 * 1024)
+#define HTTP_ZBUF_MAX  (1536 * 1024)
+#define HTTP_KEEPALIVE_MS 20000
+
+static uint8_t http_hdr[HTTP_HDR_MAX];
+static uint8_t http_zbuf[HTTP_ZBUF_MAX];
+
+static struct {
+    int open;
+    int secure;
+    char host[128];
+    uint16_t port;
+    uint32_t last_used;
+} http_conn;
+
 static int https_send(const uint8_t* data, int len) { return net_tcp_send(data, (uint32_t)len) < 0 ? -1 : len; }
 static int https_recv(uint8_t* out, int max, int timeout_ms) { return net_tcp_recv(out, (uint32_t)max, (uint32_t)timeout_ms); }
 
-static int http_fetch_raw(const char* url, uint8_t* rb, uint32_t rmax) {
-    const char* p = url;
-    int secure = 0;
-    if (my_strncmp_prefix(p, "http://")) p += 7;
-    else if (my_strncmp_prefix(p, "https://")) { p += 8; secure = 1; }
-    char host[128];
-    int hi = 0;
-    while (*p && *p != ':' && *p != '/') { if (hi < 127) host[hi++] = *p; p++; }
-    host[hi] = 0;
-    uint16_t port = secure ? 443 : 80;
-    if (*p == ':') {
-        port = 0; p++;
-        while (*p >= '0' && *p <= '9') { port = (uint16_t)(port * 10 + (*p - '0')); p++; }
-    }
-    char path[512];
-    int pi = 0;
-    if (*p != '/') path[pi++] = '/';
-    while (*p && pi < 511) { path[pi++] = *p; p++; }
-    path[pi] = 0;
+static void http_close_conn(void) {
+    if (!http_conn.open) return;
+    if (http_conn.secure) tls_close(&https_tls);
+    net_tcp_close();
+    http_conn.open = 0;
+}
+
+void net_http_close_idle(void) { http_close_conn(); }
+
+static int http_conn_alive(void) {
+    if (!http_conn.open) return 0;
+    net_poll();
+    if (net_tcp_peer_closed()) return 0;
+    if (http_conn.secure && (https_tls.peer_closed || https_tls.error)) return 0;
+    if (uptime_ticks - http_conn.last_used > HTTP_KEEPALIVE_MS) return 0;
+    return 1;
+}
+
+static int conn_send(const uint8_t* d, int len) {
+    return http_conn.secure ? tls_write(&https_tls, d, len) : net_tcp_send(d, (uint32_t)len);
+}
+static int conn_recv(uint8_t* out, int max, int timeout_ms) {
+    return http_conn.secure ? tls_read(&https_tls, out, max, timeout_ms) : net_tcp_recv(out, (uint32_t)max, (uint32_t)timeout_ms);
+}
+
+/* returns 1 = reused an idle connection, 0 = opened a fresh one, -1 = failed */
+static int http_connect(const char* host, uint16_t port, int secure) {
+    if (http_conn.open && http_conn.secure == secure && http_conn.port == port &&
+        my_strncmp_prefix(http_conn.host, host) && strlen(http_conn.host) == strlen(host) && http_conn_alive())
+        return 1;
+    http_close_conn();
 
     uint8_t ip[4];
     if (!net_parse_ip4(host, ip)) {
-
         if (!net_dns_lookup(host, ip)) {
             terminal_writestring("net: DNS lookup failed for ");
             terminal_writestring(host);
@@ -1554,139 +1621,294 @@ static int http_fetch_raw(const char* url, uint8_t* rb, uint32_t rmax) {
             return -1;
         }
     }
-
-    char req[768];
-    int rl = net_snprintf(req, sizeof(req),
-                          "GET %s HTTP/1.1\r\nHost: %s\r\n"
-                          "User-Agent: SharkOS98\r\n"
-                          "Connection: close\r\n\r\n", path, host);
-
-    net_tls_last_error = 0;
-    net_tls_peer_cn[0] = 0;
-    if (!secure) {
-        return net_tcp_connect(ip, port, (uint8_t*)req, (uint32_t)rl, rb, rmax);
-    }
-
     if (net_tcp_open(ip, port) < 0) return -1;
-    int err = tls_connect(&https_tls, host, https_send, https_recv);
-    if (err) {
-        net_tls_last_error = err;
-        terminal_writestring("tls: ");
-        terminal_writestring(tls_error_string(err));
-        terminal_writestring("\n");
-        tls_close(&https_tls);
-        net_tcp_close();
-        return -1;
+    if (secure) {
+        int err = tls_connect(&https_tls, host, https_send, https_recv);
+        if (err) {
+            net_tls_last_error = err;
+            terminal_writestring("tls: ");
+            terminal_writestring(tls_error_string(err));
+            terminal_writestring("\n");
+            tls_close(&https_tls);
+            net_tcp_close();
+            return -1;
+        }
+        int i = 0; while (https_tls.peer_cn[i] && i < 63) { net_tls_peer_cn[i] = https_tls.peer_cn[i]; i++; } net_tls_peer_cn[i] = 0;
     }
-    { int i = 0; while (https_tls.peer_cn[i] && i < 63) { net_tls_peer_cn[i] = https_tls.peer_cn[i]; i++; } net_tls_peer_cn[i] = 0; }
-    tls_write(&https_tls, (const uint8_t*)req, rl);
-    uint32_t total = 0;
-    while (total < rmax) {
-        int n = tls_read(&https_tls, rb + total, rmax - total, 10 * TICKS_PER_SEC);
-        if (n <= 0) break;
-        total += (uint32_t)n;
+    http_conn.open = 1;
+    http_conn.secure = secure;
+    http_conn.port = port;
+    { int i = 0; while (host[i] && i < 127) { http_conn.host[i] = host[i]; i++; } http_conn.host[i] = 0; }
+    http_conn.last_used = uptime_ticks;
+    return 0;
+}
+
+static int hdr_name_is(const char* line, const char* name) {
+    int i = 0;
+    for (; name[i]; i++) {
+        char c = line[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+        if (c != name[i]) return 0;
     }
-    if (https_tls.error) net_tls_last_error = https_tls.error;
-    tls_close(&https_tls);
-    net_tcp_close();
-    return total > 0 ? (int)total : -1;
+    return line[i] == ':';
+}
+static const char* hdr_value(const char* line) {
+    while (*line && *line != ':') line++;
+    if (*line == ':') line++;
+    while (*line == ' ' || *line == '\t') line++;
+    return line;
+}
+static int value_has_ci(const char* v, const char* word) {
+    int wl = (int)strlen(word);
+    for (; *v && *v != '\r' && *v != '\n'; v++) {
+        int k = 0;
+        for (; k < wl; k++) {
+            char c = v[k];
+            if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+            if (c != word[k]) break;
+        }
+        if (k == wl) return 1;
+    }
+    return 0;
+}
+
+/* Incremental chunked-transfer decoder. */
+typedef struct {
+    int state;          /* 0 size line, 1 data, 2 CRLF after data, 3 trailers */
+    int skipping;       /* inside a chunk extension */
+    uint32_t remain;
+    int line_empty;
+    int done;
+    uint8_t* out; uint32_t out_max, out_len;
+} chunk_dec_t;
+
+static void chunk_feed(chunk_dec_t* d, const uint8_t* buf, uint32_t n) {
+    for (uint32_t i = 0; i < n && !d->done; i++) {
+        uint8_t c = buf[i];
+        switch (d->state) {
+        case 0:
+            if (c == '\n') {
+                if (d->remain == 0) { d->state = 3; d->line_empty = 1; }
+                else d->state = 1;
+                d->skipping = 0;
+            } else if (d->skipping || c == '\r') {
+            } else if (c >= '0' && c <= '9') d->remain = d->remain * 16 + (c - '0');
+            else if (c >= 'a' && c <= 'f') d->remain = d->remain * 16 + (c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') d->remain = d->remain * 16 + (c - 'A' + 10);
+            else d->skipping = 1;
+            break;
+        case 1: {
+            uint32_t take = n - i;
+            if (take > d->remain) take = d->remain;
+            uint32_t room = d->out_len < d->out_max ? d->out_max - d->out_len : 0;
+            uint32_t cp = take < room ? take : room;
+            for (uint32_t k = 0; k < cp; k++) d->out[d->out_len + k] = buf[i + k];
+            d->out_len += cp;
+            d->remain -= take;
+            i += take - 1;
+            if (d->remain == 0) d->state = 2;
+            break;
+        }
+        case 2:
+            if (c == '\n') { d->state = 0; d->remain = 0; d->skipping = 0; }
+            break;
+        case 3:
+            if (c == '\n') { if (d->line_empty) d->done = 1; d->line_empty = 1; }
+            else if (c != '\r') d->line_empty = 0;
+            break;
+        }
+    }
 }
 
 int net_http_get(const char* url, uint8_t* out_buf, uint32_t out_max) {
     net_http_last_status = 0;
     net_http_last_location[0] = 0;
+    net_http_last_content_type[0] = 0;
+    net_tls_last_error = 0;
+    net_tls_peer_cn[0] = 0;
+    if (!out_buf || out_max < 16) return -1;
 
-    uint8_t* rb = http_resp;
-    uint32_t rmax = sizeof(http_resp);
-    int in_place = 0;
-    if (out_max > sizeof(http_resp)) { rb = out_buf; rmax = out_max; in_place = 1; }
-    int n = http_fetch_raw(url, rb, rmax);
-    if (n <= 0) return -1;
-    int header_end = -1;
-    for (int i = 0; i + 4 <= n; i++) {
-        if (rb[i] == '\r' && rb[i + 1] == '\n' &&
-            rb[i + 2] == '\r' && rb[i + 3] == '\n') {
-            header_end = i + 4;
-            break;
-        }
+    const char* p = url;
+    int secure = 0;
+    if (my_strncmp_prefix(p, "http://")) p += 7;
+    else if (my_strncmp_prefix(p, "https://")) { p += 8; secure = 1; }
+    char host[128];
+    int hi = 0;
+    while (*p && *p != ':' && *p != '/' && *p != '?' && *p != '#') { if (hi < 127) host[hi++] = *p; p++; }
+    host[hi] = 0;
+    for (int i = 0; i < hi; i++) if (host[i] >= 'A' && host[i] <= 'Z') host[i] = (char)(host[i] + 32);
+    uint16_t port = secure ? 443 : 80;
+    int explicit_port = 0;
+    if (*p == ':') {
+        port = 0; p++; explicit_port = 1;
+        while (*p >= '0' && *p <= '9') { port = (uint16_t)(port * 10 + (*p - '0')); p++; }
     }
-    int body_start = (header_end >= 0) ? header_end : 0;
+    char path[1024];
+    int pi = 0;
+    if (*p != '/') path[pi++] = '/';
+    while (*p && *p != '#' && pi < 1023) {
+        unsigned char c = (unsigned char)*p++;
+        if (c <= ' ' || c == '"' || c == '<' || c == '>' || c == '`' || c == '{' || c == '}' || c == '|' || c == '\\' || c == '^' || c >= 0x7F) {
+            if (pi + 3 >= 1023) break;
+            static const char hx[] = "0123456789ABCDEF";
+            path[pi++] = '%'; path[pi++] = hx[c >> 4]; path[pi++] = hx[c & 15];
+        } else path[pi++] = (char)c;
+    }
+    path[pi] = 0;
+    if (!host[0]) return -1;
 
+    char req[1536];
+    for (int attempt = 0; attempt < 2; attempt++) {
+        int c = http_connect(host, port, secure);
+        if (c < 0) return -1;
+        int reused = (c == 1);
 
-    if (header_end > 0 && my_strncmp_prefix((const char*)rb, "HTTP/")) {
-        int i = 0;
-        while (i < header_end && rb[i] != ' ') i++;
-        while (i < header_end && rb[i] == ' ') i++;
-        int st = 0;
-        while (i < header_end && rb[i] >= '0' && rb[i] <= '9') { st = st * 10 + (rb[i] - '0'); i++; }
-        net_http_last_status = st;
-        for (int k = 0; k + 10 < header_end; k++) {
-            if (rb[k] == '\n' &&
-                (my_strncmp_prefix((const char*)&rb[k + 1], "Location: ") ||
-                 my_strncmp_prefix((const char*)&rb[k + 1], "location: "))) {
-                int q = k + 11, li = 0;
-                while (q < header_end && rb[q] != '\r' && rb[q] != '\n' &&
-                       li < (int)sizeof(net_http_last_location) - 1) {
-                    net_http_last_location[li++] = (char)rb[q++];
-                }
-                net_http_last_location[li] = 0;
-                break;
+        char hostport[140];
+        if (explicit_port) net_snprintf(hostport, sizeof(hostport), "%s:%u", host, (uint32_t)port);
+        else net_snprintf(hostport, sizeof(hostport), "%s", host);
+        int rl = net_snprintf(req, sizeof(req),
+            "GET %s HTTP/1.1\r\n"
+            "Host: %s\r\n"
+            "User-Agent: Mozilla/5.0 (X11; SharkOS i686) AppleWebKit/537.36 (KHTML, like Gecko) SharkNavigator/2.3 Safari/537.36\r\n"
+            "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5\r\n"
+            "Accept-Language: en-US,en;q=0.7,nl;q=0.3\r\n"
+            "Accept-Encoding: gzip, deflate\r\n"
+            "Upgrade-Insecure-Requests: 1\r\n"
+            "Connection: keep-alive\r\n\r\n",
+            path, hostport);
+
+        if (conn_send((const uint8_t*)req, rl) < 0) {
+            http_close_conn();
+            if (reused) continue;
+            return -1;
+        }
+
+        /* ---- response head ---- */
+        int hl = 0, head_end = -1, got_first = 0;
+        while (head_end < 0 && hl < HTTP_HDR_MAX - 1) {
+            int n = conn_recv(http_hdr + hl, HTTP_HDR_MAX - 1 - hl, got_first ? 10000 : 15000);
+            if (n <= 0) break;
+            got_first = 1;
+            int from = hl > 3 ? hl - 3 : 0;
+            hl += n;
+            for (int i = from; i + 3 < hl; i++) {
+                if (http_hdr[i] == '\r' && http_hdr[i + 1] == '\n' && http_hdr[i + 2] == '\r' && http_hdr[i + 3] == '\n') { head_end = i + 4; break; }
+                if (http_hdr[i] == '\n' && http_hdr[i + 1] == '\n') { head_end = i + 2; break; }
             }
         }
-    }
-
-
-    int chunked = 0;
-    for (int i = 0; i + 18 < body_start; i++) {
-
-        if (rb[i] != '\n') continue;
-        const char* h = (const char*)&rb[i + 1];
-        static const char name[] = "transfer-encoding:";
-        int k = 0;
-        while (name[k] && i + 1 + k < body_start) {
-            char c = h[k];
-            if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
-            if (c != name[k]) break;
-            k++;
+        if (head_end < 0) {
+            http_close_conn();
+            if (reused && hl == 0) continue;      /* stale keep-alive: retry once on a fresh connection */
+            if (hl <= 0) return -1;
+            /* HTTP/0.9-style or headerless reply: hand back whatever arrived */
+            uint32_t n = (uint32_t)hl < out_max ? (uint32_t)hl : out_max;
+            for (uint32_t i = 0; i < n; i++) out_buf[i] = http_hdr[i];
+            return (int)n;
         }
-        if (name[k]) continue;
-        const char* v = h + k;
-        while (*v == ' ' || *v == '\t') v++;
-        if (my_strncmp_prefix(v, "chunked") || my_strncmp_prefix(v, "Chunked")) { chunked = 1; break; }
-    }
+        http_hdr[hl] = 0;
 
-    int out_len = 0;
-    if (!chunked) {
-        int body_len = n - body_start;
-        if (body_len > (int)out_max) body_len = (int)out_max;
-
-        for (int i = 0; i < body_len; i++) out_buf[i] = rb[body_start + i];
-        return body_len;
-    }
-
-    int p2 = body_start;
-    while (p2 < n) {
-        uint32_t clen = 0;
-        int digits = 0;
-        while (p2 < n) {
-            uint8_t c = rb[p2];
-            if (c >= '0' && c <= '9') clen = clen * 16 + (c - '0');
-            else if (c >= 'a' && c <= 'f') clen = clen * 16 + (c - 'a' + 10);
-            else if (c >= 'A' && c <= 'F') clen = clen * 16 + (c - 'A' + 10);
-            else break;
-            digits++; p2++;
+        /* ---- parse the head ---- */
+        int status = 0, http10 = 0;
+        uint32_t clen = 0; int have_clen = 0, chunked = 0, enc = 0, close_after = 0;
+        {
+            const char* line = (const char*)http_hdr;
+            if (my_strncmp_prefix(line, "HTTP/")) {
+                if (my_strncmp_prefix(line, "HTTP/1.0")) http10 = 1;
+                const char* q = line; while (*q && *q != ' ') q++; while (*q == ' ') q++;
+                while (*q >= '0' && *q <= '9') { status = status * 10 + (*q - '0'); q++; }
+            }
+            while (*line && *line != '\n') line++;
+            if (*line == '\n') line++;
+            while ((const uint8_t*)line < http_hdr + head_end && *line && *line != '\r' && *line != '\n') {
+                const char* v = hdr_value(line);
+                if (hdr_name_is(line, "content-length")) { have_clen = 1; clen = 0; while (*v >= '0' && *v <= '9') { clen = clen * 10 + (uint32_t)(*v - '0'); v++; } }
+                else if (hdr_name_is(line, "transfer-encoding")) { if (value_has_ci(v, "chunked")) chunked = 1; }
+                else if (hdr_name_is(line, "content-encoding")) { if (value_has_ci(v, "gzip") || value_has_ci(v, "x-gzip")) enc = 1; else if (value_has_ci(v, "deflate")) enc = 2; else if (value_has_ci(v, "br") || value_has_ci(v, "zstd")) enc = 3; }
+                else if (hdr_name_is(line, "connection")) { if (value_has_ci(v, "close")) close_after = 1; else if (value_has_ci(v, "keep-alive")) close_after = -1; }
+                else if (hdr_name_is(line, "location")) { int li = 0; while (*v && *v != '\r' && *v != '\n' && li < (int)sizeof(net_http_last_location) - 1) net_http_last_location[li++] = *v++; net_http_last_location[li] = 0; }
+                else if (hdr_name_is(line, "content-type")) { int li = 0; while (*v && *v != '\r' && *v != '\n' && li < (int)sizeof(net_http_last_content_type) - 1) net_http_last_content_type[li++] = *v++; net_http_last_content_type[li] = 0; }
+                while (*line && *line != '\n') line++;
+                if (*line == '\n') line++;
+            }
         }
-        if (!digits) break;
-        while (p2 < n && rb[p2] != '\n') p2++;
-        p2++;
-        if (clen == 0) break;
-        for (uint32_t k = 0; k < clen && p2 < n && out_len < (int)out_max; k++) {
-            out_buf[out_len++] = rb[p2++];
+        if (http10 && close_after != -1) close_after = 1;
+        if (close_after < 0) close_after = 0;
+        net_http_last_status = status;
+
+        /* 1xx: informational, the real response follows */
+        if (status >= 100 && status < 200) { http_close_conn(); continue; }
+
+        int no_body = (status == 204 || status == 304);
+        if (!chunked && !have_clen && !no_body) close_after = 1;   /* framed by connection close */
+
+        /* ---- body ---- */
+        uint8_t* dst = enc ? http_zbuf : out_buf;
+        uint32_t dst_max = enc ? (uint32_t)HTTP_ZBUF_MAX : out_max;
+        uint32_t body_len = 0;
+        uint32_t pre = (uint32_t)(hl - head_end);
+        const uint8_t* pre_p = http_hdr + head_end;
+        static uint8_t rbuf[4096];
+
+        if (no_body) {
+            body_len = 0;
+        } else if (chunked) {
+            chunk_dec_t d; memset(&d, 0, sizeof(d));
+            d.out = dst; d.out_max = dst_max;
+            chunk_feed(&d, pre_p, pre);
+            while (!d.done) {
+                int n = conn_recv(rbuf, sizeof(rbuf), 10000);
+                if (n <= 0) { close_after = 1; break; }
+                chunk_feed(&d, rbuf, (uint32_t)n);
+            }
+            body_len = d.out_len;
+        } else if (have_clen) {
+            uint32_t got = 0;
+            uint32_t take = pre < clen ? pre : clen;
+            for (uint32_t i = 0; i < take && i < dst_max; i++) dst[i] = pre_p[i];
+            body_len = take < dst_max ? take : dst_max;
+            got = take;
+            while (got < clen) {
+                uint32_t room = dst_max - body_len;
+                if (room == 0) {
+                    /* caller's buffer is full: if the rest is small, drain it to keep the connection reusable */
+                    if (clen - got > 65536) { close_after = 1; break; }
+                    int n = conn_recv(rbuf, sizeof(rbuf), 10000);
+                    if (n <= 0) { close_after = 1; break; }
+                    got += (uint32_t)n;
+                    continue;
+                }
+                uint32_t want = clen - got; if (want > room) want = room;
+                int n = conn_recv(dst + body_len, (int)want, 10000);
+                if (n <= 0) { close_after = 1; break; }
+                body_len += (uint32_t)n; got += (uint32_t)n;
+            }
+        } else {
+            for (uint32_t i = 0; i < pre && i < dst_max; i++) dst[i] = pre_p[i];
+            body_len = pre < dst_max ? pre : dst_max;
+            while (body_len < dst_max) {
+                int n = conn_recv(dst + body_len, (int)(dst_max - body_len), 10000);
+                if (n <= 0) break;
+                body_len += (uint32_t)n;
+            }
         }
-        p2 += 2;
+
+        if (close_after) http_close_conn();
+        else http_conn.last_used = uptime_ticks;
+
+        if (enc == 1 || enc == 2) {
+            long n = -1;
+            if (enc == 1) n = inflate_gzip(http_zbuf, body_len, out_buf, out_max);
+            else { n = inflate_zlib(http_zbuf, body_len, out_buf, out_max); if (n < 0) n = inflate_raw(http_zbuf, body_len, out_buf, out_max); }
+            if (n < 0) n = 0;
+            return (int)n;
+        }
+        if (enc == 3) {
+            /* we never advertise brotli/zstd; treat a server that sends it anyway as an error */
+            return 0;
+        }
+        return (int)body_len;
     }
-    (void)in_place;
-    return out_len;
+    return -1;
 }
 
 void net_stack_init(void) {

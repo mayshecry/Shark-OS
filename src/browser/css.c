@@ -13,10 +13,10 @@ static br_decl_t var_decls[BR_MAX_VAR_DECLS];
 static int var_decl_count = 0;
 
 #define RULE_BUCKETS 256
-static short bucket_head[RULE_BUCKETS], bucket_tail[RULE_BUCKETS];
-static short rule_next[BR_MAX_RULES];
-static short shared_head = -1, shared_tail = -1;
-static short pseudo_head = -1, pseudo_tail = -1;
+static int bucket_head[RULE_BUCKETS], bucket_tail[RULE_BUCKETS];
+static int rule_next[BR_MAX_RULES];
+static int shared_head = -1, shared_tail = -1;
+static int pseudo_head = -1, pseudo_tail = -1;
 static int   rules_indexed = 0;
 static unsigned key_hash(const char* s, int n) {
     unsigned h = 2166136261u;
@@ -26,15 +26,15 @@ static unsigned key_hash(const char* s, int n) {
 static void index_rule(int i) {
     br_rule_t* r = &rules[i];
     const br_selpart_t* p0 = &r->parts[0];
-    short *head, *tail;
+    int *head, *tail;
     if (p0->pseudo == 20 || p0->pseudo == 21) { head = &pseudo_head; tail = &pseudo_tail; }
     else if (p0->id) { unsigned b = key_hash(p0->id, (int)strlen(p0->id)); head = &bucket_head[b]; tail = &bucket_tail[b]; }
     else if (p0->cls) { int l = 0; while (p0->cls[l] && p0->cls[l] != ' ') l++; unsigned b = key_hash(p0->cls, l); head = &bucket_head[b]; tail = &bucket_tail[b]; }
     else { head = &shared_head; tail = &shared_tail; }
 
     rule_next[i] = -1;
-    if (*head < 0) *head = (short)i; else rule_next[*tail] = (short)i;
-    *tail = (short)i;
+    if (*head < 0) *head = i; else rule_next[*tail] = i;
+    *tail = i;
 }
 static void rules_reindex(void) {
     for (int b = 0; b < RULE_BUCKETS; b++) { bucket_head[b] = -1; bucket_tail[b] = -1; }
@@ -131,6 +131,7 @@ static const char ua_sheet[] =
     "center{text-align:-webkit-center} hr{margin:8px 0;border:1px solid #808080}"
     "small{font-size:smaller} big{font-size:larger} mark{background:#ffff00}"
     "button,input,select,textarea{display:inline-block;background:#c0c0c0;padding:2px 6px;font-size:13px;font-family:sans-serif}"
+    "input,textarea{background:#fff;padding:1px 4px} textarea{font-family:monospace;font-size:13px}"
     "fieldset{border:1px solid #808080;padding:6px;margin:6px 0}"
     "dd{margin-left:24px} sup,sub{font-size:80%}"
     "figure{margin:8px 24px} summary{font-weight:bold}"
@@ -223,14 +224,14 @@ uint32_t br_css_parse_color(const char* s, int* ok) {
         if (n == 3 || n == 4) {
             int r = hexval(s[0]), g = hexval(s[1]), b = hexval(s[2]);
             uint32_t a = n == 4 ? (uint32_t)(hexval(s[3]) * 17) : 0xFFu;
-            if (a == 0) return 0;
+            if (a == 0) return BR_COLOR_TRANSPARENT;
             return (a << 24) | (uint32_t)((r * 17) << 16) | (uint32_t)((g * 17) << 8) | (uint32_t)(b * 17);
         }
         if (n == 6 || n == 8) {
             uint32_t v = 0;
             for (int i = 0; i < 6; i++) v = (v << 4) | (uint32_t)hexval(s[i]);
             uint32_t a = n == 8 ? (uint32_t)(hexval(s[6]) * 16 + hexval(s[7])) : 0xFFu;
-            if (a == 0) return 0;
+            if (a == 0) return BR_COLOR_TRANSPARENT;
             return (a << 24) | v;
         }
         *ok = 0; return 0;
@@ -261,7 +262,7 @@ uint32_t br_css_parse_color(const char* s, int* ok) {
             if (a < 0) a = 0;
             if (a > 255) a = 255;
         }
-        if (a == 0) return 0x00000000u;
+        if (a == 0) return BR_COLOR_TRANSPARENT;
         return ((uint32_t)a << 24) | (uint32_t)(c[0] << 16) | (uint32_t)(c[1] << 8) | (uint32_t)c[2];
     }
     if ((s[0] == 'h' || s[0] == 'H') && (s[1] == 's' || s[1] == 'S') && (s[2] == 'l' || s[2] == 'L')) {
@@ -304,7 +305,7 @@ uint32_t br_css_parse_color(const char* s, int* ok) {
         if (r < 0) r = 0; if (r > 255) r = 255;
         if (g < 0) g = 0; if (g > 255) g = 255;
         if (b < 0) b = 0; if (b > 255) b = 255;
-        if (a == 0) return 0;
+        if (a == 0) return BR_COLOR_TRANSPARENT;
         return ((uint32_t)a << 24) | (uint32_t)(r << 16) | (uint32_t)(g << 8) | (uint32_t)b;
     }
     if (br_streq_prefix(s, "currentcolor") || br_streq_prefix(s, "currentColor")) return 0x01000000u;
@@ -314,7 +315,7 @@ uint32_t br_css_parse_color(const char* s, int* ok) {
     name[n] = 0;
     for (int i = 0; named_colors[i].name; i++) {
         if (br_streq(named_colors[i].name, name)) {
-            if (named_colors[i].rgb == 0xFF000000u) return 0x00000000u;
+            if (named_colors[i].rgb == 0xFF000000u) return BR_COLOR_TRANSPARENT;
             return 0xFF000000u | named_colors[i].rgb;
         }
     }
@@ -1271,6 +1272,7 @@ static void apply_decl(br_style_t* st, const char* name, const char* value, int 
              br_streq(name, "border-block-end") || br_streq(name, "border-block-start") ||
              br_streq(name, "border-inline-start") || br_streq(name, "border-inline-end")) {
         if (br_streq(name, "outline")) return;
+        st->border_set = 1;
         int side = br_streq(name, "border") ? 15 :
                    (br_streq(name, "border-top") || br_streq(name, "border-block-start")) ? 1 :
                    (br_streq(name, "border-right") || br_streq(name, "border-inline-end")) ? 2 :
@@ -1313,7 +1315,7 @@ static void apply_decl(br_style_t* st, const char* name, const char* value, int 
         if (st->border_l > m) m = st->border_l;
         st->border = m;
     }
-    else if (br_streq(name, "border-width")) { int l = parse_length_em(value, 400, em, &ok); if (ok) { if (l > 8) l = 8; st->border = st->border_t = st->border_r = st->border_b = st->border_l = l; } }
+    else if (br_streq(name, "border-width")) { st->border_set = 1; int l = parse_length_em(value, 400, em, &ok); if (ok) { if (l > 8) l = 8; st->border = st->border_t = st->border_r = st->border_b = st->border_l = l; } }
     else if (br_streq(name, "border-top-width") || br_streq(name, "border-bottom-width") || br_streq(name, "border-left-width") || br_streq(name, "border-right-width")) {
         int l = parse_length_em(value, 400, em, &ok);
         if (ok) {
@@ -1401,6 +1403,7 @@ static void apply_decl(br_style_t* st, const char* name, const char* value, int 
     else if (br_streq(name, "overflow") || br_streq(name, "overflow-y") || br_streq(name, "overflow-x")) { st->overflow_hidden = br_streq_prefix(value, "hidden") || br_streq_prefix(value, "clip"); }
     else if (br_streq(name, "content")) {  }
     else if (br_streq(name, "border-style")) {
+        st->border_set = 1;
         if (br_streq(value, "none") || br_streq(value, "hidden")) st->border = st->border_t = st->border_r = st->border_b = st->border_l = 0;
         else if (!st->border) st->border = st->border_t = st->border_r = st->border_b = st->border_l = 1;
     }
@@ -1465,7 +1468,10 @@ static void apply_decl(br_style_t* st, const char* name, const char* value, int 
         else { st->pos_t = st->pos_r = st->pos_b = st->pos_l = v; }
     }
     else if (br_streq(name, "z-index") || br_streq(name, "pointer-events") || br_streq(name, "cursor") || br_streq(name, "transition") || br_streq(name, "animation") || br_streq(name, "will-change")) { }
-    else if (br_streq(name, "clip") || br_streq(name, "clip-path")) { if (br_streq_prefix(value, "rect(0") || br_streq_prefix(value, "rect(1px") || br_streq(value, "inset(50%)")) st->display = BR_DISPLAY_NONE;  }
+    else if (br_streq(name, "clip") || br_streq(name, "clip-path")) {
+        if (br_streq_prefix(value, "rect(0") || br_streq_prefix(value, "rect(1px") || br_streq_prefix(value, "rect(0px") ||
+            br_streq(value, "inset(50%)") || br_streq(value, "inset(100%)") || br_streq_prefix(value, "polygon(0 0,0 0,0 0")) st->display = BR_DISPLAY_NONE;
+    }
     else if (br_streq(name, "transform")) { if (br_streq_prefix(value, "scale(0")) st->display = BR_DISPLAY_NONE; }
 }
 
@@ -1559,12 +1565,12 @@ static void compute_node(br_node_t* n, const br_style_t* parent) {
 
     int parent_px = parent->font_px > 0 ? parent->font_px : 16;
 
-    int idx[160]; int cnt = 0;
+    int idx[400]; int cnt = 0;
     attr_cache_node = NULL;
     attr_cache_fill(n);
     rules_index_sync();
 
-    short chains[34]; int nch = 0;
+    int chains[34]; int nch = 0;
     chains[nch++] = shared_head;
     if (attr_cache_id) chains[nch++] = bucket_head[key_hash(attr_cache_id, (int)strlen(attr_cache_id))];
     if (attr_cache_cls) {
@@ -1573,14 +1579,14 @@ static void compute_node(br_node_t* n, const br_style_t* parent) {
             while (*c == ' ' || *c == '\t' || *c == '\n') c++;
             if (!*c) break;
             int l = 0; while (c[l] && c[l] != ' ' && c[l] != '\t' && c[l] != '\n') l++;
-            short h = bucket_head[key_hash(c, l)];
+            int h = bucket_head[key_hash(c, l)];
             int dup = 0; for (int k = 1; k < nch; k++) if (chains[k] == h) dup = 1;
             if (!dup) chains[nch++] = h;
             c += l;
         }
     }
-    for (int ci = 0; ci < nch && cnt < 160; ci++) {
-        for (int i = chains[ci]; i >= 0 && cnt < 160; i = rule_next[i]) {
+    for (int ci = 0; ci < nch && cnt < 400; ci++) {
+        for (int i = chains[ci]; i >= 0 && cnt < 400; i = rule_next[i]) {
             const br_rule_t* r = &rules[i];
 
             const br_selpart_t* p0 = &r->parts[0];

@@ -385,7 +385,9 @@ static void implied_end_tags(parser_t* p, const char* tag) {
         return;
     }
     if (br_streq(tag, "option")) { if (has_open(p, "option")) pop_to(p, "option"); return; }
-    if (br_is_block_tag(tag) && !br_streq(tag, "html") && !br_streq(tag, "body") && !br_streq(tag, "head")) {
+    if (br_is_block_tag(tag) && !br_streq(tag, "html") && !br_streq(tag, "body") && !br_streq(tag, "head") &&
+        !br_streq(tag, "style") && !br_streq(tag, "script") && !br_streq(tag, "title") && !br_streq(tag, "textarea") &&
+        !br_streq(tag, "select") && !br_streq(tag, "option")) {
 
         for (int i = p->depth - 1; i >= 1; i--) {
             if (br_streq(p->stack[i]->tag, "p")) { p->depth = i; break; }
@@ -568,6 +570,10 @@ br_node_t* br_html_parse(const char* html, int len) {
             while (e < len && s[e] != '>') e++;
             p->pos = e + 1;
             text_start = p->pos;
+            if (br_streq(tag, "svg") && p->pos - (ts - 1) < 256 * 1024) {
+                /* keep the raw markup: the layout rasterizes it with svg.c */
+                n->value = br_strdup_n(&s[ts - 1], p->pos - (ts - 1));
+            }
             continue;
         }
 
@@ -622,6 +628,9 @@ int br_node_text_content(const br_node_t* n, char* out, int max) {
         return o;
     }
     for (br_node_t* c = n->first_child; c && o < max - 1; c = c->next) {
+        if (c->type == BR_NODE_ELEMENT && c->tag &&
+            (br_streq(c->tag, "style") || br_streq(c->tag, "script") || br_streq(c->tag, "template") || br_streq(c->tag, "noscript") || br_streq(c->tag, "svg")))
+            continue;
         o += br_node_text_content(c, out + o, max - o);
     }
     out[o] = 0;

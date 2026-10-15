@@ -5,6 +5,7 @@
 
 browser_state_t brs;
 br_node_t* br_doc = NULL;
+int br_js_disabled = 0;      /* JavaScript is on by default; toggled from the Links menu */
 char br_page_src[BR_PAGE_MAX];
 int br_page_len = 0;
 
@@ -28,6 +29,7 @@ static const struct { const char* title; const char* url; } bookmarks[] = {
     { "SharkOS readme",       "file:readme.txt" },
     { "JavaScript console",   "about:console" },
     { "View page source",     "about:source" },
+    { "JavaScript: on",       "about:togglejs" },
 };
 #define BR_BOOKMARK_COUNT ((int)(sizeof(bookmarks) / sizeof(bookmarks[0])))
 
@@ -65,6 +67,7 @@ void br_strlcat(char* d, const char* s, int max) {
 
 void br_status(const char* s) {
     br_strlcpy(brs.status, s, sizeof(brs.status));
+    serial_puts("browser: "); serial_puts(s); serial_puts("\n");
     br_request_repaint();
 }
 
@@ -73,6 +76,7 @@ void br_request_repaint(void) {
 }
 
 void br_js_console(const char* msg) {
+    serial_puts("js: "); serial_puts(msg); serial_puts("\n");
     if (brs.js_console_lines < 8) {
         br_strlcpy(brs.js_console[brs.js_console_lines++], msg, 96);
     } else {
@@ -430,11 +434,11 @@ static void collect_styles(br_node_t* n) {
             const char* media = br_attr(n, "media");
 
             int theme_variant = href && (my_strstr_ci(href, "dark") || my_strstr_ci(href, "high_contrast") || my_strstr_ci(href, "colorblind") || my_strstr_ci(href, "tritanopia") || my_strstr_ci(href, "print"));
-            if (rel && href && my_strstr_ci(rel, "stylesheet") && !my_strstr_ci(rel, "alternate") && is_net_url(brs.url) && !theme_variant &&
+            if (rel && href && my_strstr_ci(rel, "stylesheet") && !my_strstr_ci(rel, "alternate") && !theme_variant &&
                 !(media && (my_strstr_ci(media, "print") || my_strstr_ci(media, "dark")))) {
                 char abs[BR_URL_MAX];
                 br_resolve_url(brs.url, href, abs, sizeof(abs));
-                if (is_net_url(abs)) load_sheet(abs, 0);
+                if (is_net_url(abs) || br_streq_prefix(abs, "file:")) load_sheet(abs, 0);
             }
         }
     }
@@ -597,8 +601,10 @@ static void parse_and_show(void) {
 
     brs.js_console_lines = 0;
     br_js_reset();
-    br_status("Running scripts...");
-    br_js_run_document(br_doc);
+    if (!br_js_disabled) {
+        br_status("Running scripts...");
+        br_js_run_document(br_doc);
+    }
 
     int pending_nav = brs.needs_layout >= 2 ? brs.needs_layout : 0;
     if (pending_nav == 2 && br_streq(brs.address, brs.url)) { pending_nav = 0; brs.needs_layout = 1; }
@@ -625,6 +631,75 @@ static void parse_and_show(void) {
         br_node_t* t = br_find_by_id(br_doc, hash + 1);
         if (t) brs.scroll_y = t->ly;
     }
+}
+
+/* ---- character set handling ------------------------------------------
+ * The renderer works in UTF-8. Pages declared (or sniffed) as ISO-8859-1 /
+ * Windows-1252 are transcoded in place so accented text and typographic
+ * punctuation come out right instead of as replacement glyphs. */
+static const uint16_t cp1252_high[32] = {
+    0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+    0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178 };
+
+static int charset_is_latin1(const char* v) {
+    return my_strstr_ci(v, "8859-1") || my_strstr_ci(v, "1252") || my_strstr_ci(v, "latin1") || my_strstr_ci(v, "latin-1") || my_strstr_ci(v, "ascii");
+}
+static int charset_is_utf8(const char* v) { return my_strstr_ci(v, "utf-8") || my_strstr_ci(v, "utf8"); }
+
+static int page_is_valid_utf8(const char* s, int n) {
+    int i = 0, high = 0;
+    while (i < n) {
+        uint8_t c = (uint8_t)s[i];
+        if (c < 0x80) { i++; continue; }
+        high = 1;
+        int len = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 0;
+        if (!len || i + len > n) return 0;
+        for (int k = 1; k < len; k++) if (((uint8_t)s[i + k] & 0xC0) != 0x80) return 0;
+        i += len;
+    }
+    return high ? 1 : 2;   /* 2 = pure ASCII */
+}
+
+static void page_apply_charset(void) {
+    if (br_page_len <= 0) return;
+    if (br_page_len >= 3 && (uint8_t)br_page_src[0] == 0xEF && (uint8_t)br_page_src[1] == 0xBB && (uint8_t)br_page_src[2] == 0xBF) return;
+    int latin1 = 0, utf8 = 0;
+    const char* ct = net_http_last_content_type;
+    const char* cs = ct[0] ? my_strstr_ci(ct, "charset=") : NULL;
+    if (cs) { if (charset_is_utf8(cs)) utf8 = 1; else if (charset_is_latin1(cs)) latin1 = 1; }
+    if (!latin1 && !utf8) {
+        /* <meta charset=..> / <meta http-equiv=content-type ..> in the first 4 KB */
+        int lim = br_page_len < 4096 ? br_page_len : 4096;
+        char head[4097]; memcpy(head, br_page_src, (size_t)lim); head[lim] = 0;
+        const char* m = my_strstr_ci(head, "charset=");
+        if (m) { if (charset_is_utf8(m)) utf8 = 1; else if (charset_is_latin1(m)) latin1 = 1; }
+    }
+    if (utf8) return;
+    int v = page_is_valid_utf8(br_page_src, br_page_len);
+    if (v == 2) return;                 /* plain ASCII: nothing to do */
+    if (v == 1 && !latin1) return;      /* undeclared but well-formed UTF-8 */
+    if (v == 1 && latin1) {
+        /* declared Latin-1 but decodes cleanly as UTF-8: trust the bytes (common misconfiguration) */
+        return;
+    }
+    /* transcode single bytes >= 0x80 into UTF-8, growing the buffer in place (back to front) */
+    int extra = 0;
+    for (int i = 0; i < br_page_len; i++) {
+        uint8_t c = (uint8_t)br_page_src[i];
+        if (c >= 0x80) extra += (c >= 0xA0 || cp1252_high[c - 0x80] < 0x800) ? 1 : 2;
+    }
+    int new_len = br_page_len + extra;
+    if (new_len >= BR_PAGE_MAX - 1) return;
+    int o = new_len;
+    for (int i = br_page_len - 1; i >= 0; i--) {
+        uint8_t c = (uint8_t)br_page_src[i];
+        if (c < 0x80) { br_page_src[--o] = (char)c; continue; }
+        uint32_t u = c >= 0xA0 ? c : cp1252_high[c - 0x80];
+        if (u < 0x800) { br_page_src[--o] = (char)(0x80 | (u & 0x3F)); br_page_src[--o] = (char)(0xC0 | (u >> 6)); }
+        else { br_page_src[--o] = (char)(0x80 | (u & 0x3F)); br_page_src[--o] = (char)(0x80 | ((u >> 6) & 0x3F)); br_page_src[--o] = (char)(0xE0 | (u >> 12)); }
+    }
+    br_page_len = new_len;
+    br_page_src[br_page_len] = 0;
 }
 
 static int redirect_depth = 0;
@@ -720,6 +795,8 @@ void br_navigate(const char* url_in, int push_history) {
             int n = br_fetch_resource(full, (uint8_t*)br_page_src, BR_PAGE_MAX - 1);
             if (n < 0) n = 0;
             br_page_src[n] = 0; br_page_len = n;
+            page_apply_charset();
+            n = br_page_len;
             int is_http = is_net_url(full);
             int is_https = br_streq_prefix(full, "https://");
             int status = is_http ? net_http_last_status : 200;
@@ -781,6 +858,7 @@ void br_navigate(const char* url_in, int push_history) {
     subres_budget_start();
     parse_and_show();
     uint32_t t_done = uptime_ticks;
+    net_http_close_idle();
     brs.loading = 0;
     char st[160];
     br_strlcpy(st, ok ? "Done" : "Error", sizeof(st));
@@ -954,8 +1032,15 @@ static void draw_image_box(br_box_t* b, int sx, int sy, const w98_rect_t* clip) 
                 int ix = (px - sx) * im->w / (b->w ? b->w : 1);
                 if (ix >= im->w) ix = im->w - 1;
                 uint32_t p = src[ix];
-                if ((p >> 24) < 0x80) continue;
-                row[px] = p | 0xFF000000u;
+                uint32_t a = p >> 24;
+                if (!a) continue;
+                if (a == 0xFF) { row[px] = p; continue; }
+                /* straight-alpha "over" blend for antialiased edges / translucent pixels */
+                uint32_t d = row[px], inv = 255 - a;
+                uint32_t r = (((p >> 16) & 0xFF) * a + ((d >> 16) & 0xFF) * inv) / 255;
+                uint32_t g = (((p >> 8) & 0xFF) * a + ((d >> 8) & 0xFF) * inv) / 255;
+                uint32_t bl = ((p & 0xFF) * a + (d & 0xFF) * inv) / 255;
+                row[px] = 0xFF000000u | (r << 16) | (g << 8) | bl;
             }
         }
         if (b->border > 0) {
@@ -969,6 +1054,9 @@ static void draw_image_box(br_box_t* b, int sx, int sy, const w98_rect_t* clip) 
         return;
     }
 
+    /* vector graphics that failed to rasterize (or are empty) draw nothing, like a real browser */
+    if (b->node && b->node->tag && br_streq(b->node->tag, "svg")) return;
+    if (b->w < 12 || b->h < 12) return;
     fill_clipped(sx, sy, b->w, b->h, 0xFFF0F0F0u, clip);
     fill_clipped(sx, sy, b->w, 1, 0xFF808080u, clip);
     fill_clipped(sx, sy + b->h - 1, b->w, 1, 0xFF808080u, clip);
@@ -998,7 +1086,7 @@ static void draw_page(window_t* w) {
     int vw = viewport_w(w), vh = viewport_h(w);
     w98_rect_t clip = { vx, vy, vw, vh };
     uint32_t page_bg = 0xFFFFFFFFu;
-    if (br_doc && br_doc->body && br_doc->body->style.background) page_bg = br_doc->body->style.background;
+    if (br_doc && br_doc->body && (br_doc->body->style.background >> 24) == 0xFF) page_bg = br_doc->body->style.background;
     w98_fill(vx, vy, vw, vh, page_bg);
 
     int n = br_box_count();
@@ -1066,11 +1154,26 @@ static void draw_page(window_t* w) {
         }
         case BR_BOX_INPUT: {
             int focused = b->node && brs.focus_input == b->node->id;
-            fill_clipped(sx, sy, b->w, b->h, 0xFFFFFFFFu, &clip);
-
-            fill_clipped(sx, sy, b->w, 1, 0xFF808080u, &clip); fill_clipped(sx, sy, 1, b->h, 0xFF808080u, &clip);
-            fill_clipped(sx, sy + b->h - 1, b->w, 1, 0xFFFFFFFFu, &clip); fill_clipped(sx + b->w - 1, sy, 1, b->h, 0xFFFFFFFFu, &clip);
-            fill_clipped(sx + 1, sy + 1, b->w - 2, 1, 0xFF000000u, &clip); fill_clipped(sx + 1, sy + 1, 1, b->h - 2, 0xFF000000u, &clip);
+            {
+                const br_style_t* ns = b->node ? &b->node->style : NULL;
+                int styled = ns && ns->border_set;
+                int bw = styled ? ns->border : 1;
+                uint32_t bc = (styled && ns->border_color) ? ns->border_color : 0xFF767676u;
+                int rr = ns && ns->radius > 1 ? ns->radius : (styled ? 0 : 2);
+                uint32_t bgc = (ns && ns->background) ? ns->background : (styled && !bw ? 0 : 0xFFFFFFFFu);
+                if (bgc >> 24) { if (rr > 1) fill_rounded(sx, sy, b->w, b->h, rr, bgc, &clip); else fill_clipped(sx, sy, b->w, b->h, bgc, &clip); }
+                if (bw > 0 && (bc >> 24)) {
+                    int bt = styled ? ns->border_t : bw, bb = styled ? ns->border_b : bw, bl = styled ? ns->border_l : bw, brr = styled ? ns->border_r : bw;
+                    if (rr > 1 && bt == bb && bl == brr && bt == bl) stroke_rounded(sx, sy, b->w, b->h, rr, bw, bc, &clip);
+                    else {
+                        if (bt > 0) fill_clipped(sx, sy, b->w, bt, bc, &clip);
+                        if (bb > 0) fill_clipped(sx, sy + b->h - bb, b->w, bb, bc, &clip);
+                        if (bl > 0) fill_clipped(sx, sy, bl, b->h, bc, &clip);
+                        if (brr > 0) fill_clipped(sx + b->w - brr, sy, brr, b->h, bc, &clip);
+                    }
+                }
+                if (focused && !styled) stroke_rounded(sx, sy, b->w, b->h, rr > 1 ? rr : 2, 1, 0xFF1A73E8u, &clip);
+            }
             const char* v = b->node && b->node->value ? b->node->value : "";
             const char* type = b->node ? br_attr(b->node, "type") : NULL;
             char masked[64];
@@ -1106,7 +1209,7 @@ static void draw_page(window_t* w) {
 
                 int rr = b->radius > 1 ? b->radius : 0;
                 if ((face >> 24) && (face & 0xFFFFFF) != 0xC0C0C0) fill_rounded(sx + pressed, sy + pressed, b->w, b->h, rr, face, &clip);
-                else fill_clipped(sx, sy, b->w, b->h, face, &clip);
+                else if (face >> 24) fill_clipped(sx, sy, b->w, b->h, face, &clip);
                 if (b->border > 0 && (b->border_color >> 24)) { if (rr > 1) stroke_rounded(sx, sy, b->w, b->h, rr, b->border, b->border_color, &clip); else { fill_clipped(sx, sy, b->w, 1, b->border_color, &clip); fill_clipped(sx, sy + b->h - 1, b->w, 1, b->border_color, &clip); fill_clipped(sx, sy, 1, b->h, b->border_color, &clip); fill_clipped(sx + b->w - 1, sy, 1, b->h, b->border_color, &clip); } }
                 int px2 = b->font_px > 0 ? b->font_px : 13;
                 int tw2 = br_font_text_width(b->face, px2, b->text, b->text_len);
@@ -1258,7 +1361,9 @@ static void draw_menu(window_t* w) {
         int iy = y + 3 + i * 20;
         int hot = (desktop_mouse_x >= x && desktop_mouse_x < x + BR_MENU_W && desktop_mouse_y >= iy && desktop_mouse_y < iy + 20);
         if (hot) w98_fill(x + 2, iy, BR_MENU_W - 4, 20, W98_HIGHLIGHT);
-        w98_text(bookmarks[i].title, x + 10, iy + 6, hot ? W98_HIGHLIGHTTEXT : W98_BTNTEXT, hot ? W98_HIGHLIGHT : W98_MENU_BG, 1, NULL);
+        const char* title = bookmarks[i].title;
+        if (br_streq(bookmarks[i].url, "about:togglejs")) title = br_js_disabled ? "JavaScript: off (click to enable)" : "JavaScript: on (click to disable)";
+        w98_text(title, x + 10, iy + 6, hot ? W98_HIGHLIGHTTEXT : W98_BTNTEXT, hot ? W98_HIGHLIGHT : W98_MENU_BG, 1, NULL);
     }
 }
 
@@ -1318,7 +1423,7 @@ static br_box_t* box_at(window_t* w, int mx, int my) {
             if (b->kind == BR_BOX_RECT && !(b->node && b->node->type == BR_NODE_ELEMENT && (br_streq(b->node->tag, "a") || br_attr(b->node, "onclick")))) {
 
                 br_node_t* n = b->node; int interactive = 0;
-                for (br_node_t* p = n; p; p = p->parent) if (p->type == BR_NODE_ELEMENT && (br_streq(p->tag, "a") || br_attr(p, "onclick") || (p->js_obj >= 0))) { interactive = 1; break; }
+                for (br_node_t* p = n; p; p = p->parent) if (p->type == BR_NODE_ELEMENT && (br_streq(p->tag, "a") || br_streq(p->tag, "button") || br_streq(p->tag, "label") || br_attr(p, "onclick") || (p->js_obj >= 0))) { interactive = 1; break; }
                 if (!interactive) continue;
             }
             return b;
@@ -1401,6 +1506,11 @@ void app_window_mouse_browser(window_t* w, int mx, int my, int buttons) {
         if (mx >= menu_x && mx < menu_x + BR_MENU_W && my >= menu_y + 3 && my < menu_y + 3 + BR_BOOKMARK_COUNT * 20) {
             int i = (my - menu_y - 3) / 20;
             brs.menu_open = 0;
+            if (br_streq(bookmarks[i].url, "about:togglejs")) {
+                br_js_disabled = !br_js_disabled;
+                br_status(br_js_disabled ? "JavaScript disabled - reload to apply" : "JavaScript enabled - reload to apply");
+                return;
+            }
             br_navigate(bookmarks[i].url, 1);
             return;
         }
@@ -1500,6 +1610,16 @@ static void address_insert(char c) {
     brs.address[brs.address_cursor++] = c;
 }
 
+/* focusable text-entry controls for Tab navigation */
+static int is_text_field(const br_node_t* k) {
+    if (!k->tag) return 0;
+    if (br_streq(k->tag, "textarea")) return !br_attr(k, "readonly") && k->style.visible && k->style.display != BR_DISPLAY_NONE;
+    if (!br_streq(k->tag, "input")) return 0;
+    const char* t = br_attr(k, "type");
+    return (!t || br_strieq(t, "text") || br_strieq(t, "password") || br_strieq(t, "search") || br_strieq(t, "email") ||
+            br_strieq(t, "number") || br_strieq(t, "url") || br_strieq(t, "tel")) && k->style.visible && k->style.display != BR_DISPLAY_NONE;
+}
+
 void app_window_keyboard_browser(window_t* w, char c) {
     auto_nav_chain = 0;
     if (brs.win != w) return;
@@ -1542,7 +1662,7 @@ void app_window_keyboard_browser(window_t* w, char c) {
         if (c == '\t') {
 
             int found = 0;
-            for (int i = n->id + 1; i < br_dom_node_count(); i++) { br_node_t* k = br_dom_node(i); if (k->type == BR_NODE_ELEMENT && br_streq(k->tag, "input") && k->lw > 0) { const char* t = br_attr(k, "type"); if (!t || br_strieq(t, "text") || br_strieq(t, "password") || br_strieq(t, "search") || br_strieq(t, "email") || br_strieq(t, "number") || br_strieq(t, "url")) { brs.focus_input = k->id; found = 1; break; } } }
+            for (int i = n->id + 1; i < br_dom_node_count(); i++) { br_node_t* k = br_dom_node(i); if (k->type == BR_NODE_ELEMENT && k->lw > 0 && is_text_field(k)) { brs.focus_input = k->id; found = 1; break; } }
             if (!found) brs.focus_input = -1;
             br_request_repaint();
             return;
@@ -1576,7 +1696,7 @@ void app_window_keyboard_browser(window_t* w, char c) {
     if (c == '/' ) { brs.address_focus = 1; brs.address_select_all = 1; brs.address_cursor = (int)strlen(brs.address); br_request_repaint(); return; }
     if (c == '\t') {
 
-        for (int i = 0; i < br_dom_node_count(); i++) { br_node_t* k = br_dom_node(i); if (k->type == BR_NODE_ELEMENT && br_streq(k->tag, "input") && k->lw > 0) { const char* t = br_attr(k, "type"); if (!t || br_strieq(t, "text") || br_strieq(t, "password") || br_strieq(t, "search")) { brs.focus_input = k->id; break; } } }
+        for (int i = 0; i < br_dom_node_count(); i++) { br_node_t* k = br_dom_node(i); if (k->type == BR_NODE_ELEMENT && k->lw > 0 && is_text_field(k)) { brs.focus_input = k->id; break; } }
         br_request_repaint();
         return;
     }

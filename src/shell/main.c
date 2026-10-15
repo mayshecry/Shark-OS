@@ -47,9 +47,12 @@ struct multiboot_info {
 struct multiboot_mmap_entry { uint32_t size, addr_low, addr_high, len_low, len_high, type; } __attribute__((packed));
 
 
+static char boot_url[256];
+
 void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     if (magic != 0x2BADB002) return;
     asm volatile("cli");
+    serial_init();
 
     if (mb_info->flags & (1 << 2)) {
         char* cmdline = (char*)(uintptr_t)mb_info->cmdline;
@@ -69,6 +72,17 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
                     break;
                 }
                 legacy_pos++;
+            }
+            /* "url=<address>" on the GRUB command line opens Shark Navigator on
+             * that page as soon as DHCP has bound (or after a 20 s timeout).
+             * Handy for kiosk setups and for automated testing under QEMU. */
+            for (char* up = cmdline; *up; up++) {
+                if ((up == cmdline || up[-1] == ' ') && up[0] == 'u' && up[1] == 'r' && up[2] == 'l' && up[3] == '=') {
+                    int o = 0;
+                    for (char* v = up + 4; *v && *v != ' ' && o < (int)sizeof(boot_url) - 1; v++) boot_url[o++] = *v;
+                    boot_url[o] = 0;
+                    break;
+                }
             }
             char* kawaii_pos = cmdline;
             while (*kawaii_pos) {
@@ -439,6 +453,14 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             last_game_tick = uptime_ticks;
             focused->game_tick();
             desktop.dirty = true;
+        }
+
+        if (boot_url[0] && (net_configured || uptime_ticks > 20 * TICKS_PER_SEC)) {
+            char u[256];
+            int i = 0; for (; boot_url[i]; i++) u[i] = boot_url[i]; u[i] = 0;
+            boot_url[0] = 0;
+            serial_puts("boot: opening browser at "); serial_puts(u); serial_puts("\n");
+            browser_open_url(u);
         }
 
         browser_tick();

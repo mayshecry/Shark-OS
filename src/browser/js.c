@@ -2,14 +2,14 @@
 
 #include "browser_internal.h"
 
-#define JS_MAX_TOKENS   24000
-#define JS_MAX_NODES    24000
-#define JS_MAX_OBJECTS  4000
-#define JS_MAX_PROPS    24000
-#define JS_STR_POOL     (256 * 1024)
-#define JS_MAX_SCOPES   512
-#define JS_MAX_TIMERS   16
-#define JS_STEP_BUDGET  400000
+#define JS_MAX_TOKENS   200000
+#define JS_MAX_NODES    200000
+#define JS_MAX_OBJECTS  40000
+#define JS_MAX_PROPS    200000
+#define JS_STR_POOL     (4 * 1024 * 1024)
+#define JS_MAX_SCOPES   4096
+#define JS_MAX_TIMERS   64
+#define JS_STEP_BUDGET  2000000
 #define JS_MAX_DEPTH    64
 
 #define FX_SHIFT 16
@@ -94,7 +94,7 @@ static char strpool[JS_STR_POOL];
 static int str_used = 0;
 static scope_t scopes[JS_MAX_SCOPES];
 static int scope_count = 0;
-static value_t arr_pool[16384];
+static value_t arr_pool[262144];
 static int arr_used = 0;
 
 static int steps = 0;
@@ -3201,6 +3201,8 @@ static value_t make_event(const char* type, br_node_t* target) {
 }
 
 static int dispatch_event_on(int o, const char* type, value_t ev, int* prevented);
+static void form_submit_now(br_node_t* form);
+static int dispatch_bubbling(br_node_t* n, const char* type, const char* attr);
 
 static void call_handler(value_t fn, int this_obj, value_t ev) {
     if (fn.type != V_FUNC) return;
@@ -3419,6 +3421,11 @@ value_t js_dom_call(int o, const char* key, value_t* a, int n, int* handled) {
     if (br_streq(key, "click")) { br_js_dispatch_click(el); return UNDEF; }
     if (br_streq(key, "focus")) { if (el->type == BR_NODE_ELEMENT && br_streq(el->tag, "input")) { brs.focus_input = el->id; br_request_repaint(); } return UNDEF; }
     if (br_streq(key, "blur")) { if (brs.focus_input == el->id) brs.focus_input = -1; return UNDEF; }
+    if ((br_streq(key, "submit") || br_streq(key, "requestSubmit")) && el->type == BR_NODE_ELEMENT && br_streq(el->tag, "form")) {
+        if (br_streq(key, "requestSubmit")) { if (dispatch_bubbling(el, "submit", "onsubmit")) return UNDEF; }
+        form_submit_now(el);
+        return UNDEF;
+    }
     if (br_streq(key, "select") || br_streq(key, "scrollIntoView") || br_streq(key, "scrollTo") || br_streq(key, "scroll") || br_streq(key, "submit") || br_streq(key, "reset") || br_streq(key, "normalize") || br_streq(key, "requestFullscreen")) {
         if (br_streq(key, "scrollIntoView")) { brs.scroll_y = el->ly; br_request_repaint(); }
         if (br_streq(key, "reset")) { for (int i = 0; i < br_dom_node_count(); i++) { br_node_t* k = br_dom_node(i); if (k->type == BR_NODE_ELEMENT && br_streq(k->tag, "input")) { k->value = NULL; k->checked = 0; } } br_request_repaint(); }
@@ -3664,7 +3671,7 @@ static void setup_globals(void) {
 
     int nav = new_object(O_PLAIN);
     set_prop(g, "navigator", mk_obj(nav));
-    set_prop(nav, "userAgent", mk_str("Mozilla/4.0 (compatible; SharkNavigator/1.0; SharkOS)"));
+    set_prop(nav, "userAgent", mk_str("Mozilla/5.0 (X11; SharkOS i686) AppleWebKit/537.36 (KHTML, like Gecko) SharkNavigator/2.3 Safari/537.36"));
     set_prop(nav, "language", mk_str("en-US"));
     set_prop(nav, "platform", mk_str("SharkOS i386"));
     set_prop(nav, "onLine", mk_bool(net_configured ? 1 : 0));
@@ -3733,7 +3740,7 @@ static void run_source(const char* src, int len, const char* origin) {
 
 void br_js_run_source(const char* src, int len, const char* origin) { run_source(src, len, origin); }
 
-static char ext_script[96 * 1024];
+static char ext_script[1024 * 1024];
 
 static void run_scripts(br_node_t* n) {
     if (!n || br_stack_headroom() < BR_STACK_MIN) return;
@@ -3776,6 +3783,52 @@ void br_js_run_document(br_node_t* doc) {
     }
 }
 
+/* GET submission of a form: build action?name=value&... from its controls and navigate */
+static void form_submit_now(br_node_t* form) {
+    if (!form) return;
+    const char* action = br_attr(form, "action");
+    const char* method = br_attr(form, "method");
+    if (method && br_strieq(method, "post")) { br_status("POST forms are not supported"); return; }
+    static char url[BR_URL_MAX * 2];
+    br_resolve_url(brs.url, action && action[0] ? action : brs.url, url, BR_URL_MAX);
+    /* drop an existing query string when the action has none of its own */
+    int first = 1;
+    for (char* q = url; *q; q++) if (*q == '?') { first = 0; break; }
+    for (int i = 0; i < br_dom_node_count(); i++) {
+        br_node_t* k = br_dom_node(i);
+        if (k->type != BR_NODE_ELEMENT || !(br_streq(k->tag, "input") || br_streq(k->tag, "select") || br_streq(k->tag, "textarea"))) continue;
+        br_node_t* pf = k->parent; while (pf && pf != form) pf = pf->parent;
+        if (pf != form) { const char* fa = br_attr(k, "form"); const char* fid = br_attr(form, "id"); if (!(fa && fid && br_streq(fa, fid))) continue; }
+        const char* name = br_attr(k, "name"); if (!name || !name[0]) continue;
+        const char* type = br_attr(k, "type");
+        if (br_attr(k, "disabled")) continue;
+        if (type && (br_strieq(type, "submit") || br_strieq(type, "button") || br_strieq(type, "reset") || br_strieq(type, "file") || br_strieq(type, "image"))) continue;
+        if (type && (br_strieq(type, "checkbox") || br_strieq(type, "radio")) && !(k->checked || (br_attr(k, "checked") && !k->value))) continue;
+        const char* val = k->value ? k->value : (br_attr(k, "value") ? br_attr(k, "value") : "");
+        if (type && (br_strieq(type, "checkbox") || br_strieq(type, "radio"))) val = br_attr(k, "value") ? br_attr(k, "value") : "on";
+        if (br_streq(k->tag, "select") && !k->value) {
+            /* first selected option, else the first option */
+            const char* sel = NULL; const char* firstv = NULL;
+            for (br_node_t* o = k->first_child; o; o = o->next) {
+                if (o->type != BR_NODE_ELEMENT || !br_streq(o->tag, "option")) continue;
+                const char* ov = br_attr(o, "value");
+                static char ot[128];
+                if (!ov) { br_node_text_content(o, ot, sizeof(ot)); ov = ot; }
+                if (!firstv) firstv = ov;
+                if (br_attr(o, "selected")) { sel = ov; break; }
+            }
+            val = sel ? sel : (firstv ? firstv : "");
+        }
+        br_strlcat(url, first ? "?" : "&", sizeof(url)); first = 0;
+        br_strlcat(url, name, sizeof(url)); br_strlcat(url, "=", sizeof(url));
+        value_t ev = mk_str(val); value_t enc = n_encodeURIComponent(-1, &ev, 1);
+        br_strlcat(url, enc.u.s, sizeof(url));
+    }
+    br_js_console(concat("form submit -> ", url));
+    br_strlcpy(brs.address, url, sizeof(brs.address));
+    brs.needs_layout = 2;
+}
+
 void br_js_dispatch_click(br_node_t* n) {
     if (!n || obj_window < 0) return;
     steps = 0; js_aborted = 0; flow = F_NONE; depth = 0; eval_nest = 0;
@@ -3799,6 +3852,12 @@ void br_js_dispatch_click(br_node_t* n) {
     if (!prevented) {
 
         br_node_t* form = NULL;
+        /* clicks on markup inside a <button> (icons, spans) activate the button itself */
+        br_node_t* ctl = n;
+        for (br_node_t* p = n; p; p = p->parent) {
+            if (p->type == BR_NODE_ELEMENT && (br_streq(p->tag, "button") || br_streq(p->tag, "input") || br_streq(p->tag, "a") || br_streq(p->tag, "form"))) { ctl = p; break; }
+        }
+        n = ctl;
         if (n->type == BR_NODE_ELEMENT && (br_streq(n->tag, "button") || br_streq(n->tag, "input"))) {
             const char* type = br_attr(n, "type");
             int is_submit = br_streq(n->tag, "button") ? (!type || br_strieq(type, "submit")) : (type && br_strieq(type, "submit"));
@@ -3807,35 +3866,7 @@ void br_js_dispatch_click(br_node_t* n) {
         }
         if (form) {
             int sp = dispatch_bubbling(form, "submit", "onsubmit");
-            if (!sp) {
-
-                const char* action = br_attr(form, "action");
-                const char* method = br_attr(form, "method");
-                if (!method || !br_strieq(method, "post")) {
-                    static char url[BR_URL_MAX * 2];
-                    br_resolve_url(brs.url, action && action[0] ? action : brs.url, url, BR_URL_MAX);
-                    int first = 1;
-                    for (int i = 0; i < br_dom_node_count(); i++) {
-                        br_node_t* k = br_dom_node(i);
-                        if (k->type != BR_NODE_ELEMENT || !(br_streq(k->tag, "input") || br_streq(k->tag, "select") || br_streq(k->tag, "textarea"))) continue;
-                        br_node_t* pf = k->parent; while (pf && pf != form) pf = pf->parent; if (pf != form) continue;
-                        const char* name = br_attr(k, "name"); if (!name) continue;
-                        const char* type = br_attr(k, "type");
-                        if (type && (br_strieq(type, "submit") || br_strieq(type, "button") || br_strieq(type, "reset"))) continue;
-                        if (type && (br_strieq(type, "checkbox") || br_strieq(type, "radio")) && !(k->checked || (br_attr(k, "checked") && !k->value))) continue;
-                        const char* val = k->value ? k->value : (br_attr(k, "value") ? br_attr(k, "value") : "");
-                        if (type && (br_strieq(type, "checkbox") || br_strieq(type, "radio"))) val = br_attr(k, "value") ? br_attr(k, "value") : "on";
-                        br_strlcat(url, first ? "?" : "&", sizeof(url)); first = 0;
-                        br_strlcat(url, name, sizeof(url)); br_strlcat(url, "=", sizeof(url));
-                        value_t ev = mk_str(val); value_t enc = n_encodeURIComponent(-1, &ev, 1);
-                        br_strlcat(url, enc.u.s, sizeof(url));
-                    }
-                    br_strlcpy(brs.address, url, sizeof(brs.address));
-                    brs.needs_layout = 2;
-                    return;
-                }
-                br_status("POST forms are not supported");
-            }
+            if (!sp) form_submit_now(form);
             return;
         }
 
@@ -3919,6 +3950,13 @@ void br_js_dispatch_key(br_node_t* n, char c) {
         if (p->type == BR_NODE_DOCUMENT) break;
     }
     if (obj_window >= 0) dispatch_event_on(obj_window, "keydown", ev, &prevented);
+    if (c == '\n' && prevented && brs.needs_layout == 0) {
+        /* The page script swallowed Enter but did not navigate (its own submit code usually
+         * depends on APIs this engine lacks). Fall back to the native form submission so
+         * search boxes keep working. */
+        br_js_console("Enter keydown was preventDefault()ed by page script; submitting form natively");
+        prevented = 0;
+    }
     if (c == '\n' && !prevented) {
 
         for (br_node_t* p = n->parent; p; p = p->parent) {

@@ -37,6 +37,7 @@ typedef struct {
     uint16_t sym[WP_GREEN_MAX];
     int count[18], first[18];
     int maxlen;
+    int single, single_sym;
 } wp_huff_t;
 
 static wp_huff_t wp_huff[5];
@@ -50,24 +51,30 @@ static int wp_build_huff(wp_huff_t* h, const uint8_t* len, int alphabet) {
         if (l < 0 || l > 16) return WEBP_ERR;
         if (l) { h->count[l]++; if (l > h->maxlen) h->maxlen = l; }
     }
-    if (h->maxlen == 0) { h->count[1] = 1; h->maxlen = 1; }
-    int code = 0;
+    /* a code with a single used symbol is zero bits long */
+    int used = 0, last = 0;
+    for (s = 0; s < alphabet; s++) if (len[s]) { used++; last = s; }
+    h->single = 0;
+    if (used <= 1) { h->single = 1; h->single_sym = used ? last : 0; h->maxlen = 0; return WEBP_OK; }
+    int code = 0, index = 0;
     for (n = 1; n <= h->maxlen; n++) {
         h->first[n] = code;
         int off = 0;
         for (s = 0; s < alphabet; s++)
-            if (len[s] == n) h->sym[code + off++] = (uint16_t)s;
+            if (len[s] == n) h->sym[index + off++] = (uint16_t)s;
+        index += off;
         code = (code + off) << 1;
     }
     return WEBP_OK;
 }
 
 static int wp_decode_huff(wp_huff_t* h, wp_bit_t* b) {
+    if (h->single) return h->single_sym;
     int code = 0, first = 0, index = 0;
     for (int n = 1; n <= h->maxlen; n++) {
         int bit = wp_read_bits(b, 1);
         if (bit < 0) return -1;
-        code = (code << 1) | bit;
+        code |= bit;
         int cnt = h->count[n];
         if (code - first < cnt) return h->sym[index + (code - first)];
         index += cnt;
@@ -153,8 +160,8 @@ static int wp_read_code(wp_l8_t* d, uint8_t* len, int alphabet) {
         max_symbol += 2;
         if (max_symbol > alphabet) return WEBP_ERR;
     }
-    int num = 0, prev = 8;
-    while (num < max_symbol) {
+    int num = 0, prev = 8, tokens = max_symbol;
+    while (num < alphabet && tokens-- > 0) {
         int sym = wp_decode_huff(&clc, &d->bit);
         if (sym < 0 || sym > 18) return WEBP_ERR;
         if (sym < 16) {
@@ -209,7 +216,10 @@ static int wp_decode_image(wp_l8_t* d, uint32_t* dst, int w, int h,
             int pw = (w + (1 << pb) - 1) >> pb;
             int ph = (h + (1 << pb) - 1) >> pb;
             if ((uint32_t)pw * ph > 4096 || d->meta == NULL) return WEBP_ERR;
+            int saved_cb = d->cache_bits, saved_ga = d->green_alpha;
             if (wp_decode_image(d, d->meta, pw, ph, pw, 0) != WEBP_OK) return WEBP_ERR;
+            d->cache_bits = saved_cb; d->green_alpha = saved_ga;
+            if (saved_cb > 0) memset(d->cache, 0, (size_t)(1u << saved_cb) * sizeof(uint32_t));
             d->meta_w = pw;
             d->have_meta = 1;
         }
@@ -220,7 +230,7 @@ static int wp_decode_image(wp_l8_t* d, uint32_t* dst, int w, int h,
         uint32_t maxc = 0;
         int mh = (h + (1 << d->meta_bits) - 1) >> d->meta_bits;
         for (int i = 0; i < d->meta_w * mh; i++) {
-            uint32_t v = d->meta[i] >> 8;
+            uint32_t v = (d->meta[i] >> 8) & 0xffff;
             if (v > maxc) maxc = v;
         }
         d->groups = (int)maxc + 1;
@@ -280,8 +290,8 @@ static int wp_decode_image(wp_l8_t* d, uint32_t* dst, int w, int h,
             if (dist_code > 120) dist = dist_code - 120;
             else {
                 int p = wp_plane[dist_code - 1];
-                int dx = (p & 15) - ((p & 8) ? 16 : 0);
-                int dy = (p >> 4) - ((p & 0x80) ? 16 : 0);
+                int dx = 8 - (p & 15);
+                int dy = p >> 4;
                 dist = dx + dy * w;
                 if (dist < 1) dist = 1;
             }
@@ -318,6 +328,7 @@ typedef struct {
     int pix_bits;
     int wb;
     int count;
+    int full_w;        /* image width before colour-index packing */
 } wp_tx_t;
 
 #define WP_TX_NONE 0
@@ -326,6 +337,40 @@ typedef struct {
 #define WP_TX_COLOR 3
 #define WP_TX_PAL 4
 
+static inline uint32_t wp_avg2(uint32_t a, uint32_t b) {
+    return (((a ^ b) & 0xfefefefeu) >> 1) + (a & b);          /* per-channel average */
+}
+
+static inline int wp_clamp255(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
+
+static uint32_t wp_clamp_add_sub_full(uint32_t a, uint32_t b, uint32_t c) {
+    int A = wp_clamp255((int)(a >> 24) + (int)(b >> 24) - (int)(c >> 24));
+    int R = wp_clamp255((int)((a >> 16) & 255) + (int)((b >> 16) & 255) - (int)((c >> 16) & 255));
+    int G = wp_clamp255((int)((a >> 8) & 255) + (int)((b >> 8) & 255) - (int)((c >> 8) & 255));
+    int B = wp_clamp255((int)(a & 255) + (int)(b & 255) - (int)(c & 255));
+    return ((uint32_t)A << 24) | ((uint32_t)R << 16) | ((uint32_t)G << 8) | (uint32_t)B;
+}
+
+static uint32_t wp_clamp_add_sub_half(uint32_t a, uint32_t b) {
+    int A = wp_clamp255((int)(a >> 24) + ((int)(a >> 24) - (int)(b >> 24)) / 2);
+    int R = wp_clamp255((int)((a >> 16) & 255) + ((int)((a >> 16) & 255) - (int)((b >> 16) & 255)) / 2);
+    int G = wp_clamp255((int)((a >> 8) & 255) + ((int)((a >> 8) & 255) - (int)((b >> 8) & 255)) / 2);
+    int B = wp_clamp255((int)(a & 255) + ((int)(a & 255) - (int)(b & 255)) / 2);
+    return ((uint32_t)A << 24) | ((uint32_t)R << 16) | ((uint32_t)G << 8) | (uint32_t)B;
+}
+
+static uint32_t wp_select(uint32_t L, uint32_t T, uint32_t TL) {
+    int pA = (int)(L >> 24) + (int)(T >> 24) - (int)(TL >> 24);
+    int pR = (int)((L >> 16) & 255) + (int)((T >> 16) & 255) - (int)((TL >> 16) & 255);
+    int pG = (int)((L >> 8) & 255) + (int)((T >> 8) & 255) - (int)((TL >> 8) & 255);
+    int pB = (int)(L & 255) + (int)(T & 255) - (int)(TL & 255);
+#define WP_ABS(v) ((v) < 0 ? -(v) : (v))
+    int dL = WP_ABS(pA - (int)(L >> 24)) + WP_ABS(pR - (int)((L >> 16) & 255)) + WP_ABS(pG - (int)((L >> 8) & 255)) + WP_ABS(pB - (int)(L & 255));
+    int dT = WP_ABS(pA - (int)(T >> 24)) + WP_ABS(pR - (int)((T >> 16) & 255)) + WP_ABS(pG - (int)((T >> 8) & 255)) + WP_ABS(pB - (int)(T & 255));
+#undef WP_ABS
+    return dL < dT ? L : T;
+}
+
 static uint32_t wp_pred(int m, uint32_t L, uint32_t T, uint32_t TR, uint32_t TL) {
     switch (m) {
     case 0: return 0xff000000u;
@@ -333,55 +378,23 @@ static uint32_t wp_pred(int m, uint32_t L, uint32_t T, uint32_t TR, uint32_t TL)
     case 2: return T;
     case 3: return TR;
     case 4: return TL;
-    case 5: return (L + TR) / 2;
-    case 6: return (L + TL) / 2;
-    case 7: return (L + T) / 2;
-    case 8: return (TL + T) / 2;
-    case 9: return (T + TR) / 2;
-    case 10: return ((L + TL) / 2 + (T + TR) / 2) / 2;
-    case 11: {
-        int pA = (int)(L >> 24) + (int)(T >> 24) - (int)(TL >> 24);
-        int pR = (int)((L >> 16) & 255) + (int)((T >> 16) & 255) - (int)((TL >> 16) & 255);
-        int pG = (int)((L >> 8) & 255) + (int)((T >> 8) & 255) - (int)((TL >> 8) & 255);
-        int pB = (int)(L & 255) + (int)(T & 255) - (int)(TL & 255);
-        int dL = pA - (int)(L >> 24);               if (dL < 0) dL = -dL;
-        dL += pR - (int)((L >> 16) & 255);          if (dL < 0) dL = -dL;
-        dL += pG - (int)((L >> 8) & 255);           if (dL < 0) dL = -dL;
-        dL += pB - (int)(L & 255);                  if (dL < 0) dL = -dL;
-        int dT = pA - (int)(T >> 24);               if (dT < 0) dT = -dT;
-        dT += pR - (int)((T >> 16) & 255);          if (dT < 0) dT = -dT;
-        dT += pG - (int)((T >> 8) & 255);           if (dT < 0) dT = -dT;
-        dT += pB - (int)(T & 255);                  if (dT < 0) dT = -dT;
-        return dL < dT ? L : T;
+    case 5: return wp_avg2(wp_avg2(L, TR), T);
+    case 6: return wp_avg2(L, TL);
+    case 7: return wp_avg2(L, T);
+    case 8: return wp_avg2(TL, T);
+    case 9: return wp_avg2(T, TR);
+    case 10: return wp_avg2(wp_avg2(L, TL), wp_avg2(T, TR));
+    case 11: return wp_select(L, T, TL);
+    case 12: return wp_clamp_add_sub_full(L, T, TL);
+    case 13: return wp_clamp_add_sub_half(wp_avg2(L, T), TL);
+    default: return 0xff000000u;
     }
-    case 12: {
-        int a = (int)(L >> 24) + (int)(T >> 24) - (int)(TL >> 24);
-        int r = (int)((L >> 16) & 255) + (int)((T >> 16) & 255) - (int)((TL >> 16) & 255);
-        int g = (int)((L >> 8) & 255) + (int)((T >> 8) & 255) - (int)((TL >> 8) & 255);
-        int b = (int)(L & 255) + (int)(T & 255) - (int)(TL & 255);
-        if (a < 0) a = 0; else if (a > 255) a = 255;
-        if (r < 0) r = 0; else if (r > 255) r = 255;
-        if (g < 0) g = 0; else if (g > 255) g = 255;
-        if (b < 0) b = 0; else if (b > 255) b = 255;
-        return ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
-    }
-    default: break;
-    }
-
-    int a = (int)(L >> 24) + ((int)(L >> 24) - (int)(TL >> 24)) / 2;
-    int r = (int)((L >> 16) & 255) + ((int)((L >> 16) & 255) - (int)((TL >> 16) & 255)) / 2;
-    int g = (int)((L >> 8) & 255) + ((int)((L >> 8) & 255) - (int)((TL >> 8) & 255)) / 2;
-    int b = (int)(L & 255) + ((int)(L & 255) - (int)(TL & 255)) / 2;
-    if (a < 0) a = 0; else if (a > 255) a = 255;
-    if (r < 0) r = 0; else if (r > 255) r = 255;
-    if (g < 0) g = 0; else if (g > 255) g = 255;
-    if (b < 0) b = 0; else if (b > 255) b = 255;
-    return ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
 }
 
 static uint32_t wp_color_inv(uint32_t cte, uint32_t pix) {
-    int8_t g2r = (int8_t)((cte >> 16) & 255), g2b = (int8_t)((cte >> 8) & 255);
-    int8_t r2b = (int8_t)(cte & 255);
+    /* transform element: red_to_blue in the red byte, green_to_blue in green, green_to_red in blue */
+    int8_t g2r = (int8_t)(cte & 255), g2b = (int8_t)((cte >> 8) & 255);
+    int8_t r2b = (int8_t)((cte >> 16) & 255);
     int a = (int)(pix >> 24);
     int8_t g = (int8_t)((pix >> 8) & 255);
     int r = (int)((pix >> 16) & 255) + ((g2r * g) >> 5);
@@ -419,7 +432,7 @@ static int wp_apply_tx(wp_tx_t* tx, int ntx, uint32_t* pix, int* pw, int h) {
                         uint32_t L = pix[(size_t)y * w + (x - 1)];
                         uint32_t T = pix[(size_t)(y - 1) * w + x];
                         uint32_t TL = pix[(size_t)(y - 1) * w + (x - 1)];
-                        uint32_t TR = (x == w - 1) ? pix[(size_t)(y - 1) * w]
+                        uint32_t TR = (x == w - 1) ? pix[(size_t)y * w]
                                                    : pix[(size_t)(y - 1) * w + (x + 1)];
                         pred = wp_pred(mode, L, T, TR, TL);
                     }
@@ -442,24 +455,21 @@ static int wp_apply_tx(wp_tx_t* tx, int ntx, uint32_t* pix, int* pw, int h) {
                     pix[i] = wp_color_inv(cte, pix[i]);
                 }
         } else if (tx[t].type == WP_TX_PAL) {
-
+            /* colour indexing: the green channel holds (packed) palette indices */
             int wb = tx[t].wb;
-            int nfull = *pw;
-            int npack = (nfull + (1 << wb) - 1) >> wb;
+            int nfull = tx[t].full_w;
+            int per = 1 << wb, bits = 8 >> wb;
+            int npack = (nfull + per - 1) >> wb;
             uint32_t* pal = tx[t].data;
             int cnt = tx[t].count;
-            for (int y = 0; y < h; y++) {
-                uint32_t* row = pix + (size_t)y * nfull;
-                for (int i = npack - 1; i >= 0; i--) {
-                    uint32_t packed = row[i];
-                    for (int k = 0; k < (1 << wb); k++) {
-                        int idx;
-                        if (wb == 1) idx = (int)((packed >> (4 * k)) & 15);
-                        else if (wb == 2) idx = (int)((packed >> (2 * k)) & 3);
-                        else idx = (int)((packed >> k) & 1);
-                        uint32_t col = (idx < cnt) ? pal[idx] : 0;
-                        row[i * (1 << wb) + k] = col;
-                    }
+            for (int y = h - 1; y >= 0; y--) {
+                const uint32_t* src = pix + (size_t)y * npack;
+                uint32_t* dst = pix + (size_t)y * nfull;
+                for (int x = nfull - 1; x >= 0; x--) {
+                    uint32_t packed = src[x / per];
+                    int g = (int)((packed >> 8) & 0xFF);
+                    int idx = (g >> ((x % per) * bits)) & ((1 << bits) - 1);
+                    dst[x] = idx < cnt ? pal[idx] : 0;
                 }
             }
             *pw = nfull;
@@ -542,6 +552,7 @@ static int wp_vp8l(const uint8_t* data, size_t len, uint32_t* pix,
             else if (cnt <= 4) t->wb = 2;
             else if (cnt <= 16) t->wb = 1;
             else t->wb = 0;
+            t->full_w = w;
             if (t->wb) w = (w + (1 << t->wb) - 1) >> t->wb;
         }
     }

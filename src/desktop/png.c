@@ -200,6 +200,51 @@ static long zlib_inflate(const uint8_t* in, size_t in_len, uint8_t* out, size_t 
     return (long)s.out_pos;
 }
 
+/* Raw DEFLATE (RFC 1951) without the zlib wrapper. Unlike zlib_inflate()
+ * this returns whatever was produced when the input turns out to be
+ * truncated, so a partially downloaded gzip body still yields its prefix. */
+long inflate_raw(const uint8_t* in, size_t in_len, uint8_t* out, size_t out_len) {
+    inf_t s;
+    s.in = in; s.in_len = in_len; s.in_pos = 0;
+    s.bit_buf = 0; s.bit_cnt = 0;
+    s.out = out; s.out_len = out_len; s.out_pos = 0;
+    s.error = 0;
+    int last, type, err;
+    do {
+        last = inf_bits(&s, 1);
+        type = inf_bits(&s, 2);
+        if (s.error) break;
+        if (type == 0) err = inf_stored(&s);
+        else if (type == 1) err = inf_fixed(&s);
+        else if (type == 2) err = inf_dynamic(&s);
+        else err = -1;
+        if (err == -2) break;
+        if (err != 0 || s.error) break;
+    } while (!last);
+    return (long)s.out_pos;
+}
+
+/* zlib stream (RFC 1950) with the same truncation-tolerant behaviour. */
+long inflate_zlib(const uint8_t* in, size_t in_len, uint8_t* out, size_t out_len) {
+    if (in_len < 2) return -1;
+    if ((in[0] & 0x0F) != 8) return -1;
+    if (((in[0] << 8) | in[1]) % 31 != 0) return -1;
+    return inflate_raw(in + 2, in_len - 2, out, out_len);
+}
+
+/* gzip member (RFC 1952): skip the header, inflate the payload. */
+long inflate_gzip(const uint8_t* in, size_t in_len, uint8_t* out, size_t out_len) {
+    if (in_len < 18 || in[0] != 0x1F || in[1] != 0x8B || in[2] != 8) return -1;
+    uint8_t flg = in[3];
+    size_t p = 10;
+    if (flg & 4) { if (p + 2 > in_len) return -1; size_t xl = in[p] | (in[p + 1] << 8); p += 2 + xl; }
+    if (flg & 8) { while (p < in_len && in[p]) p++; p++; }
+    if (flg & 16) { while (p < in_len && in[p]) p++; p++; }
+    if (flg & 2) p += 2;
+    if (p >= in_len) return -1;
+    return inflate_raw(in + p, in_len - p, out, out_len);
+}
+
 static inline uint32_t be32(const uint8_t* p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
 }
