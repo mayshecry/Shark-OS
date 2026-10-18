@@ -99,14 +99,12 @@ static int focal_length = 128;
 static uint32_t world_seed = 1337u;
 static int world_ready = 0;
 
-/* Mouse look & click tracking */
 static int drag_active = 0, drag_moved = 0;
 static int drag_x = 0, drag_y = 0, drag_start_x = 0, drag_start_y = 0;
 static uint32_t drag_start_tick = 0;
 static int yaw_drag_remainder = 0, pitch_drag_remainder = 0;
 static int prev_mouse_buttons = 0;
 
-/* Player physics state (Q-scaled world units) */
 static int velocity_x, velocity_y, velocity_z;
 static int on_ground, flying, in_water;
 static uint32_t last_grounded_tick = 0;
@@ -121,7 +119,6 @@ static int physics_clock_ready = 0;
 static int position_remainder_x, position_remainder_y, position_remainder_z;
 static int yaw_look_remainder, pitch_look_remainder;
 
-/* Current raycast target for block highlight */
 static int has_target = 0;
 static int target_bx, target_by, target_bz;
 static int target_px, target_py, target_pz;
@@ -218,7 +215,6 @@ static inline int solid(int x, int y, int z) {
     return is_solid_block(world[y][z][x]);
 }
 
-/* Precompute 16x16 procedural voxel textures for all blocks and faces */
 static uint32_t compute_texel(int block, int face, int u, int v) {
     u &= 15;
     v &= 15;
@@ -344,28 +340,26 @@ static uint32_t compute_texel(int block, int face, int u, int v) {
         } else if (streak) {
             r = 235; g = 250; b = 255;
         } else {
-            return 0; /* Transparent pixel */
+            return 0;
         }
     } else if (block == WATER) {
         int wave = ((u + v * 2) & 3) == 0 ? 14 : (((u ^ v) & 3) == 2 ? -8 : 0);
         r = 38 + wave / 2;
         g = 108 + wave;
         b = 208 + wave;
-    } else { /* BEDROCK */
+    } else {
         int blotch = (((u * 5 + v * 9) ^ (u * 3)) & 7) * 7 - 20;
         r = 54 + blotch + n;
         g = 54 + blotch + n;
         b = 58 + blotch + n;
     }
 
-    /* Directional face shading */
     int shade_num = 256;
-    if (face == 2) shade_num = 256;          /* Top (+Y): 100% */
-    else if (face == 4 || face == 5) shade_num = 222; /* North/South (+/-Z): 87% */
-    else if (face == 0 || face == 1) shade_num = 192; /* East/West (+/-X): 75% */
-    else shade_num = 150;                    /* Bottom (-Y): 59% */
+    if (face == 2) shade_num = 256;
+    else if (face == 4 || face == 5) shade_num = 222;
+    else if (face == 0 || face == 1) shade_num = 192;
+    else shade_num = 150;
 
-    /* Subtle 1-pixel voxel edge bevel so block grids look crisp */
     if (block != GLASS && block != WATER && (u == 0 || u == 15 || v == 0 || v == 15)) {
         shade_num = (shade_num * 234) >> 8;
     }
@@ -390,7 +384,6 @@ static void init_textures(void) {
     textures_ready = 1;
 }
 
-/* Visibility and lighting cache maintenance */
 static int face_is_visible(int x, int y, int z, uint8_t b, int f) {
     int nx = x + face_neighbor[f][0];
     int ny = y + face_neighbor[f][1];
@@ -453,7 +446,6 @@ static void update_neighborhood_visibility(int x, int y, int z) {
     if (z + 1 < WZ) update_column_bounds(x, z + 1);
 }
 
-/* Deterministic 2D value noise for smooth terrain generation */
 static int hash2d(int x, int z, uint32_t seed) {
     uint32_t h = (uint32_t)x * 374761393u + (uint32_t)z * 668265263u + seed * 1442695041u;
     h = (h ^ (h >> 13)) * 1274126177u;
@@ -520,7 +512,6 @@ static void world_generate(void) {
             int n2 = value_noise_2d(x * 64 + 97, z * 64 + 53, world_seed ^ 0x5A5A5Au);
             int combined = (n1 * 3 + n2) >> 2;
 
-            /* Create a scenic lake basin in the low-X/low-Z quadrant and hills on the far side */
             int basin_dx = x - 9, basin_dz = z - 9;
             int basin_dist2 = basin_dx * basin_dx + basin_dz * basin_dz;
             int bias = 0;
@@ -533,7 +524,6 @@ static void world_generate(void) {
                 bias += ((64 - ridge_dist2) * 5) / 64;
             }
 
-            /* Keep the central spawn meadow (around 16, 16) gently flat and above water */
             int spawn_dx = x - 16, spawn_dz = z - 16;
             int spawn_dist2 = spawn_dx * spawn_dx + spawn_dz * spawn_dz;
 
@@ -549,7 +539,6 @@ static void world_generate(void) {
         }
     }
 
-    /* Fill terrain strata and water */
     for (int z = 0; z < WZ; z++) {
         for (int x = 0; x < WX; x++) {
             int h = heightmap[z][x];
@@ -586,7 +575,6 @@ static void world_generate(void) {
         }
     }
 
-    /* Build a small wooden lakeside pier near (11, 11) if water is present */
     for (int px = 10; px <= 13; px++) {
         for (int pz = 11; pz <= 12; pz++) {
             if (heightmap[pz][px] <= WATER_LEVEL) {
@@ -600,7 +588,6 @@ static void world_generate(void) {
         }
     }
 
-    /* Place well-spaced oak trees on grassy terrain away from spawn */
     uint8_t tree_map[WZ][WX];
     for (int z = 0; z < WZ; z++) for (int x = 0; x < WX; x++) tree_map[z][x] = 0;
 
@@ -610,7 +597,6 @@ static void world_generate(void) {
             if (world[h][z][x] != GRASS || h <= WATER_LEVEL || h >= 11) continue;
             int sdx = x - 16, sdz = z - 16;
             if (sdx * sdx + sdz * sdz < 28) continue;
-            /* Keep sightline from spawn (16,16) toward the lake/pier (10,10) open */
             if (x >= 10 && x <= 16 && z >= 10 && z <= 16) continue;
 
             int hval = hash2d(x * 3, z * 5, world_seed ^ 0x9E3779B9u);
@@ -697,7 +683,6 @@ static void camera_reset(void) {
     while (camera_y < (WY + 2) * Q && player_collides_at(camera_x, camera_y, camera_z)) {
         camera_y += Q / 2;
     }
-    /* Aim toward the scenic lake and dock on startup */
     yaw = 164;
     pitch = -8;
     focal_length = 128;
@@ -720,7 +705,6 @@ static void camera_reset(void) {
     physics_clock_ready = 0;
 }
 
-/* Raw PS/2 scancode callback for instant multi-key rollover and release */
 static int map_key_to_input(char key, uint8_t base_scancode) {
     if (base_scancode == 0x2A || base_scancode == 0x36) return INPUT_SPRINT;
     if (key >= 'A' && key <= 'Z') key = (char)(key - 'A' + 'a');
@@ -780,7 +764,6 @@ void sharkcraft_game_reset(void) {
     ensure_desktop_integration();
 }
 
-/* Exact 3D voxel raycast with single-axis crossing resolution */
 static int ray_target(int *tx, int *ty, int *tz, int *px, int *py, int *pz, int *out_face) {
     int r = yaw & 255, p = pitch & 255;
     int dx = (sn[r] * cs[p]) >> 10;
@@ -794,7 +777,6 @@ static int ray_target(int *tx, int *ty, int *tz, int *px, int *py, int *pz, int 
     int by = floor_block(cur_y);
     int bz = floor_block(cur_z);
 
-    /* Max reach: 6.5 blocks (104 steps of 1/16th block) */
     for (int step = 0; step < 104; step++) {
         int next_x = cur_x + (dx >> 4);
         int next_y = cur_y + (dy >> 4);
@@ -803,7 +785,6 @@ static int ray_target(int *tx, int *ty, int *tz, int *px, int *py, int *pz, int 
         int nby = floor_block(next_y);
         int nbz = floor_block(next_z);
 
-        /* Step one axis at a time if crossing multiple voxel planes */
         int axes[3] = { nbx != bx, nby != by, nbz != bz };
         for (int a = 0; a < 3; a++) {
             if (!axes[a]) continue;
@@ -831,7 +812,6 @@ static int ray_target(int *tx, int *ty, int *tz, int *px, int *py, int *pz, int 
 
 static void settle_blocks_at(int x, int y, int z) {
     if ((unsigned)x >= WX || (unsigned)z >= WZ) return;
-    /* Let unsupported SAND blocks in column (x, z) fall down through AIR or WATER */
     for (int cy = 1; cy < WY; cy++) {
         if (world[cy][z][x] == SAND) {
             int dest_y = cy;
@@ -845,10 +825,9 @@ static void settle_blocks_at(int x, int y, int z) {
             }
         }
     }
-    /* If an AIR pocket at or below WATER_LEVEL touches adjacent WATER, fill it */
     if ((unsigned)y <= WATER_LEVEL && world[y][z][x] == AIR) {
         for (int f = 0; f < 6; f++) {
-            if (f == 3) continue; /* Don't flow upward from below */
+            if (f == 3) continue;
             int nx = x + face_neighbor[f][0];
             int ny = y + face_neighbor[f][1];
             int nz = z + face_neighbor[f][2];
@@ -865,7 +844,6 @@ static void interact(int mode) {
     if (!ray_target(&tx, &ty, &tz, &px, &py, &pz, &face)) return;
 
     if (mode == 2) {
-        /* Pick block */
         uint8_t b = world[ty][tz][tx];
         for (int i = 0; i < HOTBAR_COUNT; i++) {
             if (hotbar_blocks[i] == b) {
@@ -878,7 +856,6 @@ static void interact(int mode) {
     }
 
     if (mode == 1) {
-        /* Place block */
         if ((unsigned)px < WX && (unsigned)py < WY && (unsigned)pz < WZ && !solid(px, py, pz)) {
             uint8_t prev = world[py][pz][px];
             world[py][pz][px] = (uint8_t)selected;
@@ -890,7 +867,6 @@ static void interact(int mode) {
             update_neighborhood_visibility(px, py, pz);
         }
     } else {
-        /* Break block (keep BEDROCK at y=0 unbreakable) */
         if (ty == 0 && world[ty][tz][tx] == BEDROCK) return;
         world[ty][tz][tx] = AIR;
         settle_blocks_at(tx, ty, tz);
@@ -898,7 +874,6 @@ static void interact(int mode) {
     }
 }
 
-/* 5-plane camera-space frustum clipping (pure 32-bit fixed-point math) */
 static int plane_dist(camera_vertex_t v, int plane) {
     const int hw = (RW / 2) + 2;
     const int hh = (RH / 2) + 2;
@@ -973,12 +948,10 @@ static void project_camera(vertex_t *p, camera_vertex_t v) {
     if (iz < 1) iz = 1;
     if (iz > 16383) iz = 16383;
     p->iz = iz;
-    /* v.u and v.v are in 0..255 ((16 << 4) - 1); uoz is in 0..(63 * 16383) < 2^20 */
     p->uoz = (v.u * iz) >> 2;
     p->voz = (v.v * iz) >> 2;
 }
 
-/* Pure 32-bit perspective-correct triangle rasterizer with early-Z rejection */
 static void raster_triangle(vertex_t a, vertex_t b, vertex_t c,
                             const uint32_t *face_tex, int flags) {
     int area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
@@ -1007,7 +980,6 @@ static void raster_triangle(vertex_t a, vertex_t b, vertex_t c,
     if (maxy >= RH) maxy = RH - 1;
     if (minx > maxx || miny > maxy) return;
 
-    /* Single 32-bit unsigned reciprocal: wa * inv_area <= (1 << 29) never overflows */
     uint32_t inv_area = (1u << 29) / (uint32_t)area;
 
     int diz_ac = a.iz - c.iz, diz_bc = b.iz - c.iz;
@@ -1083,10 +1055,8 @@ static void raster_triangle(vertex_t a, vertex_t b, vertex_t c,
     }
 }
 
-/* Render a single block at (x, y, z) with exact shared-corner transformation */
 static void render_block(int x, int y, int z, uint8_t b, uint8_t fm,
                          int cs_r, int sn_r, int cs_p, int sn_p) {
-    /* Transform block center once for fast frustum culling */
     int cdx = (x << 8) + 128 - camera_x;
     int cdy = (y << 8) + 128 - camera_y;
     int cdz = (z << 8) + 128 - camera_z;
@@ -1153,7 +1123,6 @@ static void render_block(int x, int y, int z, uint8_t b, uint8_t fm,
     }
 }
 
-/* Compact 5x5 pixel font for crisp in-buffer HUD text */
 #define G5(r0, r1, r2, r3, r4) \
     (((uint32_t)(r0) << 20) | ((uint32_t)(r1) << 15) | ((uint32_t)(r2) << 10) | ((uint32_t)(r3) << 5) | (uint32_t)(r4))
 
@@ -1255,7 +1224,6 @@ static int hud_draw_int(int x, int y, int val, uint32_t col) {
 }
 
 static void draw_hud(void) {
-    /* Top translucent info bar */
     for (int y = 0; y < 11; y++) {
         uint32_t *row = &pixels[y * RW];
         for (int x = 0; x < RW; x++) {
@@ -1278,14 +1246,12 @@ static void draw_hud(void) {
 
     hud_draw_text(RW - 110, 3, "Q/E:BLK F:FLY G:NEW", 0xFFCCCCCCu);
 
-    /* Center crosshair with subtle outline */
     int cx = RW / 2, cy = RH / 2;
     for (int d = -4; d <= 4; d++) {
         pixels[cy * RW + cx + d] = (d == 0) ? 0xFF202020u : 0xFFFFFFFFu;
         pixels[(cy + d) * RW + cx] = (d == 0) ? 0xFF202020u : 0xFFFFFFFFu;
     }
 
-    /* Bottom 10-slot hotbar */
     int slot_w = 18;
     int bar_w = HOTBAR_COUNT * slot_w + 2;
     int bar_x = (RW - bar_w) / 2;
@@ -1405,7 +1371,6 @@ static void draw_scene(int ox, int oy, int w, int h) {
     int cs_r = cs[r], sn_r = sn[r];
     int cs_p = cs[p], sn_p = sn[p];
 
-    /* Pitch-aware sky & horizon background */
     int horizon_y = (RH / 2) + ((sn_p * focal_length) / (cs_p != 0 ? cs_p : 1));
     if (horizon_y < 0) horizon_y = 0;
     if (horizon_y > RH) horizon_y = RH;
@@ -1447,7 +1412,6 @@ static void draw_scene(int ox, int oy, int w, int h) {
     if (cam_bz < 0) cam_bz = 0;
     if (cam_bz >= WZ) cam_bz = WZ - 1;
 
-    /* Pass 1: Render opaque blocks front-to-back from camera column outward */
     int max_ring = WX + WZ;
     for (int ring = 0; ring <= max_ring; ring++) {
         int z_min = cam_bz - ring;
@@ -1466,7 +1430,6 @@ static void draw_scene(int ox, int oy, int w, int h) {
                 int ymax = col_max_y[z][x];
                 if (ymin > ymax) continue;
 
-                /* Traverse Y near-to-far from camera_y */
                 int y_split = cam_by;
                 if (y_split < ymin) y_split = ymin;
                 if (y_split > ymax) y_split = ymax;
@@ -1489,7 +1452,6 @@ static void draw_scene(int ox, int oy, int w, int h) {
         }
     }
 
-    /* Pass 2: Render translucent blocks (WATER, GLASS) back-to-front */
     for (int ring = max_ring; ring >= 0; ring--) {
         int z_min = cam_bz - ring;
         int z_max = cam_bz + ring;
@@ -1522,7 +1484,6 @@ static void draw_scene(int ox, int oy, int w, int h) {
     blit_scene(ox, oy, w, h);
 }
 
-/* Physics & movement integration */
 static int input_active(int index, uint32_t now) {
     if (raw_scancode_active && (int32_t)(now - last_raw_event_tick) < 15000) {
         if (raw_key_held[index]) return 1;
@@ -1624,7 +1585,6 @@ static void physics_update(void) {
     if (!elapsed) return;
     int dt = (int)elapsed;
 
-    /* Smooth keyboard camera look (IJKL / Arrow keys) */
     int look_yaw = input_active(INPUT_LOOK_RIGHT, now) - input_active(INPUT_LOOK_LEFT, now);
     int look_pitch = input_active(INPUT_LOOK_UP, now) - input_active(INPUT_LOOK_DOWN, now);
     if (look_yaw) {
@@ -1686,7 +1646,6 @@ static void physics_update(void) {
         return;
     }
 
-    /* Jump buffering + coyote time + water swimming */
     int want_up = input_active(INPUT_UP, now) || ((int32_t)(jump_buffer_deadline - now) > 0);
     if (in_water) {
         if (want_up) {
@@ -1864,7 +1823,6 @@ int sharkcraft_handle_key(char key) {
 int sharkcraft_handle_mouse(int x, int y, int buttons) {
     int changed = 0;
 
-    /* Right-click places block; middle-click picks block */
     if ((buttons & 2) && !(prev_mouse_buttons & 2)) {
         interact(1);
         changed = 1;
@@ -1877,7 +1835,6 @@ int sharkcraft_handle_mouse(int x, int y, int buttons) {
     if (!(buttons & 1)) {
         if (drag_active && !drag_moved &&
             (sharkapi_get_ticks() - drag_start_tick) < 240) {
-            /* Quick left-click tap breaks targeted block */
             interact(0);
             changed = 1;
         }
