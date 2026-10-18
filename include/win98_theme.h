@@ -35,15 +35,15 @@
 
 #define W98_RAMP_MAX         2048
 
-#define W98_TEXT_SCALE       2      /* desktop UI text: 6x12 advance          */
+#define W98_TEXT_SCALE       2                                                
 #define W98_CELL_W(s)        (6 * (s))
-#define W98_CELL_H(s)        (12 * (s) / 2)   /* scale 1 -> 8, scale 2 -> 12   */
+#define W98_CELL_H(s)        (12 * (s) / 2)                                    
 
 #define W98_TITLEBAR_H       18
-#define W98_BORDER_W         3      /* outer bevel ring                       */
-#define W98_FRAME_PAD        1      /* BTNFACE gap between ring and titlebar  */
-#define W98_CLIENT_INSET     6      /* total non-client inset, left/right     */
-#define W98_CLIENT_TOP       25     /* y offset of client area inside window  */
+#define W98_BORDER_W         3                                                
+#define W98_FRAME_PAD        1                                                
+#define W98_CLIENT_INSET     6                                                
+#define W98_CLIENT_TOP       25                                               
 #define W98_CLIENT_BOTTOM    6
 
 #define W98_CAPBTN_W         16
@@ -115,9 +115,9 @@ typedef enum {
 } w98_wall_mode_t;
 
 typedef enum {
-    W98_WALLFIT_FILL = 0,   /* cover the screen, crop overflow (aspect kept) */
-    W98_WALLFIT_FIT,        /* contain in the screen, letterbox bars        */
-    W98_WALLFIT_STRETCH     /* ignore aspect, fill the screen               */
+    W98_WALLFIT_FILL = 0,                                                    
+    W98_WALLFIT_FIT,                                                        
+    W98_WALLFIT_STRETCH                                                     
 } w98_wall_fit_t;
 
 extern bool w98_classic_font_force;
@@ -171,4 +171,4 @@ void w98_icon_blit_small(const uint32_t* src, int src_size, int dst_size,
 void w98_blit_rgb(const uint32_t* src, int sw, int sh, int x, int y,
                   const w98_rect_t* clip);
 
-#endif /* WIN98_THEME_H */
+#endif                  

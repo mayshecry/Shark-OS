@@ -8,28 +8,28 @@
 #include "browser.h"
 #include "font.h"
 
-#define BR_MAX_NODES      3000      /* DOM nodes per document                 */
+#define BR_MAX_NODES      3000                                                
 #define BR_TEXT_POOL      (512 * 1024)
 #define BR_MAX_ATTRS      16
 #define BR_MAX_DEPTH      48
 #define BR_MAX_TEXT_RUN   4096
-#define BR_MAX_RULES      8000      /* CSS rules (Bootstrap ~3000 + icon fonts) */
-#define BR_MAX_SELPARTS   5         /* descendant selector depth              */
-#define BR_MAX_DECLS      24        /* declarations per rule                  */
-#define BR_MAX_DECL_POOL  40000     /* declarations across all rules          */
-#define BR_MAX_PART_POOL  16000     /* selector compounds across all rules    */
-#define BR_MAX_FONTFACES  6         /* @font-face rules per page              */
-#define BR_CSS_BUF        (256 * 1024)  /* external stylesheets (all, per page) */
-#define BR_MAX_BOXES      6000      /* layout boxes                           */
-#define BR_PAGE_MAX       (512 * 1024) /* fetched document size (google.com is ~85 KB) */
-#define BR_URL_MAX        512       /* bing result links are ~330 bytes */
+#define BR_MAX_RULES      8000                                                  
+#define BR_MAX_SELPARTS   5                                                   
+#define BR_MAX_DECLS      24                                                  
+#define BR_MAX_DECL_POOL  40000                                               
+#define BR_MAX_PART_POOL  16000                                               
+#define BR_MAX_FONTFACES  6                                                   
+#define BR_CSS_BUF        (256 * 1024)                                          
+#define BR_MAX_BOXES      6000                                                
+#define BR_PAGE_MAX       (512 * 1024)                                                 
+#define BR_URL_MAX        512                                           
 #define BR_HISTORY_MAX    24
 #define BR_MAX_IMAGES     32
-#define BR_MAX_VARS       1024      /* CSS custom properties in scope        */
-#define BR_MAX_SHEETS     12        /* external stylesheets fetched per page */
-#define BR_IMG_MAX_BYTES  (160 * 1024)         /* largest fetched image file */
-#define BR_IMG_ARENA_PIXELS (640 * 1024)       /* decoded pixels per page (2.5 MB) */
-#define BR_IMG_SCRATCH_BYTES (640 * 1024)      /* inflate / JPEG plane work area */
+#define BR_MAX_VARS       1024                                               
+#define BR_MAX_SHEETS     12                                                 
+#define BR_IMG_MAX_BYTES  (160 * 1024)                                       
+#define BR_IMG_ARENA_PIXELS (640 * 1024)                                           
+#define BR_IMG_SCRATCH_BYTES (640 * 1024)                                        
 
 enum { BR_NODE_DOCUMENT = 0, BR_NODE_ELEMENT, BR_NODE_TEXT };
 
@@ -52,6 +52,7 @@ typedef struct br_style {
     int      margin_t, margin_b, margin_l, margin_r;
     int      padding_t, padding_b, padding_l, padding_r;
     int      border;
+    int      border_set;
     int      border_t, border_r, border_b, border_l;
     uint32_t border_color;
     int      width;
@@ -79,6 +80,7 @@ typedef struct br_style {
     int      pos_t, pos_r, pos_b, pos_l;
     int      relative;
 } br_style_t;
+#define BR_COLOR_TRANSPARENT 0x00000000u
 #define BR_POS_AUTO 0x7FFFFFFF
 
 enum { BR_DISPLAY_INLINE = 0, BR_DISPLAY_BLOCK, BR_DISPLAY_NONE, BR_DISPLAY_LIST_ITEM,
@@ -148,7 +150,7 @@ typedef struct {
     int specificity;
     int order;
 } br_rule_t;
-#define BR_MAX_VAR_DECLS 4096   /* --x declarations across all rules of a page */
+#define BR_MAX_VAR_DECLS 4096                                                  
 
 enum { BR_BOX_TEXT = 0, BR_BOX_RECT, BR_BOX_IMAGE, BR_BOX_HR, BR_BOX_BULLET, BR_BOX_INPUT, BR_BOX_BUTTON, BR_BOX_CHECKBOX };
 
@@ -181,6 +183,8 @@ typedef struct {
     uint32_t* pixels;
     int w, h;
     int failed;
+    int req_w, req_h;
+    uint32_t color;
 } br_image_t;
 
 extern char stack_bottom;
@@ -280,6 +284,10 @@ void br_layout_reset_images(void);
 br_image_t* br_image_get(int i);
 int br_image_request(const char* src);
 int br_image_request_sized(const char* src, int want_w, int want_h);
+int br_svg_looks_like(const uint8_t* data, int len);
+int br_svg_intrinsic_size(const char* src, int len, int* w, int* h);
+int br_svg_render(const char* src, int len, int want_w, int want_h, uint32_t current_color,
+                  uint32_t* out, size_t max_pixels, int* out_w, int* out_h);
 
 void br_js_reset(void);
 void br_js_run_document(br_node_t* doc);

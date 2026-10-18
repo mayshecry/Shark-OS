@@ -5,6 +5,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+long inflate_raw(const uint8_t* in, size_t in_len, uint8_t* out, size_t out_len);
+long inflate_zlib(const uint8_t* in, size_t in_len, uint8_t* out, size_t out_len);
+long inflate_gzip(const uint8_t* in, size_t in_len, uint8_t* out, size_t out_len);
+
 enum vga_color {
     VGA_COLOR_BLACK = 0,
     VGA_COLOR_BLUE = 1,
@@ -50,6 +54,8 @@ static inline uint32_t inl(uint16_t port) {
 
 extern uint32_t* lfbptr;
 extern uint32_t* hw_lfbptr;
+void serial_init(void);
+void serial_puts(const char* text);
 extern uint64_t screen_width;
 
 void framebuffer_enable_write_combining(uintptr_t fb, uint32_t size);
@@ -206,7 +212,7 @@ void terminal_capture_begin(char* buf, uint8_t* colors, int cap);
 void terminal_capture_end(void);
 
 extern bool terminal_in_desktop_window;
-extern int desktop_terminal_cols;   /* visible columns of the desktop Terminal */
+extern int desktop_terminal_cols;                                              
 
 #define terminal_row     (panes[active_pane].row)
 #define terminal_column  (panes[active_pane].col)

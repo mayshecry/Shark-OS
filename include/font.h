@@ -15,8 +15,8 @@ typedef struct { int x, y, w, h; } w98_rect_t;
 
 #define FONT_MIN_PX        6
 #define FONT_MAX_PX        96
-#define FONT_WEB_ARENA     (768 * 1024)     /* fetched @font-face files per page */
-#define FONT_CACHE_BYTES   (384 * 1024)     /* rendered glyph bitmaps */
+#define FONT_WEB_ARENA     (768 * 1024)                                          
+#define FONT_CACHE_BYTES   (384 * 1024)                               
 
 void br_font_init(void);
 void br_font_reset_page(void);

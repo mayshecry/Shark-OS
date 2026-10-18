@@ -20,7 +20,7 @@
 #define WINDOW_MIN_H        80
 
 #define STARTMENU_W         168
-#define STARTMENU_MAX       16
+#define STARTMENU_MAX       32
 
 #define DESKTOP_BG_TOP      0xFF008080u
 #define DESKTOP_BG_BOT      0xFF008080u
@@ -32,6 +32,8 @@ typedef enum {
     WINDOW_TYPE_SMB,
     WINDOW_TYPE_PONG,
     WINDOW_TYPE_GDASH,
+    WINDOW_TYPE_SHARKCUBE,
+    WINDOW_TYPE_SHARKCRAFT,
     WINDOW_TYPE_SETTINGS,
     WINDOW_TYPE_FAQ,
     WINDOW_TYPE_FASTFETCH,
@@ -107,7 +109,7 @@ typedef struct {
     bool selected;
 } desktop_icon_t;
 
-#define MAX_DESKTOP_ICONS 16
+#define MAX_DESKTOP_ICONS 24
 
 typedef struct {
     bool active;
@@ -137,8 +139,8 @@ typedef struct {
     int wallpaper_w;
     int wallpaper_h;
 
-    int wallpaper_id;      /* which bundled image (see wallpaper catalog) */
-    int wallpaper_fit;     /* w98_wall_fit_t: fill / fit / stretch        */
+    int wallpaper_id;                                                     
+    int wallpaper_fit;                                                    
     bool alt_tab_active;
     int alt_tab_index;
     int wallpaper_mode;
@@ -169,14 +171,14 @@ void desktop_render(void);
 void desktop_invalidate_rect(int x0, int y0, int x1, int y1);
 void desktop_render_cursor_only(int old_x, int old_y);
 bool desktop_pointer_needs_repaint(int mx, int my);
-void desktop_handle_mouse(int mx, int my, int buttons);
+void desktop_handle_mouse(int mx, int my, int buttons, int wheel);
 void desktop_handle_keyboard(char c);
 void desktop_update_taskbar(void);
 int desktop_get_taskbar_hover(int mx, int my);
 void desktop_set_wallpaper_color(uint32_t top, uint32_t bottom);
 void desktop_set_wallpaper_mode(int mode);
 
-/* Bundled wallpaper catalog (classic shark, kawaii, cottage, sakura, neko). */
+                                                                             
 #define WP_ID_CLASSIC 0
 #define WP_ID_KAWAII  1
 #define WP_ID_COTTAGE 2
@@ -255,6 +257,7 @@ void start_menu_close(void);
 void start_menu_draw(void);
 void start_menu_handle_click(int mx, int my);
 void start_menu_handle_hover(int mx, int my);
+void start_menu_scroll(int wheel);
 void start_menu_get_rect(int* x, int* y, int* w, int* h);
 
 void app_window_draw_terminal(window_t* w);
@@ -263,6 +266,16 @@ void app_window_draw_flappybird(window_t* w);
 void app_window_draw_smb(window_t* w);
 void app_window_draw_pong(window_t* w);
 void app_window_draw_gdash(window_t* w);
+void app_window_draw_sharkcube(window_t* w);
+void sharkcube_draw_window(int x, int y, int width, int height);
+void sharkcube_game_reset(void);
+int sharkcube_handle_key(char key);
+int sharkcube_handle_mouse(int x, int y, int buttons);
+void app_window_draw_sharkcraft(window_t* w);
+void sharkcraft_game_reset(void);
+void sharkcraft_draw_window(int x, int y, int width, int height);
+int sharkcraft_handle_key(char key);
+int sharkcraft_handle_mouse(int x, int y, int buttons);
 void app_window_draw_settings(window_t* w);
 void app_window_mouse_settings(window_t* w, int mx, int my, int buttons);
 void app_window_mouse_filemanager(window_t* w, int mx, int my, int buttons);
@@ -292,6 +305,10 @@ void app_window_keyboard_flappybird(window_t* w, char c);
 void app_window_keyboard_smb(window_t* w, char c);
 void app_window_keyboard_pong(window_t* w, char c);
 void app_window_keyboard_gdash(window_t* w, char c);
+void app_window_keyboard_sharkcube(window_t* w, char c);
+void app_window_mouse_sharkcube(window_t* w, int mx, int my, int buttons);
+void app_window_keyboard_sharkcraft(window_t* w, char c);
+void app_window_mouse_sharkcraft(window_t* w, int mx, int my, int buttons);
 void app_window_keyboard_notepad(window_t* w, char c);
 void app_window_keyboard_filemanager(window_t* w, char c);
 

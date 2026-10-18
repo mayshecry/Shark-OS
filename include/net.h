@@ -50,10 +50,12 @@ int  net_tcp_peer_closed(void);
 void net_tcp_close(void);
 
 int net_http_get(const char* url, uint8_t* out_buf, uint32_t out_max);
+void net_http_close_idle(void);
+extern char net_http_last_content_type[128];
 extern int  net_tls_last_error;
 extern char net_tls_peer_cn[64];
 extern int  net_http_last_status;
-extern char net_http_last_location[512];
+extern char net_http_last_location[1024];
 
 void net_format_mac(char* out);
 void net_cmd_ifconfig(void);
