@@ -217,6 +217,12 @@ void sharkapi_unregister_key_handler(void) {
     g_key_handler = NULL;
 }
 
+void sharkapi_dispatch_key_event(char key, uint8_t scancode) {
+    if (g_key_handler) {
+        g_key_handler(key, scancode);
+    }
+}
+
 uint32_t sharkapi_get_ticks(void) {
     return uptime_ticks;
 }

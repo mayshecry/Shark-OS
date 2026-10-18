@@ -247,6 +247,7 @@ void desktop_icon_launch_offset(window_type_t type, const char* title) {
                     break;
                 case WINDOW_TYPE_SHARKCRAFT:
                     sharkcraft_game_reset();
+                    win->game_tick = sharkcraft_tick;
                     break;
                 default: break;
             }
@@ -870,11 +871,21 @@ void desktop_handle_mouse(int mx, int my, int buttons, int wheel) {
     } else {
         if (desktop_mouse_down) {
             if (mouse_capture_window && mouse_capture_window->mouse_func) {
-                mouse_capture_window->mouse_func(mouse_capture_window, mx, my, 0);
+                mouse_capture_window->mouse_func(mouse_capture_window, mx, my, buttons);
             }
             mouse_capture_window = NULL;
             desktop_mouse_down = false;
             window_end_drag();
+        } else if (buttons & 6) {
+            window_t* focused = window_get_focused();
+            if (focused && focused->visible && focused->state != WINDOW_STATE_MINIMIZED &&
+                focused->mouse_func &&
+                mx >= focused->rect.client_x &&
+                mx < focused->rect.client_x + focused->rect.client_w &&
+                my >= focused->rect.client_y &&
+                my < focused->rect.client_y + focused->rect.client_h) {
+                focused->mouse_func(focused, mx, my, buttons);
+            }
         }
         if (desktop.start_menu.visible) {
             start_menu_handle_hover(mx, my);
