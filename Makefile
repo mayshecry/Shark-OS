@@ -20,8 +20,17 @@ $(DIRS):
 plugins:
 	mkdir -p plugins
 
+plugins/sharkcube:
+	mkdir -p plugins/sharkcube
+
+plugins/sharkcraft:
+	mkdir -p plugins/sharkcraft
+
 boot.o: boot.s
 	$(AS) $(ASFLAGS) boot.s -o boot.o
+
+arch/early.o: src/arch/early.c include/kernel.h | arch
+	$(CC) -c src/arch/early.c -o arch/early.o $(CFLAGS)
 
 arch/io.o: src/arch/io.c include/kernel.h | arch
 	$(CC) -c src/arch/io.c -o arch/io.o $(CFLAGS)
@@ -101,7 +110,13 @@ desktop/gif.o: src/desktop/gif.c include/kernel.h | desktop
 desktop/jpeg.o: src/desktop/jpeg.c include/kernel.h | desktop
 	$(CC) -c src/desktop/jpeg.c -o desktop/jpeg.o $(CFLAGS)
 
+desktop/webp.o: src/desktop/webp.c include/kernel.h | desktop
+	$(CC) -c src/desktop/webp.c -o desktop/webp.o $(CFLAGS)
+
 BROWSER_HDRS = include/browser.h include/browser_internal.h include/font.h include/kernel.h include/desktop.h include/win98_theme.h include/theme.h include/net.h
+
+browser/svg.o: src/browser/svg.c $(BROWSER_HDRS) | browser
+	$(CC) -c src/browser/svg.c -o browser/svg.o $(CFLAGS)
 
 browser/font.o: src/browser/font.c $(BROWSER_HDRS) include/font_data.h | browser
 	$(CC) -c src/browser/font.c -o browser/font.o $(CFLAGS)
@@ -136,7 +151,7 @@ shell/commands.o: src/shell/commands.c include/kernel.h include/sharkscript.h | 
 shell/spkg.o: src/shell/spkg.c include/kernel.h include/plugin_manager.h | shell
 	$(CC) -c src/shell/spkg.c -o shell/spkg.o $(CFLAGS)
 
-shell/main.o: src/shell/main.c include/kernel.h include/plugin_manager.h include/geometrydash.h include/net.h | shell
+shell/main.o: src/shell/main.c include/kernel.h include/desktop.h include/plugin_manager.h include/geometrydash.h include/net.h | shell
 	$(CC) -c src/shell/main.c -o shell/main.o $(CFLAGS)
 
 shell/lite.o: src/shell/lite.c include/kernel.h include/net.h | shell
@@ -178,6 +193,18 @@ plugins/smb/smb_plugin.o: plugins/smb/smb_plugin.c include/sharkapi.h include/pl
 plugins/geometrydash/geometrydash_plugin.o: plugins/geometrydash/geometrydash_plugin.c include/sharkapi.h include/plugin_manager.h include/geometrydash.h | plugins/geometrydash
 	$(CC) -c plugins/geometrydash/geometrydash_plugin.c -o plugins/geometrydash/geometrydash_plugin.o $(CFLAGS)
 
+plugins/sharkcube/sharkcube_plugin.o: plugins/sharkcube/sharkcube_plugin.c include/sharkapi.h include/desktop.h | plugins/sharkcube
+	$(CC) -DSHARKCUBE_BUILTIN -c plugins/sharkcube/sharkcube_plugin.c -o plugins/sharkcube/sharkcube_plugin.o $(CFLAGS)
+
+plugins/sharkcube/sharkcube.plg: plugins/sharkcube/sharkcube_plugin.c include/sharkapi.h | plugins/sharkcube
+	$(CC) -c plugins/sharkcube/sharkcube_plugin.c -o plugins/sharkcube/sharkcube.plg $(CFLAGS)
+
+plugins/sharkcraft/sharkcraft_plugin.o: plugins/sharkcraft/sharkcraft_plugin.c include/sharkapi.h include/desktop.h | plugins/sharkcraft
+	$(CC) -DSHARKCRAFT_BUILTIN -c plugins/sharkcraft/sharkcraft_plugin.c -o plugins/sharkcraft/sharkcraft_plugin.o $(CFLAGS)
+
+plugins/sharkcraft/sharkcraft.plg: plugins/sharkcraft/sharkcraft_plugin.c include/sharkapi.h include/desktop.h | plugins/sharkcraft
+	$(CC) -c plugins/sharkcraft/sharkcraft_plugin.c -o plugins/sharkcraft/sharkcraft.plg $(CFLAGS)
+
 doom/doom.o: src/doom/doom.c include/kernel.h include/doom.h | doom
 	$(CC) -c src/doom/doom.c -o doom/doom.o $(CFLAGS)
 
@@ -196,20 +223,20 @@ geometrydash/geometrydash.o: src/geometrydash/geometrydash.c include/kernel.h in
 sharkscript/shs.o: src/sharkscript/shs.c include/kernel.h include/sharkscript.h | sharkscript
 	$(CC) -c src/sharkscript/shs.c -o sharkscript/shs.o $(CFLAGS)
 
-sharkos.bin: boot.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o drivers/keyboard.o drivers/pci.o \
+sharkos.bin: Makefile boot.o arch/early.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o drivers/keyboard.o drivers/pci.o \
              drivers/mouse.o drivers/rtc.o drivers/ata.o fs/fs.o ui/terminal.o ui/ui.o ui/fastfetch.o ui/mouse.o \
              shell/commands.o shell/spkg.o shell/main.o shell/lite.o \
              lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o \
-             plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o \
-             desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/theme.o desktop/diskmgmt.o desktop/png.o desktop/gif.o desktop/jpeg.o net/net.o net/crypto.o net/tls.o \
+             plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o plugins/sharkcube/sharkcube_plugin.o plugins/sharkcraft/sharkcraft_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o \
+             desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/theme.o desktop/diskmgmt.o desktop/png.o desktop/gif.o desktop/jpeg.o desktop/webp.o browser/svg.o net/net.o net/crypto.o net/tls.o \
              browser/html.o browser/css.o browser/layout.o browser/js.o browser/browser.o browser/font.o linker.ld
-	$(CC) -T linker.ld -o sharkos.bin $(LDFLAGS) boot.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o \
+	$(CC) -T linker.ld -o sharkos.bin $(LDFLAGS) boot.o arch/early.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o \
 		drivers/keyboard.o drivers/pci.o drivers/mouse.o drivers/rtc.o drivers/ata.o fs/fs.o ui/terminal.o ui/ui.o \
-		ui/fastfetch.o ui/mouse.o shell/commands.o shell/spkg.o shell/main.o shell/lite.o lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o \
-		desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/theme.o desktop/diskmgmt.o desktop/png.o desktop/gif.o desktop/jpeg.o net/net.o net/crypto.o net/tls.o \
+		ui/fastfetch.o ui/mouse.o shell/commands.o shell/spkg.o shell/main.o shell/lite.o lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o plugins/sharkcube/sharkcube_plugin.o plugins/sharkcraft/sharkcraft_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o \
+		desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/theme.o desktop/diskmgmt.o desktop/png.o desktop/gif.o desktop/jpeg.o desktop/webp.o browser/svg.o net/net.o net/crypto.o net/tls.o \
 		browser/html.o browser/css.o browser/layout.o browser/js.o browser/browser.o browser/font.o -lgcc
 
-sharkos.iso: sharkos.bin grub.cfg
+sharkos.iso: Makefile sharkos.bin grub.cfg plugins/sharkcube/sharkcube.plg plugins/sharkcraft/sharkcraft.plg
 	mkdir -p isodir/boot/grub
 	mkdir -p isodir/System/Plugins
 	mkdir -p isodir/pc
@@ -222,11 +249,13 @@ sharkos.iso: sharkos.bin grub.cfg
 	cp plugins/pong/pong_plugin.o isodir/System/Plugins/pong.plg
 	cp plugins/smb/smb_plugin.o isodir/System/Plugins/smb.plg
 	cp plugins/geometrydash/geometrydash_plugin.o isodir/System/Plugins/gdash.plg
+	cp plugins/sharkcube/sharkcube.plg isodir/System/Plugins/sharkcube.plg
+	cp plugins/sharkcraft/sharkcraft.plg isodir/System/Plugins/sharkcraft.plg
 	cp pc/9fc3fc59d52dc24748feb8836feded7e.png isodir/pc/
 	grub-mkrescue -o sharkos.iso isodir
 
 clean:
 	rm -rf isodir arch drivers fs ui shell lib sharkscript doom flappybird pong smb geometrydash desktop net browser
-	rm -f *.o sharkos.bin sharkos.iso sharkscript plugins/*.o plugins/flappybird/*.o plugins/pong/*.o plugins/smb/*.o plugins/geometrydash/*.o
+	rm -f *.o sharkos.bin sharkos.iso sharkscript plugins/*.o plugins/flappybird/*.o plugins/pong/*.o plugins/smb/*.o plugins/geometrydash/*.o plugins/sharkcube/*.o plugins/sharkcube/*.plg plugins/sharkcraft/*.o plugins/sharkcraft/*.plg
 
 .PHONY: all clean $(DIRS)
