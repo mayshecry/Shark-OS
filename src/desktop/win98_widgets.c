@@ -591,7 +591,7 @@ void w98_icon_blit_small(const uint32_t* src, int src_size, int dst_size,
     }
 }
 
-/* Opaque raw RGB block blit (wallpaper thumbnails in the Settings app). */
+                                                                         
 void w98_blit_rgb(const uint32_t* src, int sw, int sh, int x, int y,
                   const w98_rect_t* clip) {
     if (!src || sw < 1 || sh < 1) return;

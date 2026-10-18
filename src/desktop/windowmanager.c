@@ -266,6 +266,16 @@ int window_create(window_type_t type, const char* title, int x, int y, int w, in
             win->draw_func = app_window_draw_gdash;
             win->keyboard_func = app_window_keyboard_gdash;
             break;
+        case WINDOW_TYPE_SHARKCUBE:
+            win->draw_func = app_window_draw_sharkcube;
+            win->keyboard_func = app_window_keyboard_sharkcube;
+            win->mouse_func = app_window_mouse_sharkcube;
+            break;
+        case WINDOW_TYPE_SHARKCRAFT:
+            win->draw_func = app_window_draw_sharkcraft;
+            win->keyboard_func = app_window_keyboard_sharkcraft;
+            win->mouse_func = app_window_mouse_sharkcraft;
+            break;
         case WINDOW_TYPE_SETTINGS:
             win->draw_func = app_window_draw_settings;
             win->mouse_func = app_window_mouse_settings;
@@ -306,9 +316,9 @@ int window_create(window_type_t type, const char* title, int x, int y, int w, in
         case WINDOW_TYPE_DISKMGMT:
             win->draw_func = app_window_draw_diskmgmt;
             win->mouse_func = app_window_mouse_diskmgmt;
-            /* diskmgmt_tick() runs globally from the desktop loop (like
-             * browser_tick) so installs keep going even when the window
-             * is not focused; do NOT route it through game_tick. */
+                                                                       
+                                                                        
+                                                                   
             break;
         default:
             break;

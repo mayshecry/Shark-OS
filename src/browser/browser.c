@@ -5,7 +5,7 @@
 
 browser_state_t brs;
 br_node_t* br_doc = NULL;
-int br_js_disabled = 0;      /* JavaScript is on by default; toggled from the Links menu */
+int br_js_disabled = 0;                                                                  
 char br_page_src[BR_PAGE_MAX];
 int br_page_len = 0;
 
@@ -633,10 +633,10 @@ static void parse_and_show(void) {
     }
 }
 
-/* ---- character set handling ------------------------------------------
- * The renderer works in UTF-8. Pages declared (or sniffed) as ISO-8859-1 /
- * Windows-1252 are transcoded in place so accented text and typographic
- * punctuation come out right instead of as replacement glyphs. */
+                                                                        
+                                                                           
+                                                                        
+                                                                 
 static const uint16_t cp1252_high[32] = {
     0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
     0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178 };
@@ -657,7 +657,7 @@ static int page_is_valid_utf8(const char* s, int n) {
         for (int k = 1; k < len; k++) if (((uint8_t)s[i + k] & 0xC0) != 0x80) return 0;
         i += len;
     }
-    return high ? 1 : 2;   /* 2 = pure ASCII */
+    return high ? 1 : 2;                     
 }
 
 static void page_apply_charset(void) {
@@ -668,7 +668,7 @@ static void page_apply_charset(void) {
     const char* cs = ct[0] ? my_strstr_ci(ct, "charset=") : NULL;
     if (cs) { if (charset_is_utf8(cs)) utf8 = 1; else if (charset_is_latin1(cs)) latin1 = 1; }
     if (!latin1 && !utf8) {
-        /* <meta charset=..> / <meta http-equiv=content-type ..> in the first 4 KB */
+                                                                                   
         int lim = br_page_len < 4096 ? br_page_len : 4096;
         char head[4097]; memcpy(head, br_page_src, (size_t)lim); head[lim] = 0;
         const char* m = my_strstr_ci(head, "charset=");
@@ -676,13 +676,13 @@ static void page_apply_charset(void) {
     }
     if (utf8) return;
     int v = page_is_valid_utf8(br_page_src, br_page_len);
-    if (v == 2) return;                 /* plain ASCII: nothing to do */
-    if (v == 1 && !latin1) return;      /* undeclared but well-formed UTF-8 */
+    if (v == 2) return;                                               
+    if (v == 1 && !latin1) return;                                          
     if (v == 1 && latin1) {
-        /* declared Latin-1 but decodes cleanly as UTF-8: trust the bytes (common misconfiguration) */
+                                                                                                    
         return;
     }
-    /* transcode single bytes >= 0x80 into UTF-8, growing the buffer in place (back to front) */
+                                                                                              
     int extra = 0;
     for (int i = 0; i < br_page_len; i++) {
         uint8_t c = (uint8_t)br_page_src[i];
@@ -1035,7 +1035,7 @@ static void draw_image_box(br_box_t* b, int sx, int sy, const w98_rect_t* clip) 
                 uint32_t a = p >> 24;
                 if (!a) continue;
                 if (a == 0xFF) { row[px] = p; continue; }
-                /* straight-alpha "over" blend for antialiased edges / translucent pixels */
+                                                                                          
                 uint32_t d = row[px], inv = 255 - a;
                 uint32_t r = (((p >> 16) & 0xFF) * a + ((d >> 16) & 0xFF) * inv) / 255;
                 uint32_t g = (((p >> 8) & 0xFF) * a + ((d >> 8) & 0xFF) * inv) / 255;
@@ -1054,7 +1054,7 @@ static void draw_image_box(br_box_t* b, int sx, int sy, const w98_rect_t* clip) 
         return;
     }
 
-    /* vector graphics that failed to rasterize (or are empty) draw nothing, like a real browser */
+                                                                                                 
     if (b->node && b->node->tag && br_streq(b->node->tag, "svg")) return;
     if (b->w < 12 || b->h < 12) return;
     fill_clipped(sx, sy, b->w, b->h, 0xFFF0F0F0u, clip);
@@ -1610,7 +1610,7 @@ static void address_insert(char c) {
     brs.address[brs.address_cursor++] = c;
 }
 
-/* focusable text-entry controls for Tab navigation */
+                                                    
 static int is_text_field(const br_node_t* k) {
     if (!k->tag) return 0;
     if (br_streq(k->tag, "textarea")) return !br_attr(k, "readonly") && k->style.visible && k->style.display != BR_DISPLAY_NONE;

@@ -96,7 +96,7 @@ static uint8_t rtl_tx_buf[1800] __attribute__((aligned(16)));
 #define RTL_CR_RST  0x10
 #define RTL_CR_RE   0x08
 #define RTL_CR_TE   0x04
-#define RTL_CR_BUFE 0x01                /* RX buffer empty */
+#define RTL_CR_BUFE 0x01                                   
 
 #define RTL_ISR_ROK  0x0001
 #define RTL_ISR_RER  0x0002
@@ -216,11 +216,11 @@ static void rtl_poll(void) {
     rtl_read_link();
 }
 
-#define PN_RDP      0x10      /* DWIO offsets */
+#define PN_RDP      0x10                      
 #define PN_RAP      0x14
 #define PN_RESET    0x18
 #define PN_BDP      0x1C
-#define PN_WIO_RESET 0x14     /* 16-bit mode reset port */
+#define PN_WIO_RESET 0x14                               
 
 #define CSR0_INIT   0x0001
 #define CSR0_STRT   0x0002
@@ -442,15 +442,15 @@ static void pn_poll(void) {
 #define E1000_TCTL_EN     (1u << 1)
 #define E1000_TCTL_PSP    (1u << 3)
 
-/* --- PCH2 (Intel 82579LM / 82579V) additions ---------------------------
- * These MACs live in the PCH chipset (Cougar Point / Panther Point) and
- * their PHY sits behind an internal interconnect at MDIO address 1.  After
- * power-on the firmware/ME may leave the PHY powered down or in SMBus
- * mode, in which case plain MAC register init alone gives no link: the
- * driver must explicitly wake the PHY up.  (Reference: Linux e1000e,
- * drivers/net/ethernet/intel/e1000e/ich8lan.c,
- * e1000_init_phy_workarounds_pchlan / e1000_toggle_lanphypc_pch_lpt.)
- */
+                                                                         
+                                                                        
+                                                                           
+                                                                      
+                                                                       
+                                                                     
+                                               
+                                                                      
+  
 #define E1000_MDIC        0x0020
 #define E1000_FWSM        0x5B54
 #define E1000_FEXTNVM3    0x003C
@@ -459,14 +459,14 @@ static void pn_poll(void) {
 #define E1000_CTRL_LANPHYPC_OVERRIDE (1u << 16)
 #define E1000_CTRL_LANPHYPC_VALUE    (1u << 17)
 #define E1000_EXTCNF_GATE_PHY_CFG    (1u << 7)
-#define E1000_FWSM_PHY_RESET_EN      (1u << 6)  /* ICH_FWSM_RSPCIPHY */
+#define E1000_FWSM_PHY_RESET_EN      (1u << 6)                       
 
 #define E1000_MDIC_PHY_ADDR   1u
 #define E1000_MDIC_ADDR_SHIFT 16
 #define E1000_MDIC_READY      (1u << 28)
 #define E1000_MDIC_ERROR      (1u << 30)
 
-/* Standard MII registers (PHY page 0) */
+                                       
 #define E1000_MII_BMCR       0
 #define E1000_MII_PHYSID1    2
 #define E1000_MII_PHYSID2    3
@@ -476,8 +476,8 @@ static void pn_poll(void) {
 #define E1000_BMCR_ANE       0x1000
 #define E1000_BMCR_RESTART_AN 0x0200
 #define E1000_BMCR_SPEED_MASK 0x2040
-#define E1000_ADV_10_100     0x01E1  /* 10/100 half+full, 802.3 selector */
-#define E1000_ADV_PAUSE      0x0C00  /* symmetric + asymmetric pause */
+#define E1000_ADV_10_100     0x01E1                                      
+#define E1000_ADV_PAUSE      0x0C00                                  
 
 #define E1000_NRX 32
 #define E1000_NTX 32
@@ -510,7 +510,7 @@ static uint8_t* e1000_rxb[E1000_NRX];
 static uint8_t* e1000_txb[E1000_NTX];
 static int e1000_rx_head = 0;
 static int e1000_tx_tail = 0;
-static bool e1000_pch2 = false;   /* true for 82579LM/82579V (PCH2 MACs) */
+static bool e1000_pch2 = false;                                          
 
 static inline void e1000_w(uint32_t reg, uint32_t v) { *(volatile uint32_t*)(e1000_mmio + reg) = v; }
 static inline uint32_t e1000_r(uint32_t reg) { return *(volatile uint32_t*)(e1000_mmio + reg); }
@@ -535,12 +535,12 @@ static void e1000_read_link(void) {
     net_has_link = (e1000_r(E1000_STATUS) & 0x2) ? 1 : 0;
 }
 
-/* --- MDIC (MDIO) access for the PCH2-integrated PHY -------------------- */
+                                                                           
 
 static int e1000_mdic_read(uint8_t reg, uint16_t* out) {
     e1000_w(E1000_MDIC, (uint32_t)reg |
             ((uint32_t)E1000_MDIC_PHY_ADDR << E1000_MDIC_ADDR_SHIFT) |
-            (2u << 26));                       /* opcode: read */
+            (2u << 26));                                       
     for (int i = 0; i < 5000; i++) {
         uint32_t v = e1000_r(E1000_MDIC);
         if (v & E1000_MDIC_ERROR) return 0;
@@ -552,7 +552,7 @@ static int e1000_mdic_read(uint8_t reg, uint16_t* out) {
 static int e1000_mdic_write(uint8_t reg, uint16_t val) {
     e1000_w(E1000_MDIC, (uint32_t)val | (uint32_t)reg |
             ((uint32_t)E1000_MDIC_PHY_ADDR << E1000_MDIC_ADDR_SHIFT) |
-            (1u << 26));                       /* opcode: write */
+            (1u << 26));                                        
     for (int i = 0; i < 5000; i++) {
         uint32_t v = e1000_r(E1000_MDIC);
         if (v & E1000_MDIC_ERROR) return 0;
@@ -571,44 +571,44 @@ static int e1000_phy_is_accessible(void) {
     return 0;
 }
 
-/* Force the MAC-PHY interconnect out of SMBus mode by toggling the
- * LANPHYPC pin, power-cycling the PHY (needs up to ~50ms). */
+                                                                  
+                                                             
 static void e1000_toggle_lanphypc(void) {
     uint32_t v = e1000_r(E1000_FEXTNVM3);
-    v = (v & ~0x0C000000u) | 0x08000000u;      /* PHY config counter = 50ms */
+    v = (v & ~0x0C000000u) | 0x08000000u;                                   
     e1000_w(E1000_FEXTNVM3, v);
 
     v = e1000_r(E1000_CTRL);
     v |=  E1000_CTRL_LANPHYPC_OVERRIDE;
     v &= ~E1000_CTRL_LANPHYPC_VALUE;
     e1000_w(E1000_CTRL, v);
-    (void)e1000_r(E1000_CTRL);                 /* flush the write */
-    for (volatile int i = 0; i < 2000; i++) { } /* ~10-20us */
+    (void)e1000_r(E1000_CTRL);                                    
+    for (volatile int i = 0; i < 2000; i++) { }             
     v &= ~E1000_CTRL_LANPHYPC_OVERRIDE;
     e1000_w(E1000_CTRL, v);
     (void)e1000_r(E1000_CTRL);
     delay_ms(50);
 }
 
-/* Bring the 82579 PHY out of firmware/power-down state so the MAC can
- * establish a link.  Must run after the MAC reset, before programming
- * the rings. */
+                                                                     
+                                                                      
+               
 static void e1000_pch2_phy_wake(void) {
-    /* Gate automatic hardware PHY config while we configure the PHY */
+                                                                     
     e1000_w(E1000_EXTCNF_CTRL,
             e1000_r(E1000_EXTCNF_CTRL) | E1000_EXTCNF_GATE_PHY_CFG);
 
-    /* Wait for the ME/firmware to allow PHY resets (FWSM.RSPCIPHY) */
+                                                                    
     for (int i = 0; i < 30; i++) {
         if (e1000_r(E1000_FWSM) & E1000_FWSM_PHY_RESET_EN) break;
         delay_ms(10);
     }
 
-    /* PHY registers unreadable while the interconnect is in SMBus mode:
-     * toggle LANPHYPC to force it back to PCIe/MDIO mode */
+                                                                       
+                                                           
     if (!e1000_phy_is_accessible()) e1000_toggle_lanphypc();
 
-    /* Software-reset the PHY to get a known state */
+                                                   
     uint16_t bmcr = 0;
     if (e1000_mdic_read(E1000_MII_BMCR, &bmcr)) {
         bmcr &= (uint16_t)~(E1000_BMCR_POWERDOWN | E1000_BMCR_SPEED_MASK);
@@ -622,8 +622,8 @@ static void e1000_pch2_phy_wake(void) {
         }
     }
 
-    /* Advertise 10/100 + pause (gigabit capability is left untouched)
-     * and restart auto-negotiation */
+                                                                     
+                                     
     e1000_mdic_write(E1000_MII_ADVERTISE,
                      (uint16_t)(E1000_ADV_10_100 | E1000_ADV_PAUSE));
     if (e1000_mdic_read(E1000_MII_BMCR, &bmcr)) {
@@ -632,7 +632,7 @@ static void e1000_pch2_phy_wake(void) {
                          (uint16_t)(bmcr | E1000_BMCR_ANE | E1000_BMCR_RESTART_AN));
     }
 
-    /* Ungate automatic PHY config; 82579 needs ~10ms of quiet first */
+                                                                     
     delay_ms(10);
     e1000_w(E1000_EXTCNF_CTRL,
             e1000_r(E1000_EXTCNF_CTRL) & ~E1000_EXTCNF_GATE_PHY_CFG);
@@ -754,7 +754,7 @@ static int e1000_is_supported(uint16_t did) {
         0x1018, 0x1019, 0x101A, 0x101D, 0x101E, 0x1026, 0x1027, 0x1028, 0x1075,
         0x1076, 0x1077, 0x1078, 0x1079, 0x107A, 0x107B, 0x107C, 0x108A, 0x1099,
         0x10B5, 0x10D3,
-        0x1502, 0x1503,   /* Intel 82579LM / 82579V (PCH2, needs PHY wake) */
+        0x1502, 0x1503,                                                    
     };
     for (unsigned i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) if (ids[i] == did) return 1;
     return 0;
@@ -1312,7 +1312,7 @@ int net_dns_lookup(const char* hostname, uint8_t* ip_out) {
     for (int w = 0; w < 3000; w++) {
         delay_ms(1); net_poll();
         if (dns_got) break;
-        if (w == 1000 || w == 2000) net_send_raw(pkt, off + 20 + udplen);   /* retransmit */
+        if (w == 1000 || w == 2000) net_send_raw(pkt, off + 20 + udplen);                 
     }
     udp_cb = NULL;
     if (dns_got) { for (int k = 0; k < 4; k++) ip_out[k] = dns_resp_ip[k]; dns_cache_put(hostname, ip_out); return 1; }
@@ -1543,16 +1543,16 @@ int net_tcp_connect(const uint8_t* ip, uint16_t port,
     return total > 0 ? (int)total : -1;
 }
 
-/* ------------------------------------------------------------------ */
-/*  HTTP/1.1 client                                                    */
-/*                                                                     */
-/*  - one persistent connection (keep-alive) that is reused for        */
-/*    consecutive requests to the same host:port, so a page with 40    */
-/*    images costs one TCP + TLS handshake instead of 41               */
-/*  - Content-Length / chunked / read-until-close framing              */
-/*  - Content-Encoding: gzip and deflate                               */
-/*  - a browser-like request header set                                */
-/* ------------------------------------------------------------------ */
+                                                                      
+                                                                       
+                                                                       
+                                                                       
+                                                                       
+                                                                       
+                                                                       
+                                                                       
+                                                                       
+                                                                      
 
 int  net_http_last_status = 0;
 char net_http_last_location[1024];
@@ -1605,7 +1605,7 @@ static int conn_recv(uint8_t* out, int max, int timeout_ms) {
     return http_conn.secure ? tls_read(&https_tls, out, max, timeout_ms) : net_tcp_recv(out, (uint32_t)max, (uint32_t)timeout_ms);
 }
 
-/* returns 1 = reused an idle connection, 0 = opened a fresh one, -1 = failed */
+                                                                              
 static int http_connect(const char* host, uint16_t port, int secure) {
     if (http_conn.open && http_conn.secure == secure && http_conn.port == port &&
         my_strncmp_prefix(http_conn.host, host) && strlen(http_conn.host) == strlen(host) && http_conn_alive())
@@ -1672,10 +1672,10 @@ static int value_has_ci(const char* v, const char* word) {
     return 0;
 }
 
-/* Incremental chunked-transfer decoder. */
+                                         
 typedef struct {
-    int state;          /* 0 size line, 1 data, 2 CRLF after data, 3 trailers */
-    int skipping;       /* inside a chunk extension */
+    int state;                                                                
+    int skipping;                                   
     uint32_t remain;
     int line_empty;
     int done;
@@ -1783,7 +1783,7 @@ int net_http_get(const char* url, uint8_t* out_buf, uint32_t out_max) {
             return -1;
         }
 
-        /* ---- response head ---- */
+                                   
         int hl = 0, head_end = -1, got_first = 0;
         while (head_end < 0 && hl < HTTP_HDR_MAX - 1) {
             int n = conn_recv(http_hdr + hl, HTTP_HDR_MAX - 1 - hl, got_first ? 10000 : 15000);
@@ -1798,16 +1798,16 @@ int net_http_get(const char* url, uint8_t* out_buf, uint32_t out_max) {
         }
         if (head_end < 0) {
             http_close_conn();
-            if (reused && hl == 0) continue;      /* stale keep-alive: retry once on a fresh connection */
+            if (reused && hl == 0) continue;                                                            
             if (hl <= 0) return -1;
-            /* HTTP/0.9-style or headerless reply: hand back whatever arrived */
+                                                                              
             uint32_t n = (uint32_t)hl < out_max ? (uint32_t)hl : out_max;
             for (uint32_t i = 0; i < n; i++) out_buf[i] = http_hdr[i];
             return (int)n;
         }
         http_hdr[hl] = 0;
 
-        /* ---- parse the head ---- */
+                                    
         int status = 0, http10 = 0;
         uint32_t clen = 0; int have_clen = 0, chunked = 0, enc = 0, close_after = 0;
         {
@@ -1835,13 +1835,13 @@ int net_http_get(const char* url, uint8_t* out_buf, uint32_t out_max) {
         if (close_after < 0) close_after = 0;
         net_http_last_status = status;
 
-        /* 1xx: informational, the real response follows */
+                                                         
         if (status >= 100 && status < 200) { http_close_conn(); continue; }
 
         int no_body = (status == 204 || status == 304);
-        if (!chunked && !have_clen && !no_body) close_after = 1;   /* framed by connection close */
+        if (!chunked && !have_clen && !no_body) close_after = 1;                                 
 
-        /* ---- body ---- */
+                          
         uint8_t* dst = enc ? http_zbuf : out_buf;
         uint32_t dst_max = enc ? (uint32_t)HTTP_ZBUF_MAX : out_max;
         uint32_t body_len = 0;
@@ -1870,7 +1870,7 @@ int net_http_get(const char* url, uint8_t* out_buf, uint32_t out_max) {
             while (got < clen) {
                 uint32_t room = dst_max - body_len;
                 if (room == 0) {
-                    /* caller's buffer is full: if the rest is small, drain it to keep the connection reusable */
+                                                                                                               
                     if (clen - got > 65536) { close_after = 1; break; }
                     int n = conn_recv(rbuf, sizeof(rbuf), 10000);
                     if (n <= 0) { close_after = 1; break; }
@@ -1903,7 +1903,7 @@ int net_http_get(const char* url, uint8_t* out_buf, uint32_t out_max) {
             return (int)n;
         }
         if (enc == 3) {
-            /* we never advertise brotli/zstd; treat a server that sends it anyway as an error */
+                                                                                               
             return 0;
         }
         return (int)body_len;

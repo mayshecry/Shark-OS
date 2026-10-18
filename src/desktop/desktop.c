@@ -28,6 +28,7 @@ static int wallpaper_cache_h = 0;
 static bool wallpaper_dirty = true;
 
 #define DOUBLE_CLICK_TICKS 400
+static window_t* mouse_capture_window = NULL;
 
 void desktop_set_wallpaper_color(uint32_t top, uint32_t bottom) {
     wallpaper_top = top;
@@ -41,9 +42,9 @@ void desktop_set_wallpaper_mode(int mode) {
     desktop.dirty = true;
 }
 
-/* ------------------------------------------------------------------ */
-/* Bundled wallpaper catalog                                           */
-/* ------------------------------------------------------------------ */
+                                                                      
+                                                                       
+                                                                      
 
 typedef struct {
     const char* name;
@@ -168,7 +169,8 @@ void desktop_icon_launch_offset(window_type_t type, const char* title) {
     int win_y = 30 + (desktop.window_count * 30) % 120;
     int is_game = (type == WINDOW_TYPE_DOOM || type == WINDOW_TYPE_FLAPPYBIRD ||
                    type == WINDOW_TYPE_SMB || type == WINDOW_TYPE_PONG ||
-                   type == WINDOW_TYPE_GDASH);
+                   type == WINDOW_TYPE_GDASH || type == WINDOW_TYPE_SHARKCUBE ||
+                   type == WINDOW_TYPE_SHARKCRAFT);
     if (is_game) {
         win_w = 640; win_h = 480;
     } else if (type == WINDOW_TYPE_TASKMANAGER) {
@@ -189,9 +191,9 @@ void desktop_icon_launch_offset(window_type_t type, const char* title) {
                 return;
             }
         }
-        /* Open the browser at a "normal" desktop-browser size: most of the
-         * screen, centred, so pages lay out at a realistic viewport width
-         * (1180 px on a 1280-wide display) instead of a 660 px keyhole. */
+                                                                          
+                                                                          
+                                                                          
         int sw = (int)screen_width, sh = (int)screen_height - TASKBAR_HEIGHT;
         win_w = sw - 100; if (win_w > 1400) win_w = 1400; if (win_w < 660) win_w = sw - 8;
         win_h = sh - 70;  if (win_h > 1000) win_h = 1000; if (win_h < 500) win_h = sh - 8;
@@ -240,6 +242,12 @@ void desktop_icon_launch_offset(window_type_t type, const char* title) {
                     win->game_tick = gd_tick;
                     win->close_func = gd_cleanup;
                     break;
+                case WINDOW_TYPE_SHARKCUBE:
+                    sharkcube_game_reset();
+                    break;
+                case WINDOW_TYPE_SHARKCRAFT:
+                    sharkcraft_game_reset();
+                    break;
                 default: break;
             }
         }
@@ -287,19 +295,19 @@ static void desktop_wallpaper_rebuild_cache(int w, int h) {
         fit = W98_WALLFIT_FILL;
     }
 
-    /* 16.16 fixed point: source steps per destination pixel. */
+                                                              
     uint64_t step_x = ((uint64_t)sw << 16) / (uint64_t)w;
     uint64_t step_y = ((uint64_t)sh << 16) / (uint64_t)h;
     uint64_t step = 0, off_x = 0, off_y = 0;
     int bx0 = 0, by0 = 0, bx1 = w, by1 = h;
 
     if (fit == W98_WALLFIT_FILL) {
-        /* cover: keep aspect, crop the overflow, centre the crop */
+                                                                  
         step = (step_x < step_y) ? step_x : step_y;
         off_x = (((uint64_t)sw << 16) - step * (uint64_t)w) / 2;
         off_y = (((uint64_t)sh << 16) - step * (uint64_t)h) / 2;
     } else if (fit == W98_WALLFIT_FIT) {
-        /* contain: keep aspect, letterbox with the desktop colour */
+                                                                   
         step = (step_x > step_y) ? step_x : step_y;
         int dw = (int)(((uint64_t)sw << 16) / step);
         int dh = (int)(((uint64_t)sh << 16) / step);
@@ -346,7 +354,7 @@ static void desktop_wallpaper_rebuild_cache(int w, int h) {
     }
 }
 
-/* Bilinear sample of the source image at a 16.16 fixed-point point. */
+                                                                     
 static uint32_t wp_bilerp(const uint32_t* s, int sw, int sh, int sxf, int syf) {
     int x0 = sxf >> 16;
     int y0 = syf >> 16;
@@ -750,9 +758,13 @@ bool desktop_pointer_needs_repaint(int mx, int my) {
     return false;
 }
 
-void desktop_handle_mouse(int mx, int my, int buttons) {
+void desktop_handle_mouse(int mx, int my, int buttons, int wheel) {
     desktop_mouse_x = mx;
     desktop_mouse_y = my;
+    if(wheel && desktop.start_menu.visible) {
+        start_menu_scroll(wheel);
+        return;
+    }
 
     if (buttons & 1) {
         if (!desktop_mouse_down) {
@@ -812,6 +824,7 @@ void desktop_handle_mouse(int mx, int my, int buttons) {
                     my >= focused_click->rect.client_y &&
                     my < focused_click->rect.client_y + focused_click->rect.client_h) {
                     window_focus(focus_idx);
+                    mouse_capture_window = focused_click;
                     focused_click->mouse_func(focused_click, mx, my, buttons);
                     desktop.dirty = true;
                     return;
@@ -850,9 +863,16 @@ void desktop_handle_mouse(int mx, int my, int buttons) {
         } else {
             if (desktop_drag_window >= 0) window_drag_update(mx, my);
             else if (desktop_resize_window >= 0) window_resize_update(mx, my);
+            else if (mouse_capture_window && mouse_capture_window->mouse_func) {
+                mouse_capture_window->mouse_func(mouse_capture_window, mx, my, buttons);
+            }
         }
     } else {
         if (desktop_mouse_down) {
+            if (mouse_capture_window && mouse_capture_window->mouse_func) {
+                mouse_capture_window->mouse_func(mouse_capture_window, mx, my, 0);
+            }
+            mouse_capture_window = NULL;
             desktop_mouse_down = false;
             window_end_drag();
         }
@@ -965,6 +985,10 @@ void desktop_init(void) {
             desktop_icon_add("Pong", WINDOW_TYPE_PONG);
         } else if (strcmp(plugins[i].name, "gdash") == 0) {
             desktop_icon_add("Geometry Dash", WINDOW_TYPE_GDASH);
+        } else if (strcmp(plugins[i].name, "sharkcube") == 0) {
+            desktop_icon_add("SharkCube", WINDOW_TYPE_SHARKCUBE);
+        } else if (strcmp(plugins[i].name, "sharkcraft") == 0) {
+            desktop_icon_add("SharkCraft", WINDOW_TYPE_SHARKCRAFT);
         }
     }
     desktop_icons_load();

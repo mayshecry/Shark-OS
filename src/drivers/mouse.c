@@ -4,6 +4,7 @@ mouse_state_t mouse_state;
 int mouse_cursor_x = 100;
 int mouse_cursor_y = 100;
 static int mouse_cycle = 0;
+static int mouse_packet_size = 3;
 static uint8_t mouse_packet[4];
 static int mouse_present = 0;
 
@@ -58,7 +59,7 @@ void mouse_handler(void) {
     mouse_packet[mouse_cycle] = d;
     mouse_cycle++;
 
-    if (mouse_cycle == 3) {
+    if (mouse_cycle == mouse_packet_size) {
         uint8_t flags = mouse_packet[0];
         int dx = (int)mouse_packet[1];
         int dy = (int)mouse_packet[2];
@@ -69,7 +70,12 @@ void mouse_handler(void) {
         mouse_state.buttons = flags & 0x07;
         mouse_state.dx = dx;
         mouse_state.dy = -dy;
-        mouse_state.wheel = 0;
+        int wheel = 0;
+        if(mouse_packet_size==4) {
+            wheel=mouse_packet[3]&0x0F;
+            if(wheel&0x08) wheel-=16;
+        }
+        mouse_state.wheel = wheel;
 
         mouse_cursor_x += dx;
         mouse_cursor_y -= dy;
@@ -115,6 +121,15 @@ void mouse_init(void) {
     outb(0x60, status);
 
     mouse_command(0xF6);
+    mouse_packet_size=3;
+    const uint8_t rates[3]={200,100,80};
+    for(int i=0;i<3;i++) {
+        mouse_write(0xF3); (void)mouse_read();
+        mouse_write(rates[i]); (void)mouse_read();
+    }
+    mouse_write(0xF2); (void)mouse_read();
+    uint8_t mouse_id=mouse_read();
+    if(mouse_id==3 || mouse_id==4) mouse_packet_size=4;
     uint8_t ack = mouse_command(0xF4);
     mouse_present = (ack == 0xFA);
 

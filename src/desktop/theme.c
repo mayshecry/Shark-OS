@@ -74,43 +74,43 @@ const desktop_theme_t theme_modern = {
     12
 };
 
-/* Kawaii theme — pink colour scheme sampled from the bundled anime
- * wallpaper: sakura hair pink, sailor-uniform pink and a dark plum
- * "ribbon" accent. The SharkOS shark logo keeps its shape but wears
- * the sailor-uniform pink. */
+                                                                  
+                                                                   
+                                                                    
+                             
 const desktop_theme_t theme_kawaii = {
     "Kawaii theme",
-    0xFFF3C1D3u,   /* desktop: soft hair pink            */
-    0xFFEDADC2u,   /* desktop_dark                       */
-    0xFFFDF0F5u,   /* btnface: blossom white             */
-    0xFFFFFFFFu,   /* btnhilite                          */
-    0xFFF9D8E4u,   /* btnlight                           */
-    0xFFD885B1u,   /* btnshadow: skirt pink              */
-    0xFF91355Eu,   /* btndkshadow: dark skirt pink       */
-    0xFF4A2038u,   /* btntext: dark plum                 */
-    0xFFB98CA6u,   /* graytext                           */
-    0xFFD25D89u,   /* active_title: sailor collar pink   */
-    0xFFCE75A1u,   /* active_title2: hair pink           */
-    0xFFF3C1D3u,   /* inactive_title                     */
-    0xFFF9D8E4u,   /* inactive_title2                    */
-    0xFFFFFFFFu,   /* titletext                          */
-    0xFFA6688Cu,   /* titletext_inact                    */
-    0xFFD25D89u,   /* highlight: sailor pink             */
-    0xFFFFFFFFu,   /* highlighttext                      */
-    0xFFFFF7FAu,   /* window                             */
-    0xFF4A2038u,   /* windowtext                         */
-    0xFFCE75A1u,   /* caption_start                      */
-    0xFFD25D89u,   /* caption_end                        */
-    0xFFFDF0F5u,   /* menu_bg                            */
-    0xFFFFFFFFu,   /* icon_label                         */
-    0xFFD25D89u,   /* logo: the shark, in sailor pink    */
-    true,          /* title_gradient                     */
-    false,         /* flat_bevels: keep the 98 bevels    */
-    true,          /* nice_font                          */
-    true,          /* animations                         */
-    false,         /* flat_taskbar                       */
-    true,          /* title_accent_line                  */
-    false,         /* modern_icons                       */
+    0xFFF3C1D3u,                                         
+    0xFFEDADC2u,                                         
+    0xFFFDF0F5u,                                         
+    0xFFFFFFFFu,                                         
+    0xFFF9D8E4u,                                         
+    0xFFD885B1u,                                         
+    0xFF91355Eu,                                         
+    0xFF4A2038u,                                         
+    0xFFB98CA6u,                                         
+    0xFFD25D89u,                                         
+    0xFFCE75A1u,                                         
+    0xFFF3C1D3u,                                         
+    0xFFF9D8E4u,                                         
+    0xFFFFFFFFu,                                         
+    0xFFA6688Cu,                                         
+    0xFFD25D89u,                                         
+    0xFFFFFFFFu,                                         
+    0xFFFFF7FAu,                                         
+    0xFF4A2038u,                                         
+    0xFFCE75A1u,                                         
+    0xFFD25D89u,                                         
+    0xFFFDF0F5u,                                         
+    0xFFFFFFFFu,                                         
+    0xFFD25D89u,                                         
+    true,                                                
+    false,                                               
+    true,                                                
+    true,                                                
+    false,                                               
+    true,                                                
+    false,                                               
     0
 };
 
@@ -138,9 +138,9 @@ void theme_set(int id) {
     else theme_current = &theme_win98;
     window_title_icons_invalidate();
     if (desktop.initialized) desktop_icons_load();
-    /* The Kawaii theme ships with its own wallpaper: entering it swaps
-     * the desk to the kawaii image (remembering the user's choice),
-     * leaving it restores that choice; any switch rebuilds the cache. */
+                                                                      
+                                                                    
+                                                                        
     if (id == THEME_ID_KAWAII) {
         kawaii_saved_wallpaper = desktop.wallpaper_id;
         desktop_set_wallpaper(WP_ID_KAWAII);

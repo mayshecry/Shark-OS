@@ -3783,7 +3783,7 @@ void br_js_run_document(br_node_t* doc) {
     }
 }
 
-/* GET submission of a form: build action?name=value&... from its controls and navigate */
+                                                                                        
 static void form_submit_now(br_node_t* form) {
     if (!form) return;
     const char* action = br_attr(form, "action");
@@ -3791,7 +3791,7 @@ static void form_submit_now(br_node_t* form) {
     if (method && br_strieq(method, "post")) { br_status("POST forms are not supported"); return; }
     static char url[BR_URL_MAX * 2];
     br_resolve_url(brs.url, action && action[0] ? action : brs.url, url, BR_URL_MAX);
-    /* drop an existing query string when the action has none of its own */
+                                                                         
     int first = 1;
     for (char* q = url; *q; q++) if (*q == '?') { first = 0; break; }
     for (int i = 0; i < br_dom_node_count(); i++) {
@@ -3807,7 +3807,7 @@ static void form_submit_now(br_node_t* form) {
         const char* val = k->value ? k->value : (br_attr(k, "value") ? br_attr(k, "value") : "");
         if (type && (br_strieq(type, "checkbox") || br_strieq(type, "radio"))) val = br_attr(k, "value") ? br_attr(k, "value") : "on";
         if (br_streq(k->tag, "select") && !k->value) {
-            /* first selected option, else the first option */
+                                                            
             const char* sel = NULL; const char* firstv = NULL;
             for (br_node_t* o = k->first_child; o; o = o->next) {
                 if (o->type != BR_NODE_ELEMENT || !br_streq(o->tag, "option")) continue;
@@ -3852,7 +3852,7 @@ void br_js_dispatch_click(br_node_t* n) {
     if (!prevented) {
 
         br_node_t* form = NULL;
-        /* clicks on markup inside a <button> (icons, spans) activate the button itself */
+                                                                                        
         br_node_t* ctl = n;
         for (br_node_t* p = n; p; p = p->parent) {
             if (p->type == BR_NODE_ELEMENT && (br_streq(p->tag, "button") || br_streq(p->tag, "input") || br_streq(p->tag, "a") || br_streq(p->tag, "form"))) { ctl = p; break; }
@@ -3951,9 +3951,9 @@ void br_js_dispatch_key(br_node_t* n, char c) {
     }
     if (obj_window >= 0) dispatch_event_on(obj_window, "keydown", ev, &prevented);
     if (c == '\n' && prevented && brs.needs_layout == 0) {
-        /* The page script swallowed Enter but did not navigate (its own submit code usually
-         * depends on APIs this engine lacks). Fall back to the native form submission so
-         * search boxes keep working. */
+                                                                                           
+                                                                                         
+                                       
         br_js_console("Enter keydown was preventDefault()ed by page script; submitting form natively");
         prevented = 0;
     }

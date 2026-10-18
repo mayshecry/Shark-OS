@@ -1,10 +1,10 @@
-/* systemd-style verbose boot log.
- *
- * The old Win98-shaped splash (logo + progress bar) is gone: boot now
- * prints a scrolling service log — "[  OK  ] Started ..." style — on a
- * black screen for about five seconds, then hands over to the desktop.
- * Colours follow the active theme (the Kawaii GRUB entry boots pink).
- */
+                                 
+  
+                                                                      
+                                                                       
+                                                                       
+                                                                      
+  
 
 #include "kernel.h"
 #include "desktop.h"
@@ -23,17 +23,17 @@
 typedef struct {
     char msg[BOOT_MSG_MAX];
     bool done;
-    bool banner;      /* drawn without the [ OK ] tag column */
-    uint32_t color;   /* banner colour */
+    bool banner;                                             
+    uint32_t color;                    
 } boot_line_t;
 
 static boot_line_t boot_lines[BOOT_LINE_MAX];
 static int boot_line_count = 0;
 static int boot_spin = 0;
 
-/* ------------------------------------------------------------------ */
-/* The SharkOS logo painter lives here (also used by the About box).  */
-/* ------------------------------------------------------------------ */
+                                                                      
+                                                                      
+                                                                      
 
 static void draw_pixel_safe(int x, int y, uint32_t color) {
     if (x < 0 || y < 0) return;
@@ -68,9 +68,9 @@ void draw_shark_logo(int cx, int cy, int size, uint32_t color) {
     }
 }
 
-/* ------------------------------------------------------------------ */
-/* Boot log renderer                                                  */
-/* ------------------------------------------------------------------ */
+                                                                      
+                                                                      
+                                                                      
 
 static int boot_scale(void) {
     return screen_height >= 900 ? 2 : 1;
@@ -85,8 +85,8 @@ static void boot_delay(volatile int iters) {
     for (volatile int i = 0; i < iters; i++);
 }
 
-/* Pace a line: once the PIT ticks we wait in real time; before the IDT
- * is up (uptime frozen) we fall back to a rough busy loop. */
+                                                                      
+                                                             
 static void boot_wait_ms(uint32_t ms) {
     uint32_t a = uptime_ticks;
     boot_delay(200000);
@@ -143,7 +143,7 @@ static void boot_render(void) {
 }
 
 static void boot_add_line(const char* msg, bool banner, uint32_t color) {
-    /* an arriving update completes the previous pending line */
+                                                              
     for (int i = 0; i < boot_line_count; i++) boot_lines[i].done = true;
 
     if (boot_line_count >= BOOT_LINE_MAX) {
@@ -160,9 +160,9 @@ static void boot_add_line(const char* msg, bool banner, uint32_t color) {
     boot_spin++;
 }
 
-/* ------------------------------------------------------------------ */
-/* Public API (same signatures as the old splash)                     */
-/* ------------------------------------------------------------------ */
+                                                                      
+                                                                      
+                                                                      
 
 void boot_screen_show(void) {
     boot_line_count = 0;
@@ -190,7 +190,7 @@ void boot_screen_update(const char* message, int progress) {
     if (!message) return;
     boot_add_line(message, false, 0);
     boot_render();
-    boot_wait_ms(220);   /* let it read like a real init */
+    boot_wait_ms(220);                                   
 }
 
 void boot_screen_info(const char* message) {
@@ -206,8 +206,8 @@ void boot_screen_hide(void) {
     for (int i = 0; i < boot_line_count; i++) boot_lines[i].done = true;
     boot_render();
 
-    /* Pace the whole sequence to ~5 s once the PIT is ticking; on slow
-     * machines that already took longer we don't add extra waiting. */
+                                                                      
+                                                                      
     boot_wait_ms(400);
     while (uptime_ticks < 4600) asm volatile("hlt");
     boot_wait_ms(300);

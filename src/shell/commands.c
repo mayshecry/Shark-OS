@@ -651,9 +651,9 @@ static void cmd_netstat(const char* args) {
     net_cmd_netstat();
 }
 
-/* ---------------------------- sharkfetch ------------------------------ */
-/* 8-bit pixel shark + detailed system info, ANSI-coloured so it works in
- * both the full-screen console and the desktop Terminal window.          */
+                                                                          
+                                                                        
+                                                                           
 
 static const char* shark_art[] = {
     "...........DDD........",
@@ -677,11 +677,11 @@ static const char* shark_art[] = {
 
 static const char* shark_ansi_for(char c) {
     switch (c) {
-        case 'D': return "\x1b[94m";  /* fins / outline  */
-        case 'B': return "\x1b[96m";  /* body            */
-        case 'W': return "\x1b[97m";  /* belly           */
-        case 'E': return "\x1b[34m";  /* eye             */
-        case 'M': return "\x1b[91m";  /* mouth           */
+        case 'D': return "\x1b[94m";                     
+        case 'B': return "\x1b[96m";                     
+        case 'W': return "\x1b[97m";                     
+        case 'E': return "\x1b[34m";                     
+        case 'M': return "\x1b[91m";                     
         default:  return NULL;
     }
 }
@@ -719,7 +719,7 @@ static void shark_fetch_row(const char* art, const char* info) {
     }
     fetch_cat(buf, "\x1b[0m");
     if (info && *info) {
-        while (p < 48) buf[p++] = ' ';   /* align the info column */
+        while (p < 48) buf[p++] = ' ';                            
         while (*info && p < 190) buf[p++] = *info++;
     }
     buf[p++] = '\n';
@@ -739,7 +739,7 @@ static void cmd_sharkfetch(const char* args) {
 
     for (int r = 0; r < SHARK_ART_ROWS; r++) info[r][0] = '\0';
 
-    /* ---- info column ------------------------------------------------ */
+                                                                         
     strcpy(info[0], "\x1b[92mshark\x1b[97m@\x1b[92msharkos");
     strcpy(info[1], "\x1b[90m------------------------");
 
@@ -818,7 +818,7 @@ static void cmd_sharkfetch(const char* args) {
     fetch_kv(info[14], "Font");
     fetch_cat(info[14], "DejaVu Sans Mono 8x16");
 
-    /* ---- layout: side-by-side when wide, stacked when narrow ------- */
+                                                                        
     int cols = terminal_in_desktop_window ? desktop_terminal_cols
                                           : (int)term_cols;
     terminal_writestring("\n");

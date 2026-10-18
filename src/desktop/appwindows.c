@@ -45,7 +45,7 @@ static int terminal_blink = 0;
 static int terminal_history_pos = 0;
 int desktop_terminal_cols = 46;
 
-/* len <= 0 or colors == NULL -> default light grey on black */
+                                                             
 static void terminal_output_append(const char* text, const uint8_t* colors, int len) {
     if (len <= 0) return;
     if (len >= TERM_SCROLLBACK - 1) {
@@ -189,7 +189,7 @@ void app_window_draw_terminal(window_t* w) {
 static bool terminal_cmd_blocked(const char* cmd, char* why, int why_len) {
     static const char* blocked[] = {
         "edit", "guess", "tictactoe", "python", "doom", "flappybird", "smb",
-        "pong", "gdash", "microsoft", "htop", "exec", NULL
+        "pong", "gdash", "sharkcube", "sharkcraft", "microsoft", "htop", "exec", NULL
     };
     char name[32];
     int n = 0;
@@ -201,7 +201,8 @@ static bool terminal_cmd_blocked(const char* cmd, char* why, int why_len) {
             if (strcmp(name, "edit") == 0) msg = "edit: use Notepad on the desktop.\n";
             else if (strcmp(name, "doom") == 0 || strcmp(name, "flappybird") == 0 ||
                      strcmp(name, "smb") == 0 || strcmp(name, "pong") == 0 ||
-                     strcmp(name, "gdash") == 0)
+                     strcmp(name, "gdash") == 0 || strcmp(name, "sharkcube") == 0 ||
+                     strcmp(name, "sharkcraft") == 0)
                 msg = "Games open from the Start menu or a desktop icon.\n";
             else if (strcmp(name, "htop") == 0) msg = "htop: use Task Manager on the desktop (or 'ps').\n";
             else msg = "This command needs the full-screen console (boot 'SharkOS Lite').\n";
@@ -284,6 +285,17 @@ void app_window_draw_gdash(window_t* w) {
                        w->rect.client_w, w->rect.client_h);
     gd_draw_frame();
 }
+
+void app_window_draw_sharkcube(window_t* w) {
+    sharkcube_draw_window(w->rect.client_x, w->rect.client_y,
+                          w->rect.client_w, w->rect.client_h);
+}
+
+void app_window_draw_sharkcraft(window_t* w) {
+    sharkcraft_draw_window(w->rect.client_x, w->rect.client_y,
+                           w->rect.client_w, w->rect.client_h);
+}
+
 
 typedef struct {
     uint32_t color;
@@ -1465,8 +1477,8 @@ void app_window_draw_about(window_t* w) {
     w98_text("Created by Mayshecry", cx + cw / 2 - 66, cy + 128,
              W98_GRAYTEXT, W98_BTNFACE, 1, NULL);
 
-    /* The real SharkOS logo — same shark in every theme, but wearing
-     * the theme's colours (sailor pink under the Kawaii theme). */
+                                                                    
+                                                                  
     draw_shark_logo(cx + cw / 2, cy + 200, 46, W98_BTNDKSHADOW);
     draw_shark_logo(cx + cw / 2, cy + 200, 43, W98_LOGO);
 }
@@ -1623,4 +1635,28 @@ void app_window_keyboard_pong(window_t* w, char c) {
 void app_window_keyboard_gdash(window_t* w, char c) {
     if (c == 27) { window_close_by_ptr(w); return; }
     gd_handle_key((int)c);
+}
+
+void app_window_keyboard_sharkcube(window_t* w, char c) {
+    if (c == 27) { window_close_by_ptr(w); return; }
+    if (sharkcube_handle_key(c)) {
+        w->needs_redraw = true;
+        desktop.dirty = true;
+    }
+}
+
+void app_window_mouse_sharkcube(window_t* w, int mx, int my, int buttons) {
+    if (sharkcube_handle_mouse(mx, my, buttons)) {
+        w->needs_redraw = true;
+        desktop.dirty = true;
+    }
+}
+
+void app_window_keyboard_sharkcraft(window_t* w, char c) {
+    if (c == 27) { window_close_by_ptr(w); return; }
+    if (sharkcraft_handle_key(c)) { w->needs_redraw=true; desktop.dirty=true; }
+}
+
+void app_window_mouse_sharkcraft(window_t* w, int mx, int my, int buttons) {
+    if (sharkcraft_handle_mouse(mx,my,buttons)) { w->needs_redraw=true; desktop.dirty=true; }
 }

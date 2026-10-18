@@ -150,8 +150,8 @@ void app_window_draw_diskmgmt(window_t* w) {
         dm_refresh_install();
     }
 
-    /* One-shot: show a pre-existing install the first time the window
-     * opens, without making the user hit Refresh. */
+                                                                     
+                                                    
     if (!dm_first_refresh && dm_state == DM_IDLE && n > 0) {
         dm_first_refresh = true;
         dm_refresh_install();
@@ -285,7 +285,7 @@ void app_window_mouse_diskmgmt(window_t* w, int mx, int my, int buttons) {
     (void)det_y;
     (void)bar_y;
 
-    /* Never let clicks re-target or cancel an in-flight write/verify. */
+                                                                       
     bool busy = (dm_state == DM_WRITING || dm_state == DM_VERIFYING);
     if (busy) return;
 
@@ -356,7 +356,7 @@ static void dm_sum_verify(uint32_t words) {
 
 void diskmgmt_tick(void) {
     if (dm_state != DM_WRITING && dm_state != DM_VERIFYING) return;
-    desktop.dirty = true;   /* we tick globally; drive our own repaints */
+    desktop.dirty = true;                                               
     const ata_drive_t* d = ata_drive_get(dm_selected);
     if (!d) {
         dm_state = DM_ERR;

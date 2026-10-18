@@ -10,6 +10,9 @@
 #define MENU_HEADER_H 0
 
 #define MENU_SLIDE_MS 150
+#define MENU_SCROLL_H 12
+#define MENU_ROW_UP -2
+#define MENU_ROW_DOWN -3
 
 static uint32_t sm_anim_start = 0;
 
@@ -17,10 +20,22 @@ static const char* start_menu_items[STARTMENU_MAX];
 static window_type_t start_menu_types[STARTMENU_MAX];
 static int start_menu_count = 0;
 
-static int start_menu_height(void) {
+static int start_menu_rows(void) {
+    int rows=(int)(screen_height-TASKBAR_HEIGHT-2*MENU_SCROLL_H-8)/W98_MENU_ITEM_H;
+    if(rows<1) rows=1;
+    int total=start_menu_count+1;
+    if(rows>12) rows=12;
+    if(rows>total) rows=total;
+    return rows;
+}
 
-    int items = start_menu_count + 1;
-    return items * W98_MENU_ITEM_H + 4 + 2;
+static int start_menu_max_scroll(void) {
+    int max=start_menu_count+1-start_menu_rows();
+    return max>0?max:0;
+}
+
+static int start_menu_height(void) {
+    return start_menu_rows()*W98_MENU_ITEM_H+2*MENU_SCROLL_H+8;
 }
 
 static void start_menu_anchor(int* mx, int* my) {
@@ -30,13 +45,16 @@ static void start_menu_anchor(int* mx, int* my) {
 
 static bool start_menu_item_rect(int index, int* rx, int* ry, int* rw,
                                  int* rh) {
-    if (index < 0 || index > start_menu_count) return false;
+    if (index < desktop.start_menu.scroll_offset ||
+        index >= desktop.start_menu.scroll_offset+start_menu_rows() ||
+        index > start_menu_count) return false;
 
     int mx, my;
     start_menu_anchor(&mx, &my);
 
     *rx = mx + 2;
-    *ry = my + index * W98_MENU_ITEM_H + 2;
+    *ry = my + MENU_SCROLL_H + 2 +
+          (index-desktop.start_menu.scroll_offset)*W98_MENU_ITEM_H;
     *rw = STARTMENU_W - 4;
     *rh = W98_MENU_ITEM_H - 2;
     return true;
@@ -121,6 +139,10 @@ void start_menu_open(void) {
             nm = "Pong"; tp = WINDOW_TYPE_PONG;
         } else if (strcmp(plugins[i].name, "gdash") == 0) {
             nm = "Geometry Dash"; tp = WINDOW_TYPE_GDASH;
+        } else if (strcmp(plugins[i].name, "sharkcube") == 0) {
+            nm = "SharkCube"; tp = WINDOW_TYPE_SHARKCUBE;
+        } else if (strcmp(plugins[i].name, "sharkcraft") == 0) {
+            nm = "SharkCraft"; tp = WINDOW_TYPE_SHARKCRAFT;
         }
         if (nm && tp != WINDOW_TYPE_MAX) {
             names[start_menu_count] = nm;
@@ -175,14 +197,25 @@ static int start_menu_row_at(int mx, int my) {
         return -1;
     }
 
-    for (int i = 0; i <= start_menu_count; i++) {
-        int rx, ry, rw, rh;
-        start_menu_item_rect(i, &rx, &ry, &rw, &rh);
-        if (my >= ry && my < ry + rh) {
-            return i;
-        }
+    if(my<ay+MENU_SCROLL_H+2) return MENU_ROW_UP;
+    if(my>=ay+mh-MENU_SCROLL_H-2) return MENU_ROW_DOWN;
+    int row=desktop.start_menu.scroll_offset+
+        (my-(ay+MENU_SCROLL_H+2))/W98_MENU_ITEM_H;
+    if(row<desktop.start_menu.scroll_offset ||
+       row>=desktop.start_menu.scroll_offset+start_menu_rows() ||
+       row>start_menu_count) return -1;
+    return row;
+}
+
+void start_menu_scroll(int wheel) {
+    if(!desktop.start_menu.visible || !wheel) return;
+    int next=desktop.start_menu.scroll_offset-wheel;
+    if(next<0) next=0;
+    if(next>start_menu_max_scroll()) next=start_menu_max_scroll();
+    if(next!=desktop.start_menu.scroll_offset) {
+        desktop.start_menu.scroll_offset=next;
+        desktop.dirty=true;
     }
-    return -1;
 }
 
 void start_menu_handle_hover(int mx, int my) {
@@ -203,8 +236,9 @@ void start_menu_handle_click(int mx, int my) {
     if (!desktop.start_menu.visible) return;
 
     int row = start_menu_row_at(mx, my);
+    if(row==MENU_ROW_UP) { start_menu_scroll(1); return; }
+    if(row==MENU_ROW_DOWN) { start_menu_scroll(-1); return; }
     if (row < 0) {
-
         start_menu_close();
         return;
     }
@@ -242,9 +276,17 @@ void start_menu_draw(void) {
     w98_text_vertical("SharkOS 98", mx + 6, my + mh - 6, W98_TITLETEXT, 1,
                       NULL);
 
-    for (int i = 0; i <= start_menu_count; i++) {
+    if(desktop.start_menu.scroll_offset>0)
+        w98_text("^",mx+mw-16,my+2,W98_BTNTEXT,W98_MENU_BG,1,NULL);
+    if(desktop.start_menu.scroll_offset<start_menu_max_scroll())
+        w98_text("v",mx+mw-16,my+mh-MENU_SCROLL_H-2,W98_BTNTEXT,W98_MENU_BG,1,NULL);
+
+    int first=desktop.start_menu.scroll_offset;
+    int last=first+start_menu_rows();
+    if(last>start_menu_count+1) last=start_menu_count+1;
+    for (int i = first; i < last; i++) {
         int rx, ry, rw, rh;
-        start_menu_item_rect(i, &rx, &ry, &rw, &rh);
+        if(!start_menu_item_rect(i, &rx, &ry, &rw, &rh)) continue;
         ry += slide;
 
         bool is_shutdown = (i == start_menu_count);

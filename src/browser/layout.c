@@ -75,7 +75,7 @@ static int b64val(char c) {
     return -1;
 }
 
-/* decode a data: URL payload into dst; returns byte count or -1 */
+                                                                 
 static int decode_data_url(const char* url, uint8_t* dst, size_t cap) {
     const char* comma = url;
     while (*comma && *comma != ',') comma++;
@@ -106,7 +106,7 @@ static int decode_data_url(const char* url, uint8_t* dst, size_t cap) {
     return (int)n;
 }
 
-/* decode an image file held in img_buf into the pixel arena */
+                                                             
 static void decode_into_arena(br_image_t* im, int n, int want_w, int want_h, uint32_t color) {
     im->failed = 1;
     if (n <= 8) return;
@@ -122,7 +122,7 @@ static void decode_into_arena(br_image_t* im, int n, int want_w, int want_h, uin
     else if (img_buf[0] == 'R' && img_buf[1] == 'I' && img_buf[2] == 'F' && img_buf[3] == 'F')
         rc = webp_decode_buf(img_buf, (size_t)n, &w, &h, px, room, img_scratch, sizeof(img_scratch));
     else if (br_svg_looks_like(img_buf, n)) {
-        /* vector image: rasterize straight at the size the layout asked for */
+                                                                             
         int iw = 0, ih = 0;
         br_svg_intrinsic_size((const char*)img_buf, n, &iw, &ih);
         int rw = want_w, rh = want_h;
@@ -164,7 +164,7 @@ int br_image_request_sized(const char* src, int want_w, int want_h) {
     return image_count++;
 }
 
-/* inline <svg> markup: rasterized per (markup, size, currentColor) */
+                                                                    
 int br_image_request_svg(const char* svg, int len, int want_w, int want_h, uint32_t color) {
     if (!svg || len < 5) return -1;
     if (want_w > 2048) want_w = 2048;
@@ -473,8 +473,8 @@ static int pos_px(int v, int base) { return v <= -100000 ? (-(v) - 100000) * bas
 static int layout_absolute(br_node_t* c, int cx, int cy, int cw, int ch, int pen_x, int pen_y) {
     br_style_t* cs = &c->style;
     if (box_count >= BR_MAX_BOXES - 4 || ib_depth >= 7) return 0;
-    if (!cs->visible || cs->display == BR_DISPLAY_NONE) return 0;   /* opacity:0 / visibility:hidden overlays (checkbox hacks) */
-    /* "visually hidden" idiom: absolutely positioned 1x1 (or 0x0) box with overflow hidden */
+    if (!cs->visible || cs->display == BR_DISPLAY_NONE) return 0;                                                              
+                                                                                            
     if (cs->overflow_hidden && cs->width >= 0 && cs->width <= 1 && cs->height >= 0 && cs->height <= 1 && (cs->width > 0 || cs->height > 0)) return 0;
     if (cs->overflow_hidden && cs->width == 1 && cs->height == 1) return 0;
     int ml = cs->margin_l > 0 ? cs->margin_l : 0, mr = cs->margin_r > 0 ? cs->margin_r : 0;
@@ -675,7 +675,7 @@ static void flow_form_control(br_node_t* c, flow_t* f) {
         return;
     }
     if (is_button && br_streq(c->tag, "button") && button_has_markup(c)) {
-        /* a button wrapping real markup (icons, spans, divs): lay it out as an inline-block container */
+                                                                                                       
         if (!c->style.background && !c->style.border && !br_attr(c, "class") && !br_attr(c, "style")) {
             c->style.background = 0xFFEFEFEFu;
             c->style.border = 1; c->style.border_t = c->style.border_b = c->style.border_l = c->style.border_r = 1;
@@ -966,11 +966,11 @@ static int layout_table(br_node_t* t, int x, int y, int width) {
     return cy - y;
 }
 
-/* size of an <svg> element: CSS width/height, then width/height attributes, then viewBox */
+                                                                                          
 static void svg_box_size(br_node_t* n, int avail, int* out_w, int* out_h) {
     br_style_t* st = &n->style;
     int w = 0, h = 0, iw = 0, ih = 0;
-    if (n->value) br_svg_intrinsic_size(n->value, (int)strlen(n->value), &iw, &ih);   /* iw/ih: intrinsic or viewBox */
+    if (n->value) br_svg_intrinsic_size(n->value, (int)strlen(n->value), &iw, &ih);                                  
     const char* wa = br_attr(n, "width"); const char* ha = br_attr(n, "height");
     if (wa && !strchr(wa, '%')) w = br_atoi(wa);
     if (ha && !strchr(ha, '%')) h = br_atoi(ha);

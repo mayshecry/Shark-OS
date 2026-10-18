@@ -52,6 +52,14 @@ void lite_kmain(void) {
     extern void geometrydash_plugin_cleanup(void);
     extern int geometrydash_plugin_command(int argc, char** argv);
     plugin_register_builtin("gdash", geometrydash_plugin_init, geometrydash_plugin_cleanup, geometrydash_plugin_command);
+    extern int sharkcube_plugin_init(void);
+    extern void sharkcube_plugin_cleanup(void);
+    extern int sharkcube_plugin_command(int argc, char** argv);
+    plugin_register_builtin("sharkcube", sharkcube_plugin_init, sharkcube_plugin_cleanup, sharkcube_plugin_command);
+    extern int sharkcraft_plugin_init(void);
+    extern void sharkcraft_plugin_cleanup(void);
+    extern int sharkcraft_plugin_command(int argc, char** argv);
+    plugin_register_builtin("sharkcraft", sharkcraft_plugin_init, sharkcraft_plugin_cleanup, sharkcraft_plugin_command);
 
     pane_count = 1;
     active_pane = 0;

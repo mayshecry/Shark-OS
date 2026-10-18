@@ -9,7 +9,7 @@ void ui_init_metrics(void) {
     if (font_scale > 3) font_scale = 3;
 
     font_cell_w = 8 * font_scale;
-    font_cell_h = 16 * font_scale;   /* crisp 8x16 terminal font */
+    font_cell_h = 16 * font_scale;                               
     ui_tab_y = font_cell_h + 8;
     ui_chrome_top = ui_tab_y + font_cell_h;
     ui_footer_h = font_cell_h + 4;
@@ -76,13 +76,13 @@ void draw_char(char c, int x, int y, uint32_t fg, uint32_t bg) {
     }
 }
 
-/* Fixed 8x16 glyph with clipping, for the desktop Terminal window. */
+                                                                    
 void term_put_char_win(char c, int x, int y, uint32_t fg, uint32_t bg,
                        int cx0, int cy0, int cx1, int cy1) {
-    (void)bg;   /* window background is always black */
+    (void)bg;                                        
     if (c < 32 || c > 126) return;
     if (c == ' ') {
-        /* leave background as-is (window already painted black) */
+                                                                 
         return;
     }
     const unsigned char* glyph = term_font8x16[c - 32];

@@ -51,7 +51,7 @@ static int wp_build_huff(wp_huff_t* h, const uint8_t* len, int alphabet) {
         if (l < 0 || l > 16) return WEBP_ERR;
         if (l) { h->count[l]++; if (l > h->maxlen) h->maxlen = l; }
     }
-    /* a code with a single used symbol is zero bits long */
+                                                          
     int used = 0, last = 0;
     for (s = 0; s < alphabet; s++) if (len[s]) { used++; last = s; }
     h->single = 0;
@@ -328,7 +328,7 @@ typedef struct {
     int pix_bits;
     int wb;
     int count;
-    int full_w;        /* image width before colour-index packing */
+    int full_w;                                                   
 } wp_tx_t;
 
 #define WP_TX_NONE 0
@@ -338,7 +338,7 @@ typedef struct {
 #define WP_TX_PAL 4
 
 static inline uint32_t wp_avg2(uint32_t a, uint32_t b) {
-    return (((a ^ b) & 0xfefefefeu) >> 1) + (a & b);          /* per-channel average */
+    return (((a ^ b) & 0xfefefefeu) >> 1) + (a & b);                                 
 }
 
 static inline int wp_clamp255(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
@@ -392,7 +392,7 @@ static uint32_t wp_pred(int m, uint32_t L, uint32_t T, uint32_t TR, uint32_t TL)
 }
 
 static uint32_t wp_color_inv(uint32_t cte, uint32_t pix) {
-    /* transform element: red_to_blue in the red byte, green_to_blue in green, green_to_red in blue */
+                                                                                                    
     int8_t g2r = (int8_t)(cte & 255), g2b = (int8_t)((cte >> 8) & 255);
     int8_t r2b = (int8_t)((cte >> 16) & 255);
     int a = (int)(pix >> 24);
@@ -455,7 +455,7 @@ static int wp_apply_tx(wp_tx_t* tx, int ntx, uint32_t* pix, int* pw, int h) {
                     pix[i] = wp_color_inv(cte, pix[i]);
                 }
         } else if (tx[t].type == WP_TX_PAL) {
-            /* colour indexing: the green channel holds (packed) palette indices */
+                                                                                 
             int wb = tx[t].wb;
             int nfull = tx[t].full_w;
             int per = 1 << wb, bits = 8 >> wb;

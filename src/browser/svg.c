@@ -1,29 +1,29 @@
-/*
- * svg.c - a small SVG rasterizer for Shark Navigator.
- *
- * Renders the subset of SVG that icons, logos and simple illustrations use:
- *   <svg> <g> <path> <rect> <circle> <ellipse> <line> <polyline> <polygon>
- *   <use href="#id"> <symbol> <defs> <style> (simple .class/#id/tag rules)
- *   <linearGradient>/<radialGradient> (flattened to their first stop colour)
- *   presentation attributes + style="" : fill, stroke, stroke-width, opacity,
- *   fill-opacity, stroke-opacity, fill-rule, stroke-linecap, stroke-linejoin,
- *   transform (matrix/translate/scale/rotate/skewX/skewY), display, visibility
- *   viewBox + preserveAspectRatio, width/height in px or %
- *
- * Everything is integer / fixed-point: the kernel is built with -mno-80387
- * -mno-sse, so there is no floating point anywhere in this file.
- *
- * Output is a straight-alpha ARGB buffer; antialiasing is done with exact
- * horizontal coverage and 4..16 vertical sub-scanlines per pixel row.
- */
+ 
+                                                      
+  
+                                                                            
+                                                                           
+                                                                           
+                                                                             
+                                                                              
+                                                                              
+                                                                               
+                                                           
+  
+                                                                           
+                                                                 
+  
+                                                                          
+                                                                      
+  
 
 #include "browser_internal.h"
 
-/* ------------------------------------------------------------------ */
-/*  fixed point helpers                                                 */
-/* ------------------------------------------------------------------ */
+                                                                      
+                                                                        
+                                                                      
 
-typedef int64_t sfx;                     /* 48.16 fixed point            */
+typedef int64_t sfx;                                                     
 #define SFX_SHIFT 16
 #define SFX_ONE   ((sfx)1 << SFX_SHIFT)
 #define SFX_HALF  ((sfx)1 << (SFX_SHIFT - 1))
@@ -47,7 +47,7 @@ static uint64_t isqrt64(uint64_t v) {
 }
 static sfx ssqrt(sfx v) { if (v <= 0) return 0; return (sfx)isqrt64((uint64_t)v << SFX_SHIFT); }
 
-/* sine table, degrees 0..90 in 16.16 */
+                                      
 static const uint32_t sin_tab[91] = {
         0,  1143,  2287,  3429,  4571,  5711,  6850,  7986,  9120, 10252, 11380, 12504, 13625, 14742, 15854, 16961,
     18064, 19160, 20251, 21336, 22414, 23486, 24550, 25606, 26655, 27696, 28729, 29752, 30767, 31772, 32768, 33753,
@@ -56,7 +56,7 @@ static const uint32_t sin_tab[91] = {
     58903, 59395, 59870, 60326, 60763, 61183, 61583, 61965, 62328, 62672, 62997, 63302, 63589, 63856, 64103, 64331,
     64540, 64729, 64898, 65047, 65176, 65286, 65376, 65446, 65496, 65526, 65536 };
 
-/* angle in 16.16 degrees */
+                          
 static sfx ssin(sfx deg) {
     deg %= SFX_INT(360);
     if (deg < 0) deg += SFX_INT(360);
@@ -72,15 +72,15 @@ static sfx ssin(sfx deg) {
 }
 static sfx scos(sfx deg) { return ssin(deg + SFX_INT(90)); }
 
-/* atan2 in 16.16 degrees, range (-180, 180] */
+                                             
 static sfx satan2(sfx y, sfx x) {
     if (x == 0 && y == 0) return 0;
     sfx ax = sabs(x), ay = sabs(y);
     sfx z, r;
     int swap = ay > ax;
-    z = swap ? sdiv(ax, ay) : sdiv(ay, ax);                 /* 0..1 */
-    /* atan(z) ~= 45 z - z (z - 1) (14.02 + 3.80 z)  (degrees) */
-    sfx c1 = 918815, c2 = 249037;      /* 14.02 and 3.80 in 16.16 */
+    z = swap ? sdiv(ax, ay) : sdiv(ay, ax);                         
+                                                               
+    sfx c1 = 918815, c2 = 249037;                                 
     r = smul(SFX_INT(45), z) - smul(smul(z, z - SFX_ONE), c1 + smul(c2, z));
     if (swap) r = SFX_INT(90) - r;
     if (x < 0) r = SFX_INT(180) - r;
@@ -88,10 +88,10 @@ static sfx satan2(sfx y, sfx x) {
     return r;
 }
 
-typedef struct { sfx a, b, c, d, e, f; } mat_t;   /* x' = a x + c y + e ; y' = b x + d y + f */
+typedef struct { sfx a, b, c, d, e, f; } mat_t;                                              
 
 static mat_t mat_identity(void) { mat_t m = { SFX_ONE, 0, 0, SFX_ONE, 0, 0 }; return m; }
-static mat_t mat_mul(const mat_t* m, const mat_t* n) {      /* m * n : apply n first, then m */
+static mat_t mat_mul(const mat_t* m, const mat_t* n) {                                       
     mat_t r;
     r.a = smul(m->a, n->a) + smul(m->c, n->b);
     r.b = smul(m->b, n->a) + smul(m->d, n->b);
@@ -105,21 +105,21 @@ static void mat_apply(const mat_t* m, sfx x, sfx y, sfx* ox, sfx* oy) {
     *ox = smul(m->a, x) + smul(m->c, y) + m->e;
     *oy = smul(m->b, x) + smul(m->d, y) + m->f;
 }
-static sfx mat_scale(const mat_t* m) {       /* sqrt(|det|) */
+static sfx mat_scale(const mat_t* m) {                      
     sfx det = smul(m->a, m->d) - smul(m->b, m->c);
     return ssqrt(sabs(det));
 }
 
-/* ------------------------------------------------------------------ */
-/*  rasterizer                                                          */
-/* ------------------------------------------------------------------ */
+                                                                      
+                                                                        
+                                                                      
 
 #define SVG_MAX_EDGES  65536
 #define SVG_MAX_PTS    16384
 #define SVG_MAX_W      4096
 #define SVG_MAX_CROSS  4096
 
-typedef struct { int32_t x0, y0, x1, y1; int8_t dir; } edge_t;   /* device space, 24.8 */
+typedef struct { int32_t x0, y0, x1, y1; int8_t dir; } edge_t;                         
 
 static edge_t edges[SVG_MAX_EDGES];
 static int edge_count;
@@ -133,7 +133,7 @@ static uint32_t* out_px;
 static int out_w, out_h;
 static int sub_lines;
 
-static inline int32_t to_dev(sfx v) {         /* 48.16 -> 24.8 with clamping */
+static inline int32_t to_dev(sfx v) {                                        
     sfx d = v >> 8;
     if (d > 0x3FFFFFF) d = 0x3FFFFFF;
     if (d < -0x3FFFFFF) d = -0x3FFFFFF;
@@ -151,7 +151,7 @@ static void add_edge(sfx x0, sfx y0, sfx x1, sfx y1) {
 
 static void sort_edges_by_y(void) {
     for (int i = 0; i < edge_count; i++) edge_order[i] = i;
-    /* shell sort on y0 */
+                        
     for (int gap = edge_count / 2; gap > 0; gap /= 2) {
         for (int i = gap; i < edge_count; i++) {
             int v = edge_order[i]; int j = i;
@@ -191,7 +191,7 @@ static inline void blend_pixel(uint32_t* p, uint32_t color, int alpha) {
     *p = ((uint32_t)oa << 24) | (uint32_t)(orr << 16) | (uint32_t)(og << 8) | (uint32_t)ob;
 }
 
-/* fill the collected edges into the output with the given colour/opacity */
+                                                                          
 static void raster_fill(uint32_t color, int opacity, int evenodd) {
     if (edge_count == 0 || opacity <= 0) { edge_count = 0; return; }
     sort_edges_by_y();
@@ -207,16 +207,16 @@ static void raster_fill(uint32_t color, int opacity, int evenodd) {
     for (int py = py0; py < py1; py++) {
         int any = 0;
         int32_t row_top = (int32_t)py << 8, row_bot = row_top + 256;
-        /* activate edges starting before the bottom of this row */
+                                                                 
         while (next_edge < edge_count && edges[edge_order[next_edge]].y0 < row_bot) active[n_active++] = edge_order[next_edge++];
-        /* drop edges that ended above this row */
+                                                
         int k = 0;
         for (int i = 0; i < n_active; i++) if (edges[active[i]].y1 > row_top) active[k++] = active[i];
         n_active = k;
         if (!n_active) { if (next_edge >= edge_count) break; continue; }
 
         for (int s = 0; s < S; s++) {
-            int32_t sy = row_top + (int32_t)((2 * s + 1) * 128 / S);     /* centre of the sub-scanline */
+            int32_t sy = row_top + (int32_t)((2 * s + 1) * 128 / S);                                   
             int nc = 0;
             for (int i = 0; i < n_active && nc < SVG_MAX_CROSS; i++) {
                 const edge_t* e = &edges[active[i]];
@@ -260,13 +260,13 @@ static void raster_fill(uint32_t color, int opacity, int evenodd) {
     edge_count = 0;
 }
 
-/* ------------------------------------------------------------------ */
-/*  path geometry (device space points)                                 */
-/* ------------------------------------------------------------------ */
+                                                                      
+                                                                        
+                                                                      
 
 static sfx pts_x[SVG_MAX_PTS], pts_y[SVG_MAX_PTS];
 static int pts_n;
-static int sub_start[512];      /* start index of each subpath */
+static int sub_start[512];                                     
 static int sub_closed[512];
 static int sub_n;
 
@@ -290,11 +290,11 @@ static void emit_fill_edges(void) {
         int a = sub_start[s], b = sub_end(s);
         if (b - a < 2) continue;
         for (int i = a; i + 1 < b; i++) add_edge(pts_x[i], pts_y[i], pts_x[i + 1], pts_y[i + 1]);
-        add_edge(pts_x[b - 1], pts_y[b - 1], pts_x[a], pts_y[a]);   /* implicit close */
+        add_edge(pts_x[b - 1], pts_y[b - 1], pts_x[a], pts_y[a]);                     
     }
 }
 
-/* add a convex polygon, oriented counter-clockwise, as edges */
+                                                              
 static void add_poly_ccw(const sfx* xs, const sfx* ys, int n) {
     sfx area = 0;
     for (int i = 0; i < n; i++) { int j = (i + 1) % n; area += smul(xs[i], ys[j]) - smul(xs[j], ys[i]); }
@@ -314,7 +314,7 @@ static void add_disc(sfx cx, sfx cy, sfx r) {
 }
 
 static void emit_stroke_edges(sfx hw, int linecap, int linejoin) {
-    if (hw < (SFX_ONE / 4)) hw = SFX_ONE / 4;       /* hairline: keep it visible */
+    if (hw < (SFX_ONE / 4)) hw = SFX_ONE / 4;                                    
     for (int s = 0; s < sub_n; s++) {
         int a = sub_start[s], b = sub_end(s);
         int n = b - a;
@@ -331,7 +331,7 @@ static void emit_stroke_edges(sfx hw, int linecap, int linejoin) {
             sfx dx = x1 - x0, dy = y1 - y0;
             sfx len = ssqrt(smul(dx, dx) + smul(dy, dy));
             if (len == 0) continue;
-            sfx nx = -sdiv(dy, len), ny = sdiv(dx, len);      /* unit normal */
+            sfx nx = -sdiv(dy, len), ny = sdiv(dx, len);                     
             sfx ox = smul(nx, hw), oy = smul(ny, hw);
             sfx ex = 0, ey = 0;
             if (!closed && linecap == 2) { ex = smul(sdiv(dx, len), hw); ey = smul(sdiv(dy, len), hw); }
@@ -344,13 +344,13 @@ static void emit_stroke_edges(sfx hw, int linecap, int linejoin) {
             sfx qy[4] = { sy0 + oy, sy1 + oy, sy1 - oy, sy0 - oy };
             add_poly_ccw(qx, qy, 4);
         }
-        /* joins */
+                 
         if (hw >= SFX_ONE * 3 / 4) {
             int first = closed ? 0 : 1, last = closed ? n : n - 1;
             for (int i = first; i < last; i++) {
                 int idx = a + (i % n);
                 if (linejoin == 2) {
-                    /* bevel: small triangle is close enough to a disc at these sizes */
+                                                                                      
                     add_disc(pts_x[idx], pts_y[idx], hw);
                 } else add_disc(pts_x[idx], pts_y[idx], hw);
             }
@@ -359,11 +359,11 @@ static void emit_stroke_edges(sfx hw, int linecap, int linejoin) {
     }
 }
 
-/* ------------------------------------------------------------------ */
-/*  curve flattening                                                    */
-/* ------------------------------------------------------------------ */
+                                                                      
+                                                                        
+                                                                      
 
-static int seg_count_for(sfx d) {         /* d = device-space extent of the curve */
+static int seg_count_for(sfx d) {                                                 
     int px = (int)(d >> SFX_SHIFT);
     int n = px / 3 + 3;
     if (n > 48) n = 48;
@@ -392,9 +392,9 @@ static void flatten_quad(sfx x0, sfx y0, sfx x1, sfx y1, sfx x2, sfx y2) {
     }
 }
 
-/* ------------------------------------------------------------------ */
-/*  XML-ish tokenizer                                                   */
-/* ------------------------------------------------------------------ */
+                                                                      
+                                                                        
+                                                                      
 
 #define SVG_MAX_ATTR 48
 typedef struct {
@@ -403,8 +403,8 @@ typedef struct {
     int nattr;
     int self_closing;
     int end_tag;
-    const char* start;     /* '<' */
-    const char* after;     /* first char after '>' */
+    const char* start;            
+    const char* after;                             
 } elem_t;
 
 static int is_ws(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'; }
@@ -418,7 +418,7 @@ static const char* attr_get(const elem_t* e, const char* name, int* len) {
     return NULL;
 }
 
-/* parse the tag starting at p ('<'); returns 0 if not a tag */
+                                                             
 static int parse_elem(const char* p, const char* end, elem_t* e) {
     if (p >= end || *p != '<') return 0;
     e->start = p; e->nattr = 0; e->self_closing = 0; e->end_tag = 0;
@@ -458,7 +458,7 @@ static int parse_elem(const char* p, const char* end, elem_t* e) {
     return 1;
 }
 
-/* skip comments, PIs, doctype; returns pointer to next '<' of a real tag or end */
+                                                                                 
 static const char* next_tag(const char* p, const char* end) {
     for (;;) {
         while (p < end && *p != '<') p++;
@@ -469,7 +469,7 @@ static const char* next_tag(const char* p, const char* end) {
             p += 3;
             continue;
         }
-        if (p + 8 < end && p[1] == '!' && p[2] == '[') {          /* CDATA: treat as text */
+        if (p + 8 < end && p[1] == '!' && p[2] == '[') {                                  
             while (p + 2 < end && !(p[0] == ']' && p[1] == ']' && p[2] == '>')) p++;
             p += 3;
             continue;
@@ -483,7 +483,7 @@ static const char* next_tag(const char* p, const char* end) {
     }
 }
 
-/* find the end of the element that starts at e (its matching close tag); returns pointer after it */
+                                                                                                   
 static const char* skip_subtree(const elem_t* e, const char* end) {
     if (e->self_closing) return e->after;
     int depth = 1;
@@ -500,11 +500,11 @@ static const char* skip_subtree(const elem_t* e, const char* end) {
     return p;
 }
 
-/* ------------------------------------------------------------------ */
-/*  numbers, lengths, colours                                           */
-/* ------------------------------------------------------------------ */
+                                                                      
+                                                                        
+                                                                      
 
-/* parse a decimal number (with optional exponent) into 16.16 */
+                                                              
 static int parse_sfx(const char** pp, const char* end, sfx* out) {
     const char* p = *pp;
     while (p < end && (is_ws(*p) || *p == ',')) p++;
@@ -540,7 +540,7 @@ static int parse_sfx(const char** pp, const char* end, sfx* out) {
     return 1;
 }
 
-/* length attribute: number with optional unit; percent relative to 'ref' */
+                                                                          
 static sfx parse_length(const char* s, int len, sfx ref, int* ok) {
     const char* p = s; const char* end = s + len;
     sfx v;
@@ -571,7 +571,7 @@ static int id_n;
 
 static uint32_t cur_color_val = 0xFF000000u;
 
-/* returns: 1 colour set, 0 'none', -1 not a colour / inherit */
+                                                              
 static int parse_paint(const char* s, int len, uint32_t* out) {
     while (len > 0 && is_ws(*s)) { s++; len--; }
     while (len > 0 && is_ws(s[len - 1])) len--;
@@ -589,7 +589,7 @@ static int parse_paint(const char* s, int len, uint32_t* out) {
             int same = 1; for (int k = 0; k < il; k++) if (grads[i].id[k] != q[k]) { same = 0; break; }
             if (same) { if (grads[i].has) { *out = grads[i].color; return 1; } break; }
         }
-        /* pattern / unknown gradient: paint a neutral grey so the shape is visible */
+                                                                                    
         *out = 0xFF9E9E9Eu; return 1;
     }
     char tmp[64]; int n = len < 63 ? len : 63;
@@ -603,7 +603,7 @@ static int parse_paint(const char* s, int len, uint32_t* out) {
     return 1;
 }
 
-static int parse_opacity(const char* s, int len) {    /* -> 0..255 */
+static int parse_opacity(const char* s, int len) {                 
     const char* p = s; sfx v;
     if (!parse_sfx(&p, s + len, &v)) return 255;
     if (p < s + len && *p == '%') v = v / 100;
@@ -612,9 +612,9 @@ static int parse_opacity(const char* s, int len) {    /* -> 0..255 */
     return (int)((v * 255) >> SFX_SHIFT);
 }
 
-/* ------------------------------------------------------------------ */
-/*  styles                                                              */
-/* ------------------------------------------------------------------ */
+                                                                      
+                                                                        
+                                                                      
 
 typedef struct {
     uint32_t fill, stroke;
@@ -658,14 +658,14 @@ static void apply_style_string(sstyle_t* st, const char* s, int len) {
             while (s < end && *s != ';') s++;
             int vl = (int)(s - v);
             while (vl > 0 && is_ws(v[vl - 1])) vl--;
-            if (vl > 10 && v[vl - 1] == 't' && v[vl - 10] == '!') vl -= 10;   /* !important */
+            if (vl > 10 && v[vl - 1] == 't' && v[vl - 10] == '!') vl -= 10;                 
             while (vl > 0 && is_ws(v[vl - 1])) vl--;
             if (kl > 0) apply_style_prop(st, k, kl, v, vl);
         }
     }
 }
 
-/* <style> rules: selector -> declaration block */
+                                                
 #define SVG_MAX_RULES 256
 static struct { const char* sel; int sl; const char* decl; int dl; } rules[SVG_MAX_RULES];
 static int rule_n;
@@ -675,7 +675,7 @@ static void collect_style_rules(const char* s, const char* end) {
         while (s < end && (is_ws(*s) || *s == '}')) s++;
         if (s + 3 < end && s[0] == '<' && s[1] == '!' && s[2] == '[') { s += 9; continue; }
         if (s + 2 < end && s[0] == ']' && s[1] == ']' && s[2] == '>') { s += 3; continue; }
-        if (s < end && *s == '@') {          /* skip at-rules wholesale */
+        if (s < end && *s == '@') {                                     
             int depth = 0;
             while (s < end) { if (*s == '{') depth++; else if (*s == '}') { depth--; if (depth <= 0) { s++; break; } } else if (*s == ';' && depth == 0) { s++; break; } s++; }
             continue;
@@ -694,9 +694,9 @@ static void collect_style_rules(const char* s, const char* end) {
     }
 }
 
-/* does the (possibly comma separated) selector list contain a simple selector matching this element? */
+                                                                                                      
 static int selector_matches(const char* sel, int sl, const elem_t* e, int pass) {
-    /* pass 0: tag selectors, 1: class, 2: id (increasing precedence) */
+                                                                      
     const char* end = sel + sl;
     const char* p = sel;
     while (p < end) {
@@ -705,7 +705,7 @@ static int selector_matches(const char* sel, int sl, const elem_t* e, int pass) 
         while (p < end && *p != ',') p++;
         int pl = (int)(p - part);
         while (pl > 0 && is_ws(part[pl - 1])) pl--;
-        /* only the last compound of a descendant selector is considered */
+                                                                         
         const char* last = part + pl;
         while (last > part && !is_ws(last[-1]) && last[-1] != '>') last--;
         int ll = (int)(part + pl - last);
@@ -716,7 +716,7 @@ static int selector_matches(const char* sel, int sl, const elem_t* e, int pass) 
         } else if (pass == 1 && last[0] == '.') {
             int cl; const char* cls = attr_get(e, "class", &cl);
             if (cls) {
-                /* selector may be .a.b : require each class */
+                                                             
                 const char* q = last + 1; int all = 1, anyc = 0;
                 while (q < last + ll) {
                     const char* c = q; while (q < last + ll && *q != '.') q++;
@@ -746,23 +746,23 @@ static int selector_matches(const char* sel, int sl, const elem_t* e, int pass) 
 }
 
 static void apply_element_style(sstyle_t* st, const elem_t* e) {
-    /* stylesheet rules: tag < class < id */
+                                          
     for (int pass = 0; pass < 3 && rule_n; pass++)
         for (int i = 0; i < rule_n; i++)
             if (selector_matches(rules[i].sel, rules[i].sl, e, pass)) apply_style_string(st, rules[i].decl, rules[i].dl);
-    /* presentation attributes */
+                               
     for (int i = 0; i < e->nattr; i++) {
         if (name_eq(e->attr[i].k, e->attr[i].kl, "style") || name_eq(e->attr[i].k, e->attr[i].kl, "transform")) continue;
         apply_style_prop(st, e->attr[i].k, e->attr[i].kl, e->attr[i].v, e->attr[i].vl);
     }
-    /* inline style wins */
+                         
     int sl; const char* sv = attr_get(e, "style", &sl);
     if (sv) apply_style_string(st, sv, sl);
 }
 
-/* ------------------------------------------------------------------ */
-/*  transforms                                                          */
-/* ------------------------------------------------------------------ */
+                                                                      
+                                                                        
+                                                                      
 
 static mat_t parse_transform(const char* s, int len) {
     mat_t m = mat_identity();
@@ -803,9 +803,9 @@ static mat_t parse_transform(const char* s, int len) {
     return m;
 }
 
-/* ------------------------------------------------------------------ */
-/*  shapes                                                              */
-/* ------------------------------------------------------------------ */
+                                                                      
+                                                                        
+                                                                      
 
 static mat_t cur_mat;
 static const mat_t* cur_m = &cur_mat;
@@ -824,7 +824,7 @@ static void quad_u(sfx x0, sfx y0, sfx x1, sfx y1, sfx x2, sfx y2) {
     flatten_quad(a, b, c, d, e, f);
 }
 
-/* elliptical arc from (x1,y1) to (x2,y2); emits line segments */
+                                                               
 static void arc_u(sfx x1, sfx y1, sfx rx, sfx ry, sfx phi_deg, int large, int sweep, sfx x2, sfx y2) {
     if (rx == 0 || ry == 0) { lineto_u(x2, y2); return; }
     if (x1 == x2 && y1 == y2) return;
@@ -833,7 +833,7 @@ static void arc_u(sfx x1, sfx y1, sfx rx, sfx ry, sfx phi_deg, int large, int sw
     sfx dx2 = (x1 - x2) / 2, dy2 = (y1 - y2) / 2;
     sfx x1p = smul(cphi, dx2) + smul(sphi, dy2);
     sfx y1p = -smul(sphi, dx2) + smul(cphi, dy2);
-    /* scale radii up if needed */
+                                
     sfx lam = sdiv(smul(x1p, x1p), smul(rx, rx)) + sdiv(smul(y1p, y1p), smul(ry, ry));
     if (lam > SFX_ONE) { sfx s = ssqrt(lam); rx = smul(rx, s); ry = smul(ry, s); }
     sfx rx2 = smul(rx, rx), ry2 = smul(ry, ry);
@@ -846,7 +846,7 @@ static void arc_u(sfx x1, sfx y1, sfx rx, sfx ry, sfx phi_deg, int large, int sw
     sfx cyp = -smul(coef, sdiv(smul(ry, x1p), rx));
     sfx cx = smul(cphi, cxp) - smul(sphi, cyp) + (x1 + x2) / 2;
     sfx cy = smul(sphi, cxp) + smul(cphi, cyp) + (y1 + y2) / 2;
-    /* start angle and sweep */
+                             
     sfx ux = sdiv(x1p - cxp, rx), uy = sdiv(y1p - cyp, ry);
     sfx vx = sdiv(-x1p - cxp, rx), vy = sdiv(-y1p - cyp, ry);
     sfx th1 = satan2(uy, ux);
@@ -854,7 +854,7 @@ static void arc_u(sfx x1, sfx y1, sfx rx, sfx ry, sfx phi_deg, int large, int sw
     sfx dth = th2 - th1;
     if (!sweep && dth > 0) dth -= SFX_INT(360);
     else if (sweep && dth < 0) dth += SFX_INT(360);
-    /* segment count from device-space size */
+                                            
     sfx sc = mat_scale(cur_m);
     sfx dev_r = smul(rx > ry ? rx : ry, sc);
     int n = (int)((sabs(dth) >> SFX_SHIFT) / 6) + 2;
@@ -894,7 +894,7 @@ static void build_path(const char* d, int len) {
         int got = 0;
         for (; got < need; got++) {
             if (C == 'A' && (got == 3 || got == 4)) {
-                /* flags may be written without separators: "a1 1 0 01 5 5" */
+                                                                            
                 while (p < end && (is_ws(*p) || *p == ',')) p++;
                 if (p < end && (*p == '0' || *p == '1')) { a[got] = *p == '1' ? SFX_ONE : 0; p++; continue; }
                 break;
@@ -971,7 +971,7 @@ static void rect_path(sfx x, sfx y, sfx w, sfx h, sfx rx, sfx ry) {
         moveto_u(x, y); lineto_u(x + w, y); lineto_u(x + w, y + h); lineto_u(x, y + h); path_close();
         return;
     }
-    /* rounded rectangle: quarter ellipses at the corners */
+                                                          
     moveto_u(x + rx, y);
     lineto_u(x + w - rx, y);
     for (int i = 1; i <= 6; i++) { sfx ang = SFX_INT(270) + SFX_INT(90) * i / 6; lineto_u(x + w - rx + smul(rx, scos(ang)), y + ry + smul(ry, ssin(ang))); }
@@ -997,13 +997,13 @@ static void poly_path(const char* s, int len, int close) {
     if (close) path_close();
 }
 
-/* ------------------------------------------------------------------ */
-/*  document walk                                                       */
-/* ------------------------------------------------------------------ */
+                                                                      
+                                                                        
+                                                                      
 
 static const char* doc_begin;
 static const char* doc_end;
-static sfx vp_w, vp_h;         /* current viewport size in user units (for % lengths) */
+static sfx vp_w, vp_h;                                                                
 static int use_depth;
 static int shapes_drawn;
 #define SVG_MAX_SHAPES 6000
@@ -1029,7 +1029,7 @@ static void render_element(const elem_t* e, const char* content_end, const sstyl
     const char* n = e->name; int nl = e->name_len;
     if (name_eq(n, nl, "g") || name_eq(n, nl, "a") || name_eq(n, nl, "switch") || name_eq(n, nl, "svg") || name_eq(n, nl, "symbol")) {
         if (name_eq(n, nl, "svg") && e->start != doc_begin) {
-            /* nested svg: translate by x/y, honour viewBox if present */
+                                                                       
             sfx x = attr_len(e, "x", vp_w, 0), y = attr_len(e, "y", vp_h, 0);
             mat_t t = mat_identity(); t.e = x; t.f = y;
             st.ctm = mat_mul(&st.ctm, &t);
@@ -1072,7 +1072,7 @@ static void render_element(const elem_t* e, const char* content_end, const sstyl
     if (name_eq(n, nl, "polyline") || name_eq(n, nl, "polygon")) {
         int pl; const char* pv = attr_get(e, "points", &pl);
         int closed = name_eq(n, nl, "polygon");
-        if (pv) { poly_path(pv, pl, closed); if (!closed) { /* polyline: fill is still applied per spec */ } paint_current_path(&st); shapes_drawn++; }
+        if (pv) { poly_path(pv, pl, closed); if (!closed) {                                              } paint_current_path(&st); shapes_drawn++; }
         return;
     }
     if (name_eq(n, nl, "use")) {
@@ -1097,7 +1097,7 @@ static void render_element(const elem_t* e, const char* content_end, const sstyl
         use_depth--;
         return;
     }
-    /* defs, clipPath, mask, gradients, filters, text, foreignObject, metadata...: not rendered */
+                                                                                                
 }
 
 static void render_children(const char* p, const char* end, const sstyle_t* inherited) {
@@ -1115,7 +1115,7 @@ static void render_children(const char* p, const char* end, const sstyle_t* inhe
     }
 }
 
-/* pre-pass: ids, <style> rules and gradient colours */
+                                                     
 static void prescan(const char* p, const char* end) {
     id_n = 0; rule_n = 0; grad_n = 0;
     while (p < end) {
@@ -1135,7 +1135,7 @@ static void prescan(const char* p, const char* end) {
         }
         if ((name_eq(e.name, e.name_len, "linearGradient") || name_eq(e.name, e.name_len, "radialGradient")) && id && grad_n < SVG_MAX_GRAD) {
             grads[grad_n].id = id; grads[grad_n].idl = il; grads[grad_n].has = 0; grads[grad_n].color = 0xFF808080u;
-            /* first <stop> colour */
+                                   
             const char* q = e.after; const char* gend = skip_subtree(&e, end);
             int stops = 0; uint32_t r = 0, g = 0, b = 0, a = 0;
             while (q < gend) {
@@ -1160,7 +1160,7 @@ static void prescan(const char* p, const char* end) {
     }
 }
 
-/* case-insensitive search within a bounded string (helper for the gradient scan) */
+                                                                                  
 static const char* my_strstr_ci_n(const char* hay, int n, const char* needle) {
     int nl = (int)strlen(needle);
     for (int i = 0; i + nl <= n; i++) {
@@ -1171,9 +1171,9 @@ static const char* my_strstr_ci_n(const char* hay, int n, const char* needle) {
     return NULL;
 }
 
-/* ------------------------------------------------------------------ */
-/*  entry point                                                         */
-/* ------------------------------------------------------------------ */
+                                                                      
+                                                                        
+                                                                      
 
 int br_svg_looks_like(const uint8_t* data, int len) {
     int i = 0;
@@ -1184,7 +1184,7 @@ int br_svg_looks_like(const uint8_t* data, int len) {
     return 0;
 }
 
-/* Intrinsic size of an SVG document (px). Returns 0 if it has none (then *w,*h hold the viewBox size, or 0). */
+                                                                                                              
 int br_svg_intrinsic_size(const char* src, int len, int* w, int* h) {
     const char* end = src + len;
     const char* p = next_tag(src, end);
@@ -1209,10 +1209,10 @@ int br_svg_intrinsic_size(const char* src, int len, int* w, int* h) {
     return 0;
 }
 
-/*
- * Rasterize an SVG document into an ARGB buffer of want_w x want_h pixels
- * (if either is 0 it is derived from the document). Returns 0 on success.
- */
+ 
+                                                                          
+                                                                          
+  
 int br_svg_render(const char* src, int len, int want_w, int want_h, uint32_t current_color,
                   uint32_t* out, size_t max_pixels, int* out_w_p, int* out_h_p) {
     if (!src || len < 5) return -1;
@@ -1223,7 +1223,7 @@ int br_svg_render(const char* src, int len, int want_w, int want_h, uint32_t cur
     if (p >= end || !name_eq(root.name, root.name_len, "svg")) return -1;
     doc_begin = root.start; doc_end = end;
 
-    /* viewBox */
+               
     int vl; const char* vb = attr_get(&root, "viewBox", &vl);
     sfx vx = 0, vy = 0, vw = 0, vh = 0;
     if (vb) { const char* q = vb; parse_sfx(&q, vb + vl, &vx); parse_sfx(&q, vb + vl, &vy); parse_sfx(&q, vb + vl, &vw); parse_sfx(&q, vb + vl, &vh); }
@@ -1251,12 +1251,12 @@ int br_svg_render(const char* src, int len, int want_w, int want_h, uint32_t cur
     use_depth = 0;
     cur_color_val = current_color ? current_color : 0xFF000000u;
 
-    /* viewBox -> viewport transform (preserveAspectRatio: xMidYMid meet by default) */
+                                                                                     
     sfx sx = sdiv(SFX_INT(W), vw), sy = sdiv(SFX_INT(H), vh);
     int pl; const char* par = attr_get(&root, "preserveAspectRatio", &pl);
     int none = par && my_strstr_ci_n(par, pl, "none");
     int slice = par && my_strstr_ci_n(par, pl, "slice");
-    int ax = 1, ay = 1;     /* 0 = min, 1 = mid, 2 = max */
+    int ax = 1, ay = 1;                                  
     if (par) {
         if (my_strstr_ci_n(par, pl, "xMin")) ax = 0; else if (my_strstr_ci_n(par, pl, "xMax")) ax = 2;
         if (my_strstr_ci_n(par, pl, "YMin")) ay = 0; else if (my_strstr_ci_n(par, pl, "YMax")) ay = 2;
@@ -1283,7 +1283,7 @@ int br_svg_render(const char* src, int len, int want_w, int want_h, uint32_t cur
 
     prescan(root.after, end);
 
-    /* the root element's own presentation attributes / style apply to everything */
+                                                                                  
     apply_element_style(&st, &root);
     cur_mat = st.ctm;
     if (!root.self_closing) render_children(root.after, end, &st);

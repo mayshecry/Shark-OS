@@ -73,9 +73,9 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
                 }
                 legacy_pos++;
             }
-            /* "url=<address>" on the GRUB command line opens Shark Navigator on
-             * that page as soon as DHCP has bound (or after a 20 s timeout).
-             * Handy for kiosk setups and for automated testing under QEMU. */
+                                                                               
+                                                                             
+                                                                             
             for (char* up = cmdline; *up; up++) {
                 if ((up == cmdline || up[-1] == ' ') && up[0] == 'u' && up[1] == 'r' && up[2] == 'l' && up[3] == '=') {
                     int o = 0;
@@ -148,12 +148,12 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         lite_kmain();
     }
 
-    /* "SharkOS Kawaii" GRUB entry: boot straight into the Kawaii theme
-     * so the boot log already wears pink. */
+                                                                      
+                                            
     if (kawaii_mode) theme_set(THEME_ID_KAWAII);
 
-    /* systemd-style verbose boot log: everything below is printed on
-     * the boot screen, then the desktop takes over after ~5 s. */
+                                                                    
+                                                                 
     boot_screen_show();
 
     boot_screen_info("nemo (SharkOS V2) — SHKRNL, gcc, ring zero");
@@ -258,6 +258,14 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     extern void geometrydash_plugin_cleanup(void);
     extern int geometrydash_plugin_command(int argc, char** argv);
     plugin_register_builtin("gdash", geometrydash_plugin_init, geometrydash_plugin_cleanup, geometrydash_plugin_command);
+    extern int sharkcube_plugin_init(void);
+    extern void sharkcube_plugin_cleanup(void);
+    extern int sharkcube_plugin_command(int argc, char** argv);
+    plugin_register_builtin("sharkcube", sharkcube_plugin_init, sharkcube_plugin_cleanup, sharkcube_plugin_command);
+    extern int sharkcraft_plugin_init(void);
+    extern void sharkcraft_plugin_cleanup(void);
+    extern int sharkcraft_plugin_command(int argc, char** argv);
+    plugin_register_builtin("sharkcraft", sharkcraft_plugin_init, sharkcraft_plugin_cleanup, sharkcraft_plugin_command);
     boot_screen_update("Detecting hardware...", 70);
 
     boot_screen_update("Probing disks...", 72);
@@ -321,9 +329,11 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             int mx = mouse_cursor_x;
             int my = mouse_cursor_y;
             int buttons = mouse_state.buttons;
+            int wheel = mouse_state.wheel;
+            mouse_state.wheel = 0;
 
-            if (buttons != 0 || (buttons == 0 && desktop_mouse_down)) {
-                desktop_handle_mouse(mx, my, buttons);
+            if (buttons != 0 || (buttons == 0 && desktop_mouse_down) || wheel != 0) {
+                desktop_handle_mouse(mx, my, buttons, wheel);
             }
             if (mx != desktop_mouse_x || my != desktop_mouse_y) {
                 desktop_mouse_x = mx;
@@ -465,8 +475,8 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
 
         browser_tick();
 
-        /* Disk installs must not stall just because the window lost
-         * focus: tick the disk manager every pass, like the browser. */
+                                                                   
+                                                                       
         diskmgmt_tick();
 
         if (desktop.dirty) {

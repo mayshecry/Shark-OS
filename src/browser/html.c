@@ -571,7 +571,7 @@ br_node_t* br_html_parse(const char* html, int len) {
             p->pos = e + 1;
             text_start = p->pos;
             if (br_streq(tag, "svg") && p->pos - (ts - 1) < 256 * 1024) {
-                /* keep the raw markup: the layout rasterizes it with svg.c */
+                                                                            
                 n->value = br_strdup_n(&s[ts - 1], p->pos - (ts - 1));
             }
             continue;
