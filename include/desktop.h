@@ -273,6 +273,7 @@ int sharkcube_handle_key(char key);
 int sharkcube_handle_mouse(int x, int y, int buttons);
 void app_window_draw_sharkcraft(window_t* w);
 void sharkcraft_game_reset(void);
+void sharkcraft_tick(void);
 void sharkcraft_draw_window(int x, int y, int width, int height);
 int sharkcraft_handle_key(char key);
 int sharkcraft_handle_mouse(int x, int y, int buttons);
