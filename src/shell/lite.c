@@ -60,6 +60,11 @@ void lite_kmain(void) {
     extern void sharkcraft_plugin_cleanup(void);
     extern int sharkcraft_plugin_command(int argc, char** argv);
     plugin_register_builtin("sharkcraft", sharkcraft_plugin_init, sharkcraft_plugin_cleanup, sharkcraft_plugin_command);
+    extern int fnaf_plugin_init(void);
+    extern void fnaf_plugin_cleanup(void);
+    extern int fnaf_plugin_command(int argc, char** argv);
+    int fnaf_id2 = plugin_register_builtin("fnaf", fnaf_plugin_init, fnaf_plugin_cleanup, fnaf_plugin_command);
+    if(fnaf_id2>=0) plugin_unload((uint32_t)fnaf_id2);
 
     pane_count = 1;
     active_pane = 0;

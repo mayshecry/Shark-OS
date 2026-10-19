@@ -266,6 +266,11 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     extern void sharkcraft_plugin_cleanup(void);
     extern int sharkcraft_plugin_command(int argc, char** argv);
     plugin_register_builtin("sharkcraft", sharkcraft_plugin_init, sharkcraft_plugin_cleanup, sharkcraft_plugin_command);
+    extern int fnaf_plugin_init(void);
+    extern void fnaf_plugin_cleanup(void);
+    extern int fnaf_plugin_command(int argc, char** argv);
+    int fnaf_id = plugin_register_builtin("fnaf", fnaf_plugin_init, fnaf_plugin_cleanup, fnaf_plugin_command);
+    if(fnaf_id>=0) plugin_unload((uint32_t)fnaf_id);
     boot_screen_update("Detecting hardware...", 70);
 
     boot_screen_update("Probing disks...", 72);

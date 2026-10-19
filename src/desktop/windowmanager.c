@@ -316,9 +316,11 @@ int window_create(window_type_t type, const char* title, int x, int y, int w, in
         case WINDOW_TYPE_DISKMGMT:
             win->draw_func = app_window_draw_diskmgmt;
             win->mouse_func = app_window_mouse_diskmgmt;
-                                                                       
-                                                                        
-                                                                   
+            break;
+        case WINDOW_TYPE_FNAF:
+            win->draw_func = app_window_draw_fnaf;
+            win->keyboard_func = app_window_keyboard_fnaf;
+            win->mouse_func = app_window_mouse_fnaf;
             break;
         default:
             break;

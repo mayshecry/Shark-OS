@@ -1660,3 +1660,18 @@ void app_window_keyboard_sharkcraft(window_t* w, char c) {
 void app_window_mouse_sharkcraft(window_t* w, int mx, int my, int buttons) {
     if (sharkcraft_handle_mouse(mx,my,buttons)) { w->needs_redraw=true; desktop.dirty=true; }
 }
+
+#include "fnaf.h"
+void app_window_draw_fnaf(window_t* w) {
+    fnaf_set_window_rect(w->rect.client_x, w->rect.client_y, w->rect.client_w, w->rect.client_h);
+    fnaf_draw_frame();
+}
+void app_window_keyboard_fnaf(window_t* w, char c) {
+    (void)w;
+    fnaf_handle_key((int)c);
+    w->needs_redraw=true; desktop.dirty=true;
+}
+void app_window_mouse_fnaf(window_t* w, int mx, int my, int buttons) {
+    fnaf_handle_mouse(mx, my, buttons);
+    w->needs_redraw=true; desktop.dirty=true;
+}

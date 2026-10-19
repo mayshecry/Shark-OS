@@ -28,6 +28,7 @@ uint32_t* desktop_icon_pixels_for_type(window_type_t type) {
     case WINDOW_TYPE_SHARKCUBE:   return (uint32_t*)icon_data_gdash;
     case WINDOW_TYPE_SHARKCRAFT: return (uint32_t*)icon_data_smb;
     case WINDOW_TYPE_SMB:         return (uint32_t*)icon_data_smb;
+    case WINDOW_TYPE_FNAF:        return (uint32_t*)icon_data_fnaf;
     case WINDOW_TYPE_SETTINGS:
         return (uint32_t*)(m ? micon_settings : icon_data_settings);
     case WINDOW_TYPE_NOTEPAD:

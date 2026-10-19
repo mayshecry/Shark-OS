@@ -10,6 +10,7 @@
 #include "smb.h"
 #include "pong.h"
 #include "geometrydash.h"
+#include "fnaf.h"
 #include "wallpaper_data.h"
 #include "kawaii_wallpaper_data.h"
 #include "wallpaper_cottage_data.h"
@@ -164,13 +165,20 @@ int desktop_icon_hit_test(int mx, int my) {
 }
 
 void desktop_icon_launch_offset(window_type_t type, const char* title) {
+    // lazy install for FNAF plugin (uninstalled by default)
+    if (type == WINDOW_TYPE_FNAF) {
+        plugin_t* pf = plugin_get_by_name("fnaf");
+        if (!pf || !pf->loaded) {
+            plugin_load("fnaf");
+        }
+    }
     int win_w = 400, win_h = 300;
     int win_x = 40 + (desktop.window_count * 30) % 180;
     int win_y = 30 + (desktop.window_count * 30) % 120;
     int is_game = (type == WINDOW_TYPE_DOOM || type == WINDOW_TYPE_FLAPPYBIRD ||
                    type == WINDOW_TYPE_SMB || type == WINDOW_TYPE_PONG ||
                    type == WINDOW_TYPE_GDASH || type == WINDOW_TYPE_SHARKCUBE ||
-                   type == WINDOW_TYPE_SHARKCRAFT);
+                   type == WINDOW_TYPE_SHARKCRAFT || type == WINDOW_TYPE_FNAF);
     if (is_game) {
         win_w = 640; win_h = 480;
     } else if (type == WINDOW_TYPE_TASKMANAGER) {
@@ -248,6 +256,11 @@ void desktop_icon_launch_offset(window_type_t type, const char* title) {
                 case WINDOW_TYPE_SHARKCRAFT:
                     sharkcraft_game_reset();
                     win->game_tick = sharkcraft_tick;
+                    break;
+                case WINDOW_TYPE_FNAF:
+                    fnaf_init();
+                    win->game_tick = fnaf_tick;
+                    win->close_func = fnaf_cleanup;
                     break;
                 default: break;
             }
@@ -981,6 +994,7 @@ void desktop_init(void) {
     desktop_icon_add("Task Manager", WINDOW_TYPE_TASKMANAGER);
     desktop_icon_add("About", WINDOW_TYPE_ABOUT);
     desktop_icon_add("FAQ", WINDOW_TYPE_FAQ);
+    desktop_icon_add("FNAF 1", WINDOW_TYPE_FNAF);
 
     int plugin_count = 0;
     plugin_t* plugins = plugin_get_list(&plugin_count);
