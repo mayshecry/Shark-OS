@@ -44,6 +44,7 @@ typedef enum {
     WINDOW_TYPE_TASKMANAGER,
     WINDOW_TYPE_BROWSER,
     WINDOW_TYPE_DISKMGMT,
+    WINDOW_TYPE_FNAF,
     WINDOW_TYPE_MAX
 } window_type_t;
 
@@ -294,6 +295,12 @@ void app_window_draw_browser(window_t* w);
 void app_window_mouse_browser(window_t* w, int mx, int my, int buttons);
 void app_window_keyboard_browser(window_t* w, char c);
 void app_window_draw_diskmgmt(window_t* w);
+void app_window_draw_fnaf(window_t* w);
+void app_window_keyboard_fnaf(window_t* w, char c);
+void app_window_mouse_fnaf(window_t* w, int mx, int my, int buttons);
+void fnaf_draw_window(int x,int y,int w,int h);
+void fnaf_handle_key_global(char c);
+void fnaf_handle_mouse_global(int x,int y,int buttons);
 void app_window_mouse_diskmgmt(window_t* w, int mx, int my, int buttons);
 void diskmgmt_tick(void);
 void browser_close(void);
