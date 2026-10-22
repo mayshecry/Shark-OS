@@ -14,7 +14,6 @@
 .long FLAGS
 .long CHECKSUM
 
-# Multiboot address fields (not used)
 .long 0, 0, 0, 0, 0
 
 # Graphics fields
