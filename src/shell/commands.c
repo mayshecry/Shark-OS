@@ -588,7 +588,7 @@ static void cmd_neofetch(const char* args) {
     terminal_writestring("\033[0;36m");
     terminal_writestring("  Host: \033[0;37mSharkOS PC\n");
     terminal_writestring("\033[0;36m");
-    terminal_writestring("  Kernel: \033[0;37mNemo-Kernel v0.0.7 (standalone, not UNIX/Linux)\n");
+    terminal_writestring("  Kernel: \033[0;37mNemo-Kernel v4.0.0 (standalone, not UNIX/Linux)\n");
     terminal_writestring("\033[0;36m");
     terminal_writestring("  Shell: \033[0;37mnemo-shell\n");
     terminal_writestring("\033[0;36m");

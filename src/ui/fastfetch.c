@@ -25,7 +25,7 @@ void show_fastfetch(void) {
         terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
         terminal_writestring("KERNEL: ");
         terminal_set_color(vga_entry_color(INFO_VALUE_COLOR, VGA_COLOR_BLACK));
-        terminal_writestring("Nemo-Kernel v0.0.7 (standalone, not UNIX/Linux)\n");
+        terminal_writestring("Nemo-Kernel v4.0.0 (standalone, not UNIX/Linux)\n");
 
         terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
         terminal_writestring("CPU: ");
@@ -87,7 +87,7 @@ void show_fastfetch(void) {
     terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  Kernel   ");
     terminal_set_color(vga_entry_color(INFO_VALUE_COLOR, VGA_COLOR_BLACK));
-    terminal_writestring("Nemo-Kernel v0.0.7 (standalone, not UNIX/Linux)\n");
+    terminal_writestring("Nemo-Kernel v4.0.0 (standalone, not UNIX/Linux)\n");
 
     terminal_set_color(vga_entry_color(INFO_LABEL_COLOR, VGA_COLOR_BLACK));
     terminal_writestring("  CPU      ");
