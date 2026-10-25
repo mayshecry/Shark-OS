@@ -1,0 +1,1014 @@
+
+
+#include "kernel.h"
+#include "desktop.h"
+#include "win98_theme.h"
+
+#define RESIZE_EDGE_LEFT   1
+#define RESIZE_EDGE_RIGHT  2
+#define RESIZE_EDGE_TOP    4
+#define RESIZE_EDGE_BOTTOM 8
+
+#define RESIZE_GRAB        4
+
+#define WIN_ANIM_NONE  0
+#define WIN_ANIM_OPEN  1
+#define WIN_ANIM_CLOSE 2
+#define WIN_ANIM_MIN   3
+#define WIN_ANIM_RECT  4
+
+#define WIN_ANIM_OPEN_MS   140
+#define WIN_ANIM_CLOSE_MS  120
+#define WIN_ANIM_MIN_MS    160
+#define WIN_ANIM_RECT_MS   160
+
+desktop_state_t desktop;
+int desktop_mouse_x = 0;
+int desktop_mouse_y = 0;
+bool desktop_mouse_down = false;
+int desktop_drag_window = -1;
+int desktop_resize_window = -1;
+int desktop_resize_edge = 0;
+
+static int caption_press_window = -1;
+static int caption_press_kind = -1;
+
+static int anim_duration(int kind) {
+    switch (kind) {
+    case WIN_ANIM_OPEN:  return WIN_ANIM_OPEN_MS;
+    case WIN_ANIM_CLOSE: return WIN_ANIM_CLOSE_MS;
+    case WIN_ANIM_MIN:   return WIN_ANIM_MIN_MS;
+    case WIN_ANIM_RECT:  return WIN_ANIM_RECT_MS;
+    default:             return 1;
+    }
+}
+
+static int ease_out(int t1024) {
+    if (t1024 < 0) t1024 = 0;
+    if (t1024 > 1024) t1024 = 1024;
+    int64_t inv = 1024 - t1024;
+    int64_t i3 = inv * inv * inv;
+    return (int)(1024 - (i3 >> 20));
+}
+
+static void lerp_rect(const window_rect_t* a, const window_rect_t* b, int e,
+                      window_rect_t* out) {
+    out->x = a->x + (int)(((int64_t)(b->x - a->x) * e) >> 10);
+    out->y = a->y + (int)(((int64_t)(b->y - a->y) * e) >> 10);
+    out->width = a->width + (int)(((int64_t)(b->width - a->width) * e) >> 10);
+    out->height = a->height + (int)(((int64_t)(b->height - a->height) * e) >> 10);
+}
+
+static void scaled_rect(const window_rect_t* r, int pct, window_rect_t* out) {
+    int nw = r->width * pct / 100;
+    int nh = r->height * pct / 100;
+    if (nw < 24) nw = 24;
+    if (nh < 16) nh = 16;
+    out->x = r->x + (r->width - nw) / 2;
+    out->y = r->y + (r->height - nh) / 2;
+    out->width = nw;
+    out->height = nh;
+}
+
+static void taskbar_target_rect(window_t* w, window_rect_t* out) {
+    int slot = 0;
+    for (int i = 0; i < desktop.window_count; i++) {
+        window_t* o = &desktop.windows[i];
+        if (!o->visible && o->state != WINDOW_STATE_MINIMIZED) continue;
+        if (o == w) break;
+        slot++;
+    }
+    out->x = W98_STARTBTN_W + 6 + slot * (W98_TASKBTN_W + 2);
+    out->y = (int)screen_height - TASKBAR_HEIGHT + 2;
+    out->width = W98_TASKBTN_W;
+    out->height = W98_TASKBTN_H;
+}
+
+static bool window_anim_disp(window_t* w, window_rect_t* out) {
+    if (w->anim_kind == WIN_ANIM_NONE) return false;
+    int dur = anim_duration(w->anim_kind);
+    int t = (int)(uptime_ticks - w->anim_start);
+    if (t < 0) t = 0;
+    if (t > dur) t = dur;
+    int e = ease_out(t * 1024 / dur);
+    lerp_rect(&w->anim_from, &w->anim_to, e, out);
+    return true;
+}
+
+void window_update_client_rect(window_t* w) {
+    w->rect.client_x = w->rect.x + W98_CLIENT_INSET;
+    w->rect.client_y = w->rect.y + W98_CLIENT_TOP;
+    w->rect.client_w = w->rect.width - W98_CLIENT_INSET * 2;
+    w->rect.client_h = w->rect.height - W98_CLIENT_TOP - W98_CLIENT_BOTTOM;
+    if (w->rect.client_w < 0) w->rect.client_w = 0;
+    if (w->rect.client_h < 0) w->rect.client_h = 0;
+}
+
+void window_caption_button_rect(window_t* w, int which, int* rx, int* ry,
+                                int* rw, int* rh) {
+
+    int slot = 0;
+    if (which == W98_GLYPHKIND_MIN) slot = 0;
+    else if (which == W98_GLYPHKIND_MAX) slot = 1;
+    else if (which == W98_GLYPHKIND_CLOSE) slot = 2;
+
+    int right = w->rect.x + w->rect.width - W98_BORDER_W - W98_CAPBTN_MARGIN;
+    int bx = right - (slot + 1) * W98_CAPBTN_W - slot * W98_CAPBTN_GAP;
+    int by = w->rect.y + W98_BORDER_W + W98_CAPBTN_MARGIN;
+
+    if (rx) *rx = bx;
+    if (ry) *ry = by;
+    if (rw) *rw = W98_CAPBTN_W;
+    if (rh) *rh = W98_CAPBTN_H;
+}
+
+static int get_resize_edge(window_t* w, int mx, int my) {
+    int rx = w->rect.x;
+    int ry = w->rect.y;
+    int rw = w->rect.width;
+    int rh = w->rect.height;
+    int edge = 0;
+
+    if (mx >= rx && mx < rx + RESIZE_GRAB) edge |= RESIZE_EDGE_LEFT;
+    else if (mx >= rx + rw - RESIZE_GRAB && mx < rx + rw) edge |= RESIZE_EDGE_RIGHT;
+
+    if (my >= ry && my < ry + RESIZE_GRAB) edge |= RESIZE_EDGE_TOP;
+    else if (my >= ry + rh - RESIZE_GRAB && my < ry + rh) edge |= RESIZE_EDGE_BOTTOM;
+
+    return edge;
+}
+
+window_hit_t window_hit_test(window_t* w, int mx, int my, int* resize_edge) {
+    if (resize_edge) *resize_edge = 0;
+    if (!w || !w->visible || w->state == WINDOW_STATE_MINIMIZED) {
+        return WINDOW_HIT_NONE;
+    }
+
+    int rx = w->rect.x, ry = w->rect.y;
+    int rw = w->rect.width, rh = w->rect.height;
+
+    if (mx < rx || mx >= rx + rw || my < ry || my >= ry + rh) {
+        return WINDOW_HIT_NONE;
+    }
+
+    int bx, by, bw, bh;
+
+    window_caption_button_rect(w, W98_GLYPHKIND_MIN, &bx, &by, &bw, &bh);
+    if (mx >= bx && mx < bx + bw && my >= by && my < by + bh) {
+        return WINDOW_HIT_BTN_MIN;
+    }
+    window_caption_button_rect(w, W98_GLYPHKIND_MAX, &bx, &by, &bw, &bh);
+    if (mx >= bx && mx < bx + bw && my >= by && my < by + bh) {
+        return WINDOW_HIT_BTN_MAX;
+    }
+    window_caption_button_rect(w, W98_GLYPHKIND_CLOSE, &bx, &by, &bw, &bh);
+    if (mx >= bx && mx < bx + bw && my >= by && my < by + bh) {
+        return WINDOW_HIT_BTN_CLOSE;
+    }
+
+    int title_bottom = ry + W98_BORDER_W + W98_TITLEBAR_H;
+    if (my >= ry && my < title_bottom) {
+        return WINDOW_HIT_TITLEBAR;
+    }
+
+    if (mx >= w->rect.client_x && mx < w->rect.client_x + w->rect.client_w &&
+        my >= w->rect.client_y && my < w->rect.client_y + w->rect.client_h) {
+        return WINDOW_HIT_CLIENT;
+    }
+
+    if (w->state != WINDOW_STATE_MAXIMIZED) {
+        int edge = get_resize_edge(w, mx, my);
+        if (edge) {
+            if (resize_edge) *resize_edge = edge;
+            return WINDOW_HIT_RESIZE;
+        }
+    }
+
+    return WINDOW_HIT_TITLEBAR;
+}
+
+static window_t* window_topmost_from(int start, int* out_idx) {
+    int best = -1;
+    for (int i = 0; i < desktop.window_count; i++) {
+        if (i <= start) continue;
+        if (best < 0) { best = i; continue; }
+        if (desktop.windows[i].z_order > desktop.windows[best].z_order) {
+            best = i;
+        }
+    }
+    if (best < 0) return NULL;
+    if (out_idx) *out_idx = best;
+    return &desktop.windows[best];
+}
+
+void window_focus_top_visible(void) {
+    for (int i = 0; i < desktop.window_count; i++) {
+        desktop.windows[i].has_focus = false;
+    }
+    int best = -1;
+    for (int i = 0; i < desktop.window_count; i++) {
+        window_t* w = &desktop.windows[i];
+        if (!w->visible || w->state == WINDOW_STATE_MINIMIZED) continue;
+        if (best < 0 || w->z_order > desktop.windows[best].z_order) best = i;
+    }
+    if (best >= 0) desktop.windows[best].has_focus = true;
+}
+
+int window_create(window_type_t type, const char* title, int x, int y, int w, int h) {
+    if (desktop.window_count >= MAX_WINDOWS) return -1;
+
+    int idx = desktop.window_count;
+    window_t* win = &desktop.windows[idx];
+
+    memset(win, 0, sizeof(window_t));
+
+    strcpy(win->title, title);
+    win->type = type;
+    win->state = WINDOW_STATE_NORMAL;
+    win->visible = true;
+    win->has_focus = true;
+    win->needs_redraw = true;
+    win->z_order = desktop.next_z_order++;
+    win->pressed_button = 0;
+    win->anim_kind = WIN_ANIM_NONE;
+
+    win->rect.x = x;
+    win->rect.y = y;
+    win->rect.width = w < WINDOW_MIN_W ? WINDOW_MIN_W : w;
+    win->rect.height = h < WINDOW_MIN_H ? WINDOW_MIN_H : h;
+    win->rect.min_w = WINDOW_MIN_W;
+    win->rect.min_h = WINDOW_MIN_H;
+
+    window_update_client_rect(win);
+
+    switch (type) {
+        case WINDOW_TYPE_TERMINAL:
+            win->draw_func = app_window_draw_terminal;
+            win->keyboard_func = app_window_keyboard_terminal;
+            break;
+        case WINDOW_TYPE_DOOM:
+            win->draw_func = app_window_draw_doom;
+            win->keyboard_func = app_window_keyboard_doom;
+            break;
+        case WINDOW_TYPE_FLAPPYBIRD:
+            win->draw_func = app_window_draw_flappybird;
+            win->keyboard_func = app_window_keyboard_flappybird;
+            break;
+        case WINDOW_TYPE_SMB:
+            win->draw_func = app_window_draw_smb;
+            win->keyboard_func = app_window_keyboard_smb;
+            break;
+        case WINDOW_TYPE_PONG:
+            win->draw_func = app_window_draw_pong;
+            win->keyboard_func = app_window_keyboard_pong;
+            break;
+        case WINDOW_TYPE_GDASH:
+            win->draw_func = app_window_draw_gdash;
+            win->keyboard_func = app_window_keyboard_gdash;
+            break;
+        case WINDOW_TYPE_SHARKCUBE:
+            win->draw_func = app_window_draw_sharkcube;
+            win->keyboard_func = app_window_keyboard_sharkcube;
+            win->mouse_func = app_window_mouse_sharkcube;
+            break;
+        case WINDOW_TYPE_SHARKCRAFT:
+            win->draw_func = app_window_draw_sharkcraft;
+            win->keyboard_func = app_window_keyboard_sharkcraft;
+            win->mouse_func = app_window_mouse_sharkcraft;
+            break;
+        case WINDOW_TYPE_SETTINGS:
+            win->draw_func = app_window_draw_settings;
+            win->mouse_func = app_window_mouse_settings;
+            break;
+        case WINDOW_TYPE_FAQ:
+            win->draw_func = app_window_draw_faq;
+            break;
+        case WINDOW_TYPE_FASTFETCH:
+            win->draw_func = app_window_draw_fastfetch;
+            break;
+        case WINDOW_TYPE_ABOUT:
+            win->draw_func = app_window_draw_about;
+            break;
+        case WINDOW_TYPE_NOTEPAD:
+            win->draw_func = app_window_draw_notepad;
+            win->keyboard_func = app_window_keyboard_notepad;
+            break;
+        case WINDOW_TYPE_FILEMANAGER:
+            win->draw_func = app_window_draw_filemanager;
+            win->mouse_func = app_window_mouse_filemanager;
+            win->keyboard_func = app_window_keyboard_filemanager;
+            break;
+        case WINDOW_TYPE_NETWORK:
+            win->draw_func = app_window_draw_network;
+            win->mouse_func = app_window_mouse_network;
+            break;
+        case WINDOW_TYPE_TASKMANAGER:
+            win->draw_func = app_window_draw_taskmanager;
+            win->mouse_func = app_window_mouse_taskmanager;
+            win->keyboard_func = app_window_keyboard_taskmanager;
+            break;
+        case WINDOW_TYPE_BROWSER:
+            win->draw_func = app_window_draw_browser;
+            win->mouse_func = app_window_mouse_browser;
+            win->keyboard_func = app_window_keyboard_browser;
+            win->close_func = browser_close;
+            break;
+        case WINDOW_TYPE_DISKMGMT:
+            win->draw_func = app_window_draw_diskmgmt;
+            win->mouse_func = app_window_mouse_diskmgmt;
+            break;
+        case WINDOW_TYPE_FNAF:
+            win->draw_func = app_window_draw_fnaf;
+            win->keyboard_func = app_window_keyboard_fnaf;
+            win->mouse_func = app_window_mouse_fnaf;
+            break;
+        default:
+            break;
+    }
+
+    desktop.window_count++;
+
+    for (int i = 0; i < desktop.window_count; i++) {
+        if (i != idx) desktop.windows[i].has_focus = false;
+    }
+
+    if (theme_current->animations) {
+        win->anim_kind = WIN_ANIM_OPEN;
+        win->anim_start = uptime_ticks;
+        win->anim_to = win->rect;
+        scaled_rect(&win->rect, 90, &win->anim_from);
+    }
+
+    desktop.dirty = true;
+    return idx;
+}
+
+static void window_close_now(int idx) {
+    if (idx < 0 || idx >= desktop.window_count) return;
+    window_t* win = &desktop.windows[idx];
+
+    if (win->close_func) {
+        win->close_func();
+    }
+
+    if (desktop_drag_window == idx) desktop_drag_window = -1;
+    if (desktop_resize_window == idx) desktop_resize_window = -1;
+    if (caption_press_window == idx) {
+        caption_press_window = -1;
+        caption_press_kind = -1;
+    }
+
+    win->visible = false;
+
+    for (int i = idx; i < desktop.window_count - 1; i++) {
+        desktop.windows[i] = desktop.windows[i + 1];
+    }
+    desktop.window_count--;
+
+    if (desktop_drag_window > idx) desktop_drag_window--;
+    if (desktop_resize_window > idx) desktop_resize_window--;
+    if (caption_press_window > idx) caption_press_window--;
+
+    window_focus_top_visible();
+
+    desktop.dirty = true;
+}
+
+void window_close(int idx) {
+    if (idx < 0 || idx >= desktop.window_count) return;
+    window_t* win = &desktop.windows[idx];
+
+    if (!theme_current->animations ||
+        win->anim_kind == WIN_ANIM_CLOSE ||
+        win->anim_kind == WIN_ANIM_MIN ||
+        win->state == WINDOW_STATE_MINIMIZED) {
+        window_close_now(idx);
+        return;
+    }
+
+    win->anim_kind = WIN_ANIM_CLOSE;
+    win->anim_start = uptime_ticks;
+    win->anim_from = win->rect;
+    scaled_rect(&win->rect, 88, &win->anim_to);
+    desktop.dirty = true;
+}
+
+static void window_apply_minimize(window_t* win) {
+    win->state = WINDOW_STATE_MINIMIZED;
+    win->visible = false;
+    win->needs_redraw = true;
+
+    if (win->has_focus) {
+        win->has_focus = false;
+        window_focus_top_visible();
+    }
+
+    desktop.dirty = true;
+}
+
+void window_minimize(int idx) {
+    if (idx < 0 || idx >= desktop.window_count) return;
+    window_t* win = &desktop.windows[idx];
+    if (win->state == WINDOW_STATE_MINIMIZED) return;
+
+    if (theme_current->animations && win->anim_kind == WIN_ANIM_NONE) {
+        win->anim_kind = WIN_ANIM_MIN;
+        win->anim_start = uptime_ticks;
+        win->anim_from = win->rect;
+        taskbar_target_rect(win, &win->anim_to);
+        desktop.dirty = true;
+        return;
+    }
+
+    window_apply_minimize(win);
+}
+
+void window_maximize(int idx) {
+    if (idx < 0 || idx >= desktop.window_count) return;
+    window_t* win = &desktop.windows[idx];
+
+    if (win->state == WINDOW_STATE_MAXIMIZED) {
+        window_restore(idx);
+        return;
+    }
+
+    window_rect_t before = win->rect;
+
+    win->rect.prev_x = win->rect.x;
+    win->rect.prev_y = win->rect.y;
+    win->rect.prev_w = win->rect.width;
+    win->rect.prev_h = win->rect.height;
+
+    win->rect.x = -W98_BORDER_W - W98_FRAME_PAD;
+    win->rect.y = -W98_BORDER_W - W98_FRAME_PAD;
+    win->rect.width = (int)screen_width + (W98_BORDER_W + W98_FRAME_PAD) * 2;
+    win->rect.height = (int)(screen_height - TASKBAR_HEIGHT)
+                       + (W98_BORDER_W + W98_FRAME_PAD) * 2;
+    win->state = WINDOW_STATE_MAXIMIZED;
+    win->needs_redraw = true;
+
+    if (theme_current->animations) {
+        win->anim_kind = WIN_ANIM_RECT;
+        win->anim_start = uptime_ticks;
+        win->anim_from = before;
+        win->anim_to = win->rect;
+    }
+
+    window_update_client_rect(win);
+    desktop.dirty = true;
+}
+
+void window_restore(int idx) {
+    if (idx < 0 || idx >= desktop.window_count) return;
+    window_t* win = &desktop.windows[idx];
+
+    if (win->state == WINDOW_STATE_MINIMIZED) {
+        win->visible = true;
+        win->state = WINDOW_STATE_NORMAL;
+        win->needs_redraw = true;
+        window_focus(idx);
+        if (theme_current->animations) {
+            win->anim_kind = WIN_ANIM_RECT;
+            win->anim_start = uptime_ticks;
+            taskbar_target_rect(win, &win->anim_from);
+            win->anim_to = win->rect;
+        }
+        return;
+    }
+
+    if (win->state == WINDOW_STATE_MAXIMIZED) {
+        window_rect_t before = win->rect;
+        win->rect.x = win->rect.prev_x;
+        win->rect.y = win->rect.prev_y;
+        win->rect.width = win->rect.prev_w;
+        win->rect.height = win->rect.prev_h;
+        win->state = WINDOW_STATE_NORMAL;
+        win->needs_redraw = true;
+        if (theme_current->animations) {
+            win->anim_kind = WIN_ANIM_RECT;
+            win->anim_start = uptime_ticks;
+            win->anim_from = before;
+            win->anim_to = win->rect;
+        }
+        window_update_client_rect(win);
+        desktop.dirty = true;
+    }
+}
+
+void window_focus(int idx) {
+    if (idx < 0 || idx >= desktop.window_count) return;
+
+    for (int i = 0; i < desktop.window_count; i++) {
+        desktop.windows[i].has_focus = false;
+    }
+
+    window_t* win = &desktop.windows[idx];
+    win->has_focus = true;
+    win->z_order = desktop.next_z_order++;
+    win->needs_redraw = true;
+    desktop.dirty = true;
+}
+
+window_t* window_get_focused(void) {
+    for (int i = 0; i < desktop.window_count; i++) {
+        if (desktop.windows[i].has_focus && desktop.windows[i].visible) {
+            return &desktop.windows[i];
+        }
+    }
+    return NULL;
+}
+
+void window_close_by_ptr(window_t* w) {
+    if (!w) return;
+    for (int i = 0; i < desktop.window_count; i++) {
+        if (&desktop.windows[i] == w) {
+            window_close(i);
+            break;
+        }
+    }
+}
+
+static uint32_t title_icon_cache[WINDOW_TYPE_MAX][16 * 16];
+static bool title_icon_ready[WINDOW_TYPE_MAX];
+
+void window_title_icons_invalidate(void) {
+    for (int i = 0; i < WINDOW_TYPE_MAX; i++) title_icon_ready[i] = false;
+}
+
+static void window_build_title_icon(window_t* w) {
+    if (w->type < 0 || w->type >= WINDOW_TYPE_MAX) return;
+    if (title_icon_ready[w->type]) return;
+
+    const uint32_t* src = desktop_icon_pixels_for_type(w->type);
+    uint32_t* dst = title_icon_cache[w->type];
+
+    if (!src) {
+        for (int i = 0; i < 16 * 16; i++) dst[i] = 0;
+        title_icon_ready[w->type] = true;
+        return;
+    }
+
+    for (int y = 0; y < 16; y++) {
+        int sy = y * DESKTOP_ICON_SIZE / 16;
+        for (int x = 0; x < 16; x++) {
+            int sx = x * DESKTOP_ICON_SIZE / 16;
+            uint32_t p = src[sy * DESKTOP_ICON_SIZE + sx];
+            if (((p >> 24) & 0xFF) > 128) {
+                dst[y * 16 + x] = 0xFF000000u | (p & 0x00FFFFFFu);
+            } else {
+
+                dst[y * 16 + x] = 0;
+            }
+        }
+    }
+    title_icon_ready[w->type] = true;
+}
+
+static void window_draw_caption_button(window_t* w, int kind) {
+    int bx, by, bw, bh;
+    window_caption_button_rect(w, kind, &bx, &by, &bw, &bh);
+
+    bool pressed = (w->pressed_button == kind + 1);
+
+    if (theme_current->flat_bevels) {
+        bool hov = desktop_mouse_x >= bx && desktop_mouse_x < bx + bw &&
+                   desktop_mouse_y >= by && desktop_mouse_y < by + bh;
+        bool is_close = (kind == W98_GLYPHKIND_CLOSE);
+        uint32_t fill = W98_BTNFACE;
+        uint32_t fg = w->has_focus ? W98_BTNTEXT : W98_GRAYTEXT;
+        if (pressed) {
+            fill = W98_BTNSHADOW;
+        } else if (hov) {
+            fill = is_close ? 0xFFE81123u : W98_BTNLIGHT;
+        }
+        if (hov && is_close) fg = 0xFFFFFFFFu;
+        w98_fill(bx, by, bw, bh, fill);
+
+        int glyph_kind = kind;
+        if (kind == W98_GLYPHKIND_MAX && w->state == WINDOW_STATE_MAXIMIZED) {
+            glyph_kind = W98_GLYPHKIND_RESTORE;
+        }
+        w98_glyph(glyph_kind,
+                  bx + (bw - W98_GLYPH_W) / 2,
+                  by + (bh - W98_GLYPH_H) / 2,
+                  fg);
+        return;
+    }
+
+    w98_fill(bx, by, bw, bh, W98_BTNFACE);
+    w98_bevel(bx, by, bw, bh,
+              pressed ? W98_BEVEL_RAISED_PRESSED : W98_BEVEL_RAISED);
+
+    uint32_t fg = w->has_focus ? W98_BTNTEXT : W98_GRAYTEXT;
+    int ox = pressed ? 1 : 0;
+
+    int glyph_kind = kind;
+    if (kind == W98_GLYPHKIND_MAX && w->state == WINDOW_STATE_MAXIMIZED) {
+        glyph_kind = W98_GLYPHKIND_RESTORE;
+    }
+    w98_glyph(glyph_kind,
+              bx + (bw - W98_GLYPH_W) / 2 + ox,
+              by + (bh - W98_GLYPH_H) / 2 + ox,
+              fg);
+}
+
+void window_draw_frame(window_t* w) {
+    int x = w->rect.x;
+    int y = w->rect.y;
+    int ww = w->rect.width;
+    int wh = w->rect.height;
+
+    w98_fill(x, y, ww, wh, W98_BTNFACE);
+
+    w98_bevel(x, y, ww, wh, W98_BEVEL_RAISED);
+
+    int tb_x = x + W98_BORDER_W + W98_FRAME_PAD;
+    int tb_y = y + W98_BORDER_W + W98_FRAME_PAD;
+    int tb_w = ww - (W98_BORDER_W + W98_FRAME_PAD) * 2;
+    int tb_h = W98_TITLEBAR_H;
+
+    if (w->has_focus) {
+        if (theme_current->title_gradient) {
+            w98_hgradient(tb_x, tb_y, tb_w, tb_h,
+                          W98_ACTIVE_TITLE, W98_ACTIVE_TITLE2);
+        } else {
+            w98_fill(tb_x, tb_y, tb_w, tb_h, W98_ACTIVE_TITLE);
+        }
+    } else {
+        if (theme_current->title_gradient) {
+            w98_hgradient(tb_x, tb_y, tb_w, tb_h,
+                          W98_INACTIVE_TITLE, W98_INACTIVE_TITLE2);
+        } else {
+            w98_fill(tb_x, tb_y, tb_w, tb_h, W98_INACTIVE_TITLE);
+        }
+    }
+
+    if (theme_current->title_accent_line) {
+        if (w->has_focus) {
+            w98_fill(tb_x, tb_y + tb_h - 2, tb_w, 2, W98_HIGHLIGHT);
+        } else {
+            w98_fill(tb_x, tb_y + tb_h - 1, tb_w, 1, W98_BTNSHADOW);
+        }
+    }
+
+    int text_x = tb_x + 3;
+    window_build_title_icon(w);
+    if (w->type >= 0 && w->type < WINDOW_TYPE_MAX) {
+        w98_icon_blit(title_icon_cache[w->type], 16, 16,
+                      tb_x + 2, tb_y + (tb_h - 16) / 2, NULL);
+        text_x = tb_x + 20;
+    }
+
+    uint32_t title_fg = w->has_focus ? W98_TITLETEXT : W98_TITLETEXT_INACT;
+    int text_max = tb_w - (text_x - tb_x) - 3 * (W98_CAPBTN_W + W98_CAPBTN_GAP);
+    char fit[WINDOW_TITLE_MAX];
+    w98_text_fit(w->title, fit, sizeof(fit), text_max, 1);
+
+    if (w->has_focus) {
+        if (theme_current->title_gradient) {
+            w98_text_alpha_bold(fit, text_x, tb_y + (tb_h - w98_text_height(1)) / 2, title_fg,
+                                1, NULL);
+        } else {
+            w98_text_bold(fit, text_x, tb_y + (tb_h - w98_text_height(1)) / 2, title_fg,
+                          W98_ACTIVE_TITLE, 1, NULL);
+        }
+    } else {
+        if (theme_current->title_gradient) {
+            w98_text_alpha(fit, text_x, tb_y + (tb_h - w98_text_height(1)) / 2, title_fg,
+                           1, NULL);
+        } else {
+            w98_text(fit, text_x, tb_y + (tb_h - w98_text_height(1)) / 2, title_fg,
+                     W98_INACTIVE_TITLE, 1, NULL);
+        }
+    }
+
+    window_draw_caption_button(w, W98_GLYPHKIND_MIN);
+    window_draw_caption_button(w, W98_GLYPHKIND_MAX);
+    window_draw_caption_button(w, W98_GLYPHKIND_CLOSE);
+
+    w98_fill(w->rect.client_x, w->rect.client_y,
+             w->rect.client_w, w->rect.client_h, W98_BTNFACE);
+}
+
+static void window_caption_activate(window_t* w, int kind) {
+    if (!w) return;
+    for (int i = 0; i < desktop.window_count; i++) {
+        if (&desktop.windows[i] != w) continue;
+        if (kind == W98_GLYPHKIND_MIN) window_minimize(i);
+        else if (kind == W98_GLYPHKIND_MAX) window_maximize(i);
+        else if (kind == W98_GLYPHKIND_CLOSE) window_close(i);
+        return;
+    }
+}
+
+void window_begin_drag(int mx, int my) {
+
+    int idx = -1;
+    window_t* w = window_topmost_from(-1, &idx);
+
+    while (w) {
+        int edge = 0;
+        window_hit_t hit = window_hit_test(w, mx, my, &edge);
+
+        if (hit != WINDOW_HIT_NONE) {
+            window_focus(idx);
+
+            if (hit == WINDOW_HIT_BTN_MIN || hit == WINDOW_HIT_BTN_MAX ||
+                hit == WINDOW_HIT_BTN_CLOSE) {
+                int kind = (hit == WINDOW_HIT_BTN_MIN) ? W98_GLYPHKIND_MIN
+                         : (hit == WINDOW_HIT_BTN_MAX) ? W98_GLYPHKIND_MAX
+                         : W98_GLYPHKIND_CLOSE;
+                caption_press_window = idx;
+                caption_press_kind = kind;
+                w->pressed_button = kind + 1;
+            } else if (hit == WINDOW_HIT_TITLEBAR &&
+                       w->state != WINDOW_STATE_MAXIMIZED) {
+                desktop_drag_window = idx;
+                w->is_dragging = true;
+                w->drag_off_x = mx - w->rect.x;
+                w->drag_off_y = my - w->rect.y;
+            } else if (hit == WINDOW_HIT_RESIZE) {
+                desktop_resize_window = idx;
+                desktop_resize_edge = edge;
+                w->is_resizing = true;
+                w->drag_off_x = mx;
+                w->drag_off_y = my;
+            }
+            desktop.dirty = true;
+            return;
+        }
+
+        w = window_topmost_from(idx, &idx);
+    }
+}
+
+void window_begin_resize(int mx, int my) {
+    int idx = -1;
+    window_t* w = window_topmost_from(-1, &idx);
+    while (w) {
+        if (w->visible && w->state == WINDOW_STATE_NORMAL) {
+            int edge = get_resize_edge(w, mx, my);
+            if (edge) {
+                window_focus(idx);
+                desktop_resize_window = idx;
+                desktop_resize_edge = edge;
+                w->is_resizing = true;
+                w->drag_off_x = mx;
+                w->drag_off_y = my;
+                desktop.dirty = true;
+                return;
+            }
+        }
+        w = window_topmost_from(idx, &idx);
+    }
+}
+
+void window_drag_update(int mx, int my) {
+    if (desktop_drag_window < 0 || desktop_drag_window >= desktop.window_count) {
+        return;
+    }
+    window_t* w = &desktop.windows[desktop_drag_window];
+
+    int old_x = w->rect.x;
+    int old_y = w->rect.y;
+    int old_w = w->rect.width;
+    int old_h = w->rect.height;
+
+    int new_x = mx - w->drag_off_x;
+    int new_y = my - w->drag_off_y;
+
+    int work_h = (int)screen_height - TASKBAR_HEIGHT;
+    if (new_y < 0) new_y = 0;
+    if (new_y > work_h - W98_BORDER_W - W98_TITLEBAR_H) {
+        new_y = work_h - W98_BORDER_W - W98_TITLEBAR_H;
+    }
+    if (new_x > (int)screen_width - W98_CAPBTN_W) {
+        new_x = (int)screen_width - W98_CAPBTN_W;
+    }
+    if (new_x < W98_CAPBTN_W - w->rect.width) {
+        new_x = W98_CAPBTN_W - w->rect.width;
+    }
+
+    w->rect.x = new_x;
+    w->rect.y = new_y;
+    window_update_client_rect(w);
+    w->needs_redraw = true;
+
+    desktop_invalidate_rect(old_x, old_y, old_x + old_w, old_y + old_h);
+    desktop_invalidate_rect(new_x, new_y, new_x + old_w, new_y + old_h);
+}
+
+void window_resize_update(int mx, int my) {
+    if (desktop_resize_window < 0 ||
+        desktop_resize_window >= desktop.window_count) {
+        return;
+    }
+    window_t* w = &desktop.windows[desktop_resize_window];
+
+    int old_x = w->rect.x;
+    int old_y = w->rect.y;
+    int old_w = w->rect.width;
+    int old_h = w->rect.height;
+
+    int dx = mx - w->drag_off_x;
+    int dy = my - w->drag_off_y;
+
+    int new_x = w->rect.x;
+    int new_y = w->rect.y;
+    int new_w = w->rect.width;
+    int new_h = w->rect.height;
+
+    int min_w = w->rect.min_w > 0 ? w->rect.min_w : WINDOW_MIN_W;
+    int min_h = w->rect.min_h > 0 ? w->rect.min_h : WINDOW_MIN_H;
+
+    if (desktop_resize_edge & RESIZE_EDGE_RIGHT) {
+        new_w += dx;
+    }
+    if (desktop_resize_edge & RESIZE_EDGE_LEFT) {
+        new_w -= dx;
+        new_x += dx;
+    }
+    if (desktop_resize_edge & RESIZE_EDGE_BOTTOM) {
+        new_h += dy;
+    }
+    if (desktop_resize_edge & RESIZE_EDGE_TOP) {
+        new_h -= dy;
+        new_y += dy;
+    }
+
+    if (new_w < min_w) {
+        if (desktop_resize_edge & RESIZE_EDGE_LEFT) {
+            new_x -= min_w - new_w;
+        }
+        new_w = min_w;
+    }
+    if (new_h < min_h) {
+        if (desktop_resize_edge & RESIZE_EDGE_TOP) {
+            new_y -= min_h - new_h;
+        }
+        new_h = min_h;
+    }
+
+    int work_h = (int)screen_height - TASKBAR_HEIGHT;
+    if (new_y < 0) {
+        new_h += new_y;
+        new_y = 0;
+        if (new_h < min_h) new_h = min_h;
+    }
+    if (new_y + new_h > work_h) {
+        new_h = work_h - new_y;
+        if (new_h < min_h) new_h = min_h;
+    }
+
+    w->rect.x = new_x;
+    w->rect.y = new_y;
+    w->rect.width = new_w;
+    w->rect.height = new_h;
+    window_update_client_rect(w);
+
+    w->drag_off_x = mx;
+    w->drag_off_y = my;
+
+    w->needs_redraw = true;
+
+    desktop_invalidate_rect(old_x, old_y, old_x + old_w, old_y + old_h);
+    desktop_invalidate_rect(new_x, new_y, new_x + new_w, new_y + new_h);
+}
+
+int window_caption_pressed(void) {
+    return caption_press_window;
+}
+
+void window_end_drag(void) {
+    if (desktop_drag_window >= 0 &&
+        desktop_drag_window < desktop.window_count) {
+        desktop.windows[desktop_drag_window].is_dragging = false;
+    }
+    if (desktop_resize_window >= 0 &&
+        desktop_resize_window < desktop.window_count) {
+        desktop.windows[desktop_resize_window].is_resizing = false;
+    }
+    desktop_drag_window = -1;
+    desktop_resize_window = -1;
+    desktop_resize_edge = 0;
+
+    if (caption_press_window >= 0 &&
+        caption_press_window < desktop.window_count) {
+        window_t* w = &desktop.windows[caption_press_window];
+        int kind = caption_press_kind;
+        w->pressed_button = 0;
+        caption_press_window = -1;
+        caption_press_kind = -1;
+        if (kind >= 0) {
+            window_caption_activate(w, kind);
+        }
+    }
+
+    desktop.dirty = true;
+}
+
+static void draw_window_content(window_t* w) {
+    if (w->draw_func) {
+        w->draw_func(w);
+    }
+}
+
+void window_draw_all(void) {
+    int draw_order[MAX_WINDOWS];
+    int draw_count = 0;
+
+    for (int i = 0; i < desktop.window_count; i++) {
+        if (desktop.windows[i].visible &&
+            desktop.windows[i].state != WINDOW_STATE_MINIMIZED) {
+            draw_order[draw_count++] = i;
+        }
+    }
+
+    for (int i = 1; i < draw_count; i++) {
+        int j = i;
+        while (j > 0 &&
+               desktop.windows[draw_order[j]].z_order <
+               desktop.windows[draw_order[j - 1]].z_order) {
+            int tmp = draw_order[j];
+            draw_order[j] = draw_order[j - 1];
+            draw_order[j - 1] = tmp;
+            j--;
+        }
+    }
+
+    for (int i = 0; i < draw_count; i++) {
+        window_t* w = &desktop.windows[draw_order[i]];
+
+        window_rect_t saved = w->rect;
+        window_rect_t disp;
+        bool animated = window_anim_disp(w, &disp);
+        if (animated) {
+            w->rect = disp;
+            window_update_client_rect(w);
+        }
+
+        window_draw_frame(w);
+        draw_window_content(w);
+
+        if (animated) {
+            w->rect = saved;
+            window_update_client_rect(w);
+        }
+        w->needs_redraw = false;
+    }
+}
+
+void window_redraw_clients(void) {
+    for (int i = 0; i < desktop.window_count; i++) {
+        desktop.windows[i].needs_redraw = true;
+    }
+    desktop.dirty = true;
+}
+
+extern bool start_menu_anim_active(void);
+
+void desktop_anim_tick(void) {
+    bool active = false;
+
+    for (int i = 0; i < desktop.window_count; i++) {
+        window_t* w = &desktop.windows[i];
+        if (w->anim_kind == WIN_ANIM_NONE) continue;
+
+        if (!theme_current->animations) {
+            w->anim_kind = WIN_ANIM_NONE;
+            w->needs_redraw = true;
+            desktop.dirty = true;
+            continue;
+        }
+
+        active = true;
+        int dur = anim_duration(w->anim_kind);
+        if ((int)(uptime_ticks - w->anim_start) < dur) continue;
+
+        switch (w->anim_kind) {
+        case WIN_ANIM_CLOSE:
+            w->anim_kind = WIN_ANIM_NONE;
+            window_close_now(i);
+            i--;
+            break;
+        case WIN_ANIM_MIN:
+            w->anim_kind = WIN_ANIM_NONE;
+            window_apply_minimize(w);
+            break;
+        case WIN_ANIM_RECT:
+            w->rect = w->anim_to;
+            window_update_client_rect(w);
+            w->anim_kind = WIN_ANIM_NONE;
+            w->needs_redraw = true;
+            break;
+        default:
+            w->anim_kind = WIN_ANIM_NONE;
+            w->needs_redraw = true;
+            break;
+        }
+    }
+
+    if (start_menu_anim_active()) active = true;
+
+    if (active) desktop.dirty = true;
+}
