@@ -3,14 +3,14 @@ CC = gcc
 AS = as
 OBJCOPY = $(PREFIX)objcopy
 
-CFLAGS = -m32 -std=gnu99 -ffreestanding -Os -Wall -Wextra -fno-pie -fno-stack-protector \
-         -fno-asynchronous-unwind-tables -mno-80387 -mno-mmx -mno-sse -mno-sse2 \
+CFLAGS = -m64 -std=gnu99 -ffreestanding -Os -Wall -Wextra -fno-pie -fno-stack-protector \
+         -fno-asynchronous-unwind-tables -mno-red-zone -mgeneral-regs-only \
          -fomit-frame-pointer -fmerge-all-constants -fno-unwind-tables -fno-exceptions \
-         -Iinclude
-ASFLAGS = --32
-LDFLAGS = -m32 -ffreestanding -Os -nostdlib -no-pie -Wl,-m,elf_i386 -Wl,-gc-sections -Wl,--strip-all
+         -mcmodel=kernel -Iinclude
+ASFLAGS = --64
+LDFLAGS = -m64 -ffreestanding -Os -nostdlib -no-pie -Wl,-m,elf_x86_64 -Wl,-gc-sections -Wl,--strip-all
 
-DIRS = arch drivers fs ui shell lib sharkscript doom flappybird smb pong geometrydash desktop net browser
+DIRS = arch drivers drivers/audio fs ui shell lib sharkscript doom flappybird smb pong geometrydash fnaf desktop net browser
 
 all: sharkos.iso
 
@@ -25,6 +25,9 @@ plugins/sharkcube:
 
 plugins/sharkcraft:
 	mkdir -p plugins/sharkcraft
+
+plugins/fnaf:
+	mkdir -p plugins/fnaf
 
 boot.o: boot.s
 	$(AS) $(ASFLAGS) boot.s -o boot.o
@@ -49,6 +52,21 @@ drivers/keyboard.o: src/drivers/keyboard.c include/kernel.h | drivers
 
 drivers/pci.o: src/drivers/pci.c include/kernel.h | drivers
 	$(CC) -c src/drivers/pci.c -o drivers/pci.o $(CFLAGS)
+
+# Audio subsystem (AC97/HDA + mixer)
+drivers/audio/audio.o: src/drivers/audio/audio.c include/kernel.h include/audio.h | drivers/audio
+	$(CC) -c src/drivers/audio/audio.c -o drivers/audio/audio.o $(CFLAGS)
+drivers/audio/mixer.o: src/drivers/audio/mixer.c include/kernel.h include/audio.h | drivers/audio
+	$(CC) -c src/drivers/audio/mixer.c -o drivers/audio/mixer.o $(CFLAGS)
+drivers/audio/ac97.o: src/drivers/audio/ac97.c include/kernel.h include/audio.h | drivers/audio
+	$(CC) -c src/drivers/audio/ac97.c -o drivers/audio/ac97.o $(CFLAGS)
+drivers/audio/hda.o: src/drivers/audio/hda.c include/kernel.h include/audio.h | drivers/audio
+	$(CC) -c src/drivers/audio/hda.c -o drivers/audio/hda.o $(CFLAGS)
+drivers/audio/pcspkr.o: src/drivers/audio/pcspkr.c include/kernel.h include/audio.h | drivers/audio
+	$(CC) -c src/drivers/audio/pcspkr.c -o drivers/audio/pcspkr.o $(CFLAGS)
+drivers/audio/wav.o: src/drivers/audio/wav.c include/kernel.h include/audio.h | drivers/audio
+	$(CC) -c src/drivers/audio/wav.c -o drivers/audio/wav.o $(CFLAGS)
+
 
 net/net.o: src/net/net.c include/kernel.h include/net.h include/tls.h | net
 	$(CC) -c src/net/net.c -o net/net.o $(CFLAGS)
@@ -205,6 +223,12 @@ plugins/sharkcraft/sharkcraft_plugin.o: plugins/sharkcraft/sharkcraft_plugin.c i
 plugins/sharkcraft/sharkcraft.plg: plugins/sharkcraft/sharkcraft_plugin.c include/sharkapi.h include/desktop.h | plugins/sharkcraft
 	$(CC) -c plugins/sharkcraft/sharkcraft_plugin.c -o plugins/sharkcraft/sharkcraft.plg $(CFLAGS)
 
+plugins/fnaf/fnaf_plugin.o: plugins/fnaf/fnaf_plugin.c include/sharkapi.h include/plugin_manager.h include/fnaf.h | plugins/fnaf
+	$(CC) -DFNAF_BUILTIN -c plugins/fnaf/fnaf_plugin.c -o plugins/fnaf/fnaf_plugin.o $(CFLAGS)
+
+plugins/fnaf/fnaf.plg: plugins/fnaf/fnaf_plugin.c include/sharkapi.h include/fnaf.h | plugins/fnaf
+	$(CC) -c plugins/fnaf/fnaf_plugin.c -o plugins/fnaf/fnaf.plg $(CFLAGS)
+
 doom/doom.o: src/doom/doom.c include/kernel.h include/doom.h | doom
 	$(CC) -c src/doom/doom.c -o doom/doom.o $(CFLAGS)
 
@@ -220,28 +244,44 @@ smb/smb.o: src/smb/smb.c include/kernel.h include/smb.h | smb
 geometrydash/geometrydash.o: src/geometrydash/geometrydash.c include/kernel.h include/geometrydash.h | geometrydash
 	$(CC) -c src/geometrydash/geometrydash.c -o geometrydash/geometrydash.o $(CFLAGS)
 
+fnaf/fnaf.o: src/fnaf/fnaf.c include/kernel.h include/fnaf.h | fnaf
+	$(CC) -c src/fnaf/fnaf.c -o fnaf/fnaf.o $(CFLAGS)
+
 sharkscript/shs.o: src/sharkscript/shs.c include/kernel.h include/sharkscript.h | sharkscript
 	$(CC) -c src/sharkscript/shs.c -o sharkscript/shs.o $(CFLAGS)
 
 sharkos.bin: Makefile boot.o arch/early.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o drivers/keyboard.o drivers/pci.o \
-             drivers/mouse.o drivers/rtc.o drivers/ata.o fs/fs.o ui/terminal.o ui/ui.o ui/fastfetch.o ui/mouse.o \
+             drivers/mouse.o drivers/rtc.o drivers/ata.o drivers/audio/audio.o drivers/audio/mixer.o drivers/audio/ac97.o drivers/audio/hda.o drivers/audio/pcspkr.o drivers/audio/wav.o fs/fs.o ui/terminal.o ui/ui.o ui/fastfetch.o ui/mouse.o \
              shell/commands.o shell/spkg.o shell/main.o shell/lite.o \
              lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o \
-             plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o plugins/sharkcube/sharkcube_plugin.o plugins/sharkcraft/sharkcraft_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o \
+             plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o plugins/sharkcube/sharkcube_plugin.o plugins/sharkcraft/sharkcraft_plugin.o plugins/fnaf/fnaf_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o fnaf/fnaf.o \
              desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/theme.o desktop/diskmgmt.o desktop/png.o desktop/gif.o desktop/jpeg.o desktop/webp.o browser/svg.o net/net.o net/crypto.o net/tls.o \
              browser/html.o browser/css.o browser/layout.o browser/js.o browser/browser.o browser/font.o linker.ld
 	$(CC) -T linker.ld -o sharkos.bin $(LDFLAGS) boot.o arch/early.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o \
-		drivers/keyboard.o drivers/pci.o drivers/mouse.o drivers/rtc.o drivers/ata.o fs/fs.o ui/terminal.o ui/ui.o \
-		ui/fastfetch.o ui/mouse.o shell/commands.o shell/spkg.o shell/main.o shell/lite.o lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o plugins/sharkcube/sharkcube_plugin.o plugins/sharkcraft/sharkcraft_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o \
+		drivers/keyboard.o drivers/pci.o drivers/mouse.o drivers/rtc.o drivers/ata.o drivers/audio/audio.o drivers/audio/mixer.o drivers/audio/ac97.o drivers/audio/hda.o drivers/audio/pcspkr.o drivers/audio/wav.o fs/fs.o ui/terminal.o ui/ui.o \
+		ui/fastfetch.o ui/mouse.o shell/commands.o shell/spkg.o shell/main.o shell/lite.o lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o plugins/sharkcube/sharkcube_plugin.o plugins/sharkcraft/sharkcraft_plugin.o plugins/fnaf/fnaf_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o fnaf/fnaf.o \
 		desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/theme.o desktop/diskmgmt.o desktop/png.o desktop/gif.o desktop/jpeg.o desktop/webp.o browser/svg.o net/net.o net/crypto.o net/tls.o \
 		browser/html.o browser/css.o browser/layout.o browser/js.o browser/browser.o browser/font.o -lgcc
 
-sharkos.iso: Makefile sharkos.bin grub.cfg plugins/sharkcube/sharkcube.plg plugins/sharkcraft/sharkcraft.plg
-	mkdir -p isodir/boot/grub
+LIMINE_DIR ?= limine
+
+sharkos.iso: Makefile sharkos.bin limine.conf plugins/sharkcube/sharkcube.plg plugins/sharkcraft/sharkcraft.plg plugins/fnaf/fnaf.plg
+	mkdir -p isodir/boot/limine
+	mkdir -p isodir/boot
+	mkdir -p isodir/EFI/BOOT
 	mkdir -p isodir/System/Plugins
 	mkdir -p isodir/pc
 	cp sharkos.bin isodir/boot/sharkos.bin
-	cp grub.cfg isodir/boot/grub/grub.cfg
+	cp limine.conf isodir/boot/limine/limine.conf
+	cp limine.conf isodir/limine.conf
+	cp limine.conf isodir/boot/limine/limine.cfg
+	cp limine.conf isodir/limine.cfg
+	cp limine.conf isodir/boot/limine.cfg
+	cp $(LIMINE_DIR)/limine-bios.sys isodir/boot/limine/
+	cp $(LIMINE_DIR)/limine-bios-cd.bin isodir/boot/limine/
+	cp $(LIMINE_DIR)/limine-uefi-cd.bin isodir/boot/limine/
+	cp $(LIMINE_DIR)/BOOTX64.EFI isodir/EFI/BOOT/BOOTX64.EFI
+	cp $(LIMINE_DIR)/BOOTIA32.EFI isodir/EFI/BOOT/BOOTIA32.EFI
 	@echo "# SharkOS Plugins Directory" > isodir/System/Plugins/README.txt
 	@echo "Place plugin binaries here" >> isodir/System/Plugins/README.txt
 	cp plugins/flappybird/flappybird_plugin.o isodir/System/Plugins/flappybird.plg
@@ -251,11 +291,18 @@ sharkos.iso: Makefile sharkos.bin grub.cfg plugins/sharkcube/sharkcube.plg plugi
 	cp plugins/geometrydash/geometrydash_plugin.o isodir/System/Plugins/gdash.plg
 	cp plugins/sharkcube/sharkcube.plg isodir/System/Plugins/sharkcube.plg
 	cp plugins/sharkcraft/sharkcraft.plg isodir/System/Plugins/sharkcraft.plg
+	cp plugins/fnaf/fnaf.plg isodir/System/Plugins/fnaf.plg
 	cp pc/9fc3fc59d52dc24748feb8836feded7e.png isodir/pc/
-	grub-mkrescue -o sharkos.iso isodir
+	xorriso -as mkisofs -R -r -J \
+		-b boot/limine/limine-bios-cd.bin \
+		-no-emul-boot -boot-load-size 4 -boot-info-table \
+		--efi-boot boot/limine/limine-uefi-cd.bin \
+		-efi-boot-part --efi-boot-image --protective-msdos-label \
+		isodir -o sharkos.iso
+	$(LIMINE_DIR)/limine bios-install sharkos.iso
 
 clean:
-	rm -rf isodir arch drivers fs ui shell lib sharkscript doom flappybird pong smb geometrydash desktop net browser
-	rm -f *.o sharkos.bin sharkos.iso sharkscript plugins/*.o plugins/flappybird/*.o plugins/pong/*.o plugins/smb/*.o plugins/geometrydash/*.o plugins/sharkcube/*.o plugins/sharkcube/*.plg plugins/sharkcraft/*.o plugins/sharkcraft/*.plg
+	rm -rf isodir arch drivers fs ui shell lib sharkscript doom flappybird pong smb geometrydash fnaf desktop net browser
+	rm -f *.o sharkos.bin sharkos.iso sharkscript plugins/*.o plugins/flappybird/*.o plugins/pong/*.o plugins/smb/*.o plugins/geometrydash/*.o plugins/sharkcube/*.o plugins/sharkcube/*.plg plugins/sharkcraft/*.o plugins/sharkcraft/*.plg plugins/fnaf/*.o plugins/fnaf/*.plg
 
 .PHONY: all clean $(DIRS)

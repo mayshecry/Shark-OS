@@ -1,0 +1,358 @@
+
+#ifndef DESKTOP_H
+#define DESKTOP_H
+
+#include "kernel.h"
+
+#include "win98_theme.h"
+
+#define MAX_WINDOWS 16
+#define WINDOW_TITLE_MAX 32
+
+#define DESKTOP_ICON_SIZE W98_DESKTOP_ICON
+
+#define TASKBAR_HEIGHT      W98_TASKBAR_H
+#define START_BUTTON_W      W98_STARTBTN_W
+
+#define WINDOW_BORDER_W     W98_BORDER_W
+#define WINDOW_TITLEBAR_H   W98_TITLEBAR_H
+#define WINDOW_MIN_W        160
+#define WINDOW_MIN_H        80
+
+#define STARTMENU_W         168
+#define STARTMENU_MAX       32
+
+#define DESKTOP_BG_TOP      0xFF008080u
+#define DESKTOP_BG_BOT      0xFF008080u
+
+typedef enum {
+    WINDOW_TYPE_TERMINAL,
+    WINDOW_TYPE_DOOM,
+    WINDOW_TYPE_FLAPPYBIRD,
+    WINDOW_TYPE_SMB,
+    WINDOW_TYPE_PONG,
+    WINDOW_TYPE_GDASH,
+    WINDOW_TYPE_SHARKCUBE,
+    WINDOW_TYPE_SHARKCRAFT,
+    WINDOW_TYPE_SETTINGS,
+    WINDOW_TYPE_FAQ,
+    WINDOW_TYPE_FASTFETCH,
+    WINDOW_TYPE_ABOUT,
+    WINDOW_TYPE_NOTEPAD,
+    WINDOW_TYPE_FILEMANAGER,
+    WINDOW_TYPE_NETWORK,
+    WINDOW_TYPE_TASKMANAGER,
+    WINDOW_TYPE_BROWSER,
+    WINDOW_TYPE_DISKMGMT,
+    WINDOW_TYPE_FNAF,
+    WINDOW_TYPE_MAX
+} window_type_t;
+
+typedef enum {
+    WINDOW_STATE_NORMAL,
+    WINDOW_STATE_MINIMIZED,
+    WINDOW_STATE_MAXIMIZED,
+    WINDOW_STATE_CLOSING
+} window_state_t;
+
+typedef struct {
+    int x;
+    int y;
+    int width;
+    int height;
+    int prev_x;
+    int prev_y;
+    int prev_w;
+    int prev_h;
+    int min_w;
+    int min_h;
+    int client_x;
+    int client_y;
+    int client_w;
+    int client_h;
+} window_rect_t;
+
+typedef struct window window_t;
+
+struct window {
+    char title[WINDOW_TITLE_MAX];
+    window_type_t type;
+    window_state_t state;
+    window_rect_t rect;
+    bool visible;
+    bool has_focus;
+    bool needs_redraw;
+    bool is_dragging;
+    bool is_resizing;
+    int drag_off_x;
+    int drag_off_y;
+    int resize_edge;
+    int z_order;
+
+    int pressed_button;
+    int anim_kind;
+    uint32_t anim_start;
+    window_rect_t anim_from;
+    window_rect_t anim_to;
+    void (*draw_func)(window_t* w);
+    void (*keyboard_func)(window_t* w, char c);
+    void (*mouse_func)(window_t* w, int mx, int my, int buttons);
+    void (*close_func)(void);
+    void (*game_tick)(void);
+    void* user_data;
+};
+
+typedef struct {
+    char label[32];
+    window_type_t type;
+    int icon_x;
+    int icon_y;
+    bool selected;
+    bool visible;
+} desktop_icon_t;
+
+#define MAX_DESKTOP_ICONS 24
+
+#define DESKTOP_CTX_MAX_ITEMS 12
+
+typedef struct {
+    bool visible;
+    int x, y, w, h;
+    int item_count;
+    int hovered;
+    int target_icon;
+    char items[DESKTOP_CTX_MAX_ITEMS][32];
+    bool checked[DESKTOP_CTX_MAX_ITEMS];
+    bool is_sep[DESKTOP_CTX_MAX_ITEMS];
+    bool enabled[DESKTOP_CTX_MAX_ITEMS];
+} desktop_context_menu_t;
+
+typedef struct {
+    bool active;
+    bool visible;
+    int scroll_offset;
+    int hovered_item;
+    int selected_item;
+} start_menu_t;
+
+typedef struct {
+    bool desktop_mode;
+    bool initialized;
+    bool dirty;
+    bool icons_dirty;
+    bool taskbar_dirty;
+
+    bool flush_partial;
+    int flush_x0, flush_y0, flush_x1, flush_y1;
+    window_t windows[MAX_WINDOWS];
+    int window_count;
+    int next_z_order;
+    desktop_icon_t icons[MAX_DESKTOP_ICONS];
+    int icon_count;
+    start_menu_t start_menu;
+    int taskbar_hover;
+    uint32_t* desktop_wallpaper;
+    int wallpaper_w;
+    int wallpaper_h;
+
+    int wallpaper_id;                                                     
+    int wallpaper_fit;                                                    
+    bool alt_tab_active;
+    int alt_tab_index;
+    int wallpaper_mode;
+    int selected_icon;
+    uint32_t last_click_tick;
+    int last_click_icon;
+    bool show_desktop_icons;
+    desktop_context_menu_t ctx_menu;
+} desktop_state_t;
+
+extern desktop_state_t desktop;
+extern uint32_t wallpaper_top;
+extern uint32_t wallpaper_bot;
+
+#define NETWORK_WINDOW_W 500
+#define NETWORK_WINDOW_H 350
+
+void boot_screen_show(void);
+void boot_screen_update(const char* message, int progress);
+void boot_screen_info(const char* message);
+void boot_screen_hide(void);
+void draw_shark_logo(int cx, int cy, int size, uint32_t color);
+
+void desktop_init(void);
+void desktop_draw_wallpaper(void);
+void desktop_draw_icons(void);
+void desktop_draw_taskbar(void);
+void desktop_draw_start_menu(void);
+void desktop_render(void);
+void desktop_invalidate_rect(int x0, int y0, int x1, int y1);
+void desktop_render_cursor_only(int old_x, int old_y);
+bool desktop_pointer_needs_repaint(int mx, int my);
+void desktop_handle_mouse(int mx, int my, int buttons, int wheel);
+void desktop_handle_keyboard(char c);
+void desktop_update_taskbar(void);
+int desktop_get_taskbar_hover(int mx, int my);
+void desktop_set_wallpaper_color(uint32_t top, uint32_t bottom);
+void desktop_set_wallpaper_mode(int mode);
+
+                                                                             
+#define WP_ID_CLASSIC 0
+#define WP_ID_KAWAII  1
+#define WP_ID_COTTAGE 2
+#define WP_ID_SAKURA  3
+#define WP_ID_NEKO    4
+#define WP_ID_SUZUNA  5
+#define WP_COUNT      6
+
+#define WALLPAPER_THUMB_W 72
+#define WALLPAPER_THUMB_H 45
+
+int desktop_wallpaper_count(void);
+const char* desktop_wallpaper_name(int id);
+const uint32_t* desktop_wallpaper_thumb(int id);
+void desktop_set_wallpaper(int id);
+void desktop_set_wallpaper_fit(int fit);
+void desktop_icons_clear_selection(void);
+
+int window_create(window_type_t type, const char* title, int x, int y, int w, int h);
+void window_close(int idx);
+void window_minimize(int idx);
+void window_maximize(int idx);
+void window_restore(int idx);
+void window_focus(int idx);
+void window_move(int idx, int x, int y);
+void window_resize(int idx, int w, int h);
+window_t* window_get_focused(void);
+void window_draw_all(void);
+void window_draw_frame(window_t* w);
+void window_update_client_rect(window_t* w);
+void window_begin_drag(int mx, int my);
+void window_begin_resize(int mx, int my);
+void window_drag_update(int mx, int my);
+void window_resize_update(int mx, int my);
+void window_end_drag(void);
+void window_redraw_clients(void);
+void desktop_anim_tick(void);
+void window_title_icons_invalidate(void);
+void window_close_by_ptr(window_t* w);
+void window_focus_top_visible(void);
+
+typedef enum {
+    WINDOW_HIT_NONE = 0,
+    WINDOW_HIT_TITLEBAR,
+    WINDOW_HIT_BTN_MIN,
+    WINDOW_HIT_BTN_MAX,
+    WINDOW_HIT_BTN_CLOSE,
+    WINDOW_HIT_CLIENT,
+    WINDOW_HIT_RESIZE
+} window_hit_t;
+
+window_hit_t window_hit_test(window_t* w, int mx, int my, int* resize_edge);
+int window_caption_pressed(void);
+
+void window_caption_button_rect(window_t* w, int which, int* rx, int* ry,
+                                int* rw, int* rh);
+
+int desktop_icon_add(const char* label, window_type_t type);
+void desktop_icon_remove(int idx);
+int desktop_icon_hit_test(int mx, int my);
+void desktop_icon_launch(int idx);
+void desktop_icon_launch_offset(window_type_t type, const char* title);
+void desktop_icon_redraw(int idx);
+void desktop_layout_icons(void);
+void desktop_icons_load(void);
+void desktop_toggle_show_icons(void);
+void desktop_set_show_icons(bool show);
+uint32_t* desktop_icon_get_pixels(int idx);
+
+uint32_t* desktop_icon_pixels_for_type(window_type_t type);
+const uint32_t* desktop_icon_get_start(void);
+const uint32_t* desktop_icon_get_shutdown(void);
+const uint32_t* desktop_icon_get_folder(void);
+const uint32_t* desktop_icon_get_file(void);
+
+void desktop_context_menu_open(int mx, int my, int icon_idx);
+void desktop_context_menu_close(void);
+void desktop_context_menu_draw(void);
+int desktop_context_menu_hit_test(int mx, int my);
+void desktop_context_menu_handle_click(int mx, int my);
+void desktop_context_menu_handle_hover(int mx, int my);
+void desktop_context_menu_handle_action(int item);
+
+void start_menu_toggle(void);
+void start_menu_open(void);
+void start_menu_close(void);
+void start_menu_draw(void);
+void start_menu_handle_click(int mx, int my);
+void start_menu_handle_hover(int mx, int my);
+void start_menu_scroll(int wheel);
+void start_menu_get_rect(int* x, int* y, int* w, int* h);
+
+void app_window_draw_terminal(window_t* w);
+void app_window_draw_doom(window_t* w);
+void app_window_draw_flappybird(window_t* w);
+void app_window_draw_smb(window_t* w);
+void app_window_draw_pong(window_t* w);
+void app_window_draw_gdash(window_t* w);
+void app_window_draw_sharkcube(window_t* w);
+void sharkcube_draw_window(int x, int y, int width, int height);
+void sharkcube_game_reset(void);
+int sharkcube_handle_key(char key);
+int sharkcube_handle_mouse(int x, int y, int buttons);
+void app_window_draw_sharkcraft(window_t* w);
+void sharkcraft_game_reset(void);
+void sharkcraft_tick(void);
+void sharkcraft_draw_window(int x, int y, int width, int height);
+int sharkcraft_handle_key(char key);
+int sharkcraft_handle_mouse(int x, int y, int buttons);
+void app_window_draw_settings(window_t* w);
+void app_window_mouse_settings(window_t* w, int mx, int my, int buttons);
+void app_window_mouse_filemanager(window_t* w, int mx, int my, int buttons);
+void app_window_draw_faq(window_t* w);
+void app_window_draw_fastfetch(window_t* w);
+void app_window_draw_about(window_t* w);
+void app_window_draw_notepad(window_t* w);
+void app_window_draw_filemanager(window_t* w);
+void app_window_draw_network(window_t* w);
+void app_window_mouse_network(window_t* w, int mx, int my, int buttons);
+void app_window_draw_taskmanager(window_t* w);
+void app_window_mouse_taskmanager(window_t* w, int mx, int my, int buttons);
+void app_window_keyboard_taskmanager(window_t* w, char c);
+void app_window_draw_browser(window_t* w);
+void app_window_mouse_browser(window_t* w, int mx, int my, int buttons);
+void app_window_keyboard_browser(window_t* w, char c);
+void app_window_draw_diskmgmt(window_t* w);
+void app_window_draw_fnaf(window_t* w);
+void app_window_keyboard_fnaf(window_t* w, char c);
+void app_window_mouse_fnaf(window_t* w, int mx, int my, int buttons);
+void fnaf_draw_window(int x,int y,int w,int h);
+void fnaf_handle_key_global(char c);
+void fnaf_handle_mouse_global(int x,int y,int buttons);
+void app_window_mouse_diskmgmt(window_t* w, int mx, int my, int buttons);
+void diskmgmt_tick(void);
+void browser_close(void);
+void browser_tick(void);
+void browser_open_url(const char* url);
+
+void app_window_keyboard_terminal(window_t* w, char c);
+void app_window_keyboard_doom(window_t* w, char c);
+void app_window_keyboard_flappybird(window_t* w, char c);
+void app_window_keyboard_smb(window_t* w, char c);
+void app_window_keyboard_pong(window_t* w, char c);
+void app_window_keyboard_gdash(window_t* w, char c);
+void app_window_keyboard_sharkcube(window_t* w, char c);
+void app_window_mouse_sharkcube(window_t* w, int mx, int my, int buttons);
+void app_window_keyboard_sharkcraft(window_t* w, char c);
+void app_window_mouse_sharkcraft(window_t* w, int mx, int my, int buttons);
+void app_window_keyboard_notepad(window_t* w, char c);
+void app_window_keyboard_filemanager(window_t* w, char c);
+
+extern int desktop_mouse_x;
+extern int desktop_mouse_y;
+extern bool desktop_mouse_down;
+extern int desktop_drag_window;
+extern int desktop_resize_window;
+extern int desktop_resize_edge;
+
+#endif 
