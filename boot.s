@@ -11,10 +11,10 @@
 .long FLAGS
 .long CHECKSUM
 .long 0, 0, 0, 0, 0
-.long 0          
-.long 1024       
-.long 768        
-.long 32        
+.long 0          # mode_type = 0 (linear framebuffer)
+.long 1024       # width
+.long 768        # height
+.long 32         # depth (32-bit color)
 
 .section .data
 .align 16
@@ -23,7 +23,8 @@ saved_info:  .long 0
 
 .section .bss
 .align 4096
-
+# Page tables for 64-bit long mode — identity map 0-128GB with 2M pages
+# PML4 (512 entries) -> PDP (512 entries) -> 128×PD (each 512×2M = 1GB)
 pml4_table: .skip 4096
 pdp_table:  .skip 4096
 pd_tables:  .skip 524288   # 128 * 4096 = 512KB for 128 PDs (128GB)
@@ -71,6 +72,8 @@ _start:
     mov %esi, saved_magic
     mov %edx, saved_info
 
+    # ---- Build paging structures: identity 0-128GB ----
+    # PML4[0] -> PDP
     mov $pdp_table, %eax
     or $0x03, %eax
     mov %eax, pml4_table
@@ -89,6 +92,8 @@ _start:
     dec %ecx
     jnz 1b
 
+    # Fill 128 PDs ×512 entries = 65536 ×2M pages = 128GB
+    # Use 64-bit base in edx:eax, increment by 0x200000
     mov $pd_tables, %edi    # dest pointer
     mov $128, %esi          # outer counter (128 PDs) — use esi so ecx free for inner
     xor %edx, %edx

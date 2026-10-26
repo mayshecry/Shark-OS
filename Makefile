@@ -1,5 +1,6 @@
 PREFIX = 
 CC = gcc
+HOSTCC ?= gcc
 AS = as
 OBJCOPY = $(PREFIX)objcopy
 
@@ -77,6 +78,30 @@ net/crypto.o: src/net/crypto.c include/tls.h | net
 net/tls.o: src/net/tls.c include/tls.h | net
 	$(CC) -c src/net/tls.c -o net/tls.o $(CFLAGS)
 
+net/httpd.o: src/net/httpd.c include/httpd.h include/kernel.h include/net.h | net
+	$(CC) -c src/net/httpd.c -o net/httpd.o $(CFLAGS)
+
+net/ed25519.o: src/net/ed25519.c include/tls.h include/kernel.h | net
+	$(CC) -c src/net/ed25519.c -o net/ed25519.o $(CFLAGS)
+
+net/ssh.o: src/net/ssh.c include/ssh.h include/httpd.h include/kernel.h include/net.h include/tls.h | net
+	$(CC) -c src/net/ssh.c -o net/ssh.o $(CFLAGS)
+
+server-build:
+	mkdir -p server-build
+
+server-build/main.o: src/server/main.c include/httpd.h include/ssh.h include/kernel.h include/net.h | server-build
+	$(CC) -c src/server/main.c -o server-build/main.o $(CFLAGS)
+
+server-build/globals.o: src/server/globals.c include/kernel.h | server-build
+	$(CC) -c src/server/globals.c -o server-build/globals.o $(CFLAGS)
+
+server-build/lib.o: src/server/lib.c include/kernel.h | server-build
+	$(CC) -c src/server/lib.c -o server-build/lib.o $(CFLAGS)
+
+server-build/interrupts.o: src/server/interrupts.c include/kernel.h | server-build
+	$(CC) -c src/server/interrupts.c -o server-build/interrupts.o $(CFLAGS)
+
 drivers/mouse.o: src/drivers/mouse.c include/kernel.h | drivers
 	$(CC) -c src/drivers/mouse.c -o drivers/mouse.o $(CFLAGS)
 
@@ -88,6 +113,9 @@ drivers/ata.o: src/drivers/ata.c include/kernel.h include/ata.h | drivers
 
 fs/fs.o: src/fs/fs.c include/kernel.h | fs
 	$(CC) -c src/fs/fs.c -o fs/fs.o $(CFLAGS)
+
+fs/fat16.o: src/fs/fat16.c include/kernel.h include/ata.h | fs
+	$(CC) -c src/fs/fat16.c -o fs/fat16.o $(CFLAGS)
 
 ui/terminal.o: src/ui/terminal.c include/kernel.h | ui
 	$(CC) -c src/ui/terminal.c -o ui/terminal.o $(CFLAGS)
@@ -163,7 +191,7 @@ desktop/theme.o: src/desktop/theme.c include/kernel.h include/desktop.h include/
 desktop/diskmgmt.o: src/desktop/diskmgmt.c include/kernel.h include/desktop.h include/ata.h | desktop
 	$(CC) -c src/desktop/diskmgmt.c -o desktop/diskmgmt.o $(CFLAGS)
 
-shell/commands.o: src/shell/commands.c include/kernel.h include/sharkscript.h | shell
+shell/commands.o: src/shell/commands.c include/kernel.h include/sharkscript.h include/ata.h include/desktop.h | shell
 	$(CC) -c src/shell/commands.c -o shell/commands.o $(CFLAGS)
 
 shell/spkg.o: src/shell/spkg.c include/kernel.h include/plugin_manager.h | shell
@@ -251,19 +279,46 @@ sharkscript/shs.o: src/sharkscript/shs.c include/kernel.h include/sharkscript.h 
 	$(CC) -c src/sharkscript/shs.c -o sharkscript/shs.o $(CFLAGS)
 
 sharkos.bin: Makefile boot.o arch/early.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o drivers/keyboard.o drivers/pci.o \
-             drivers/mouse.o drivers/rtc.o drivers/ata.o drivers/audio/audio.o drivers/audio/mixer.o drivers/audio/ac97.o drivers/audio/hda.o drivers/audio/pcspkr.o drivers/audio/wav.o fs/fs.o ui/terminal.o ui/ui.o ui/fastfetch.o ui/mouse.o \
+             drivers/mouse.o drivers/rtc.o drivers/ata.o drivers/audio/audio.o drivers/audio/mixer.o drivers/audio/ac97.o drivers/audio/hda.o drivers/audio/pcspkr.o drivers/audio/wav.o fs/fs.o fs/fat16.o ui/terminal.o ui/ui.o ui/fastfetch.o ui/mouse.o \
              shell/commands.o shell/spkg.o shell/main.o shell/lite.o \
              lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o \
              plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o plugins/sharkcube/sharkcube_plugin.o plugins/sharkcraft/sharkcraft_plugin.o plugins/fnaf/fnaf_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o fnaf/fnaf.o \
              desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/theme.o desktop/diskmgmt.o desktop/png.o desktop/gif.o desktop/jpeg.o desktop/webp.o browser/svg.o net/net.o net/crypto.o net/tls.o \
              browser/html.o browser/css.o browser/layout.o browser/js.o browser/browser.o browser/font.o linker.ld
 	$(CC) -T linker.ld -o sharkos.bin $(LDFLAGS) boot.o arch/early.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o \
-		drivers/keyboard.o drivers/pci.o drivers/mouse.o drivers/rtc.o drivers/ata.o drivers/audio/audio.o drivers/audio/mixer.o drivers/audio/ac97.o drivers/audio/hda.o drivers/audio/pcspkr.o drivers/audio/wav.o fs/fs.o ui/terminal.o ui/ui.o \
+		drivers/keyboard.o drivers/pci.o drivers/mouse.o drivers/rtc.o drivers/ata.o drivers/audio/audio.o drivers/audio/mixer.o drivers/audio/ac97.o drivers/audio/hda.o drivers/audio/pcspkr.o drivers/audio/wav.o fs/fs.o fs/fat16.o ui/terminal.o ui/ui.o \
 		ui/fastfetch.o ui/mouse.o shell/commands.o shell/spkg.o shell/main.o shell/lite.o lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o plugins/sharkcube/sharkcube_plugin.o plugins/sharkcraft/sharkcraft_plugin.o plugins/fnaf/fnaf_plugin.o sharkscript/shs.o doom/doom.o flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o fnaf/fnaf.o \
 		desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/theme.o desktop/diskmgmt.o desktop/png.o desktop/gif.o desktop/jpeg.o desktop/webp.o browser/svg.o net/net.o net/crypto.o net/tls.o \
 		browser/html.o browser/css.o browser/layout.o browser/js.o browser/browser.o browser/font.o -lgcc
 
 LIMINE_DIR ?= limine
+
+sharkos-server.bin: Makefile boot.o arch/early.o arch/io.o drivers/pci.o fs/fs.o lib/pmm.o server-build/main.o server-build/globals.o server-build/lib.o server-build/interrupts.o net/net.o net/crypto.o net/tls.o net/httpd.o net/ed25519.o net/ssh.o linker.ld
+	$(CC) -T linker.ld -o sharkos-server.bin $(LDFLAGS) boot.o arch/early.o arch/io.o drivers/pci.o fs/fs.o lib/pmm.o server-build/main.o server-build/globals.o server-build/lib.o server-build/interrupts.o net/net.o net/crypto.o net/tls.o net/httpd.o net/ed25519.o net/ssh.o -lgcc
+
+sharkos-server.iso: sharkos-server.bin limine-server.conf
+	mkdir -p isodir-server/boot/limine
+	mkdir -p isodir-server/EFI/BOOT
+	cp sharkos-server.bin isodir-server/boot/sharkos-server.bin
+	cp limine-server.conf isodir-server/boot/limine/limine.conf
+	cp limine-server.conf isodir-server/limine.conf
+	cp limine-server.conf isodir-server/boot/limine/limine.cfg
+	cp limine-server.conf isodir-server/limine.cfg
+	cp limine-server.conf isodir-server/boot/limine.cfg
+	cp $(LIMINE_DIR)/limine-bios.sys isodir-server/boot/limine/
+	cp $(LIMINE_DIR)/limine-bios-cd.bin isodir-server/boot/limine/
+	cp $(LIMINE_DIR)/limine-uefi-cd.bin isodir-server/boot/limine/
+	cp $(LIMINE_DIR)/BOOTX64.EFI isodir-server/EFI/BOOT/BOOTX64.EFI
+	cp $(LIMINE_DIR)/BOOTIA32.EFI isodir-server/EFI/BOOT/BOOTIA32.EFI
+	xorriso -as mkisofs -R -r -J \
+		-b boot/limine/limine-bios-cd.bin \
+		-no-emul-boot -boot-load-size 4 -boot-info-table \
+		--efi-boot boot/limine/limine-uefi-cd.bin \
+		-efi-boot-part --efi-boot-image --protective-msdos-label \
+		isodir-server -o sharkos-server.iso
+	$(LIMINE_DIR)/limine bios-install sharkos-server.iso
+
+server: sharkos-server.iso
 
 sharkos.iso: Makefile sharkos.bin limine.conf plugins/sharkcube/sharkcube.plg plugins/sharkcraft/sharkcraft.plg plugins/fnaf/fnaf.plg
 	mkdir -p isodir/boot/limine
@@ -302,7 +357,17 @@ sharkos.iso: Makefile sharkos.bin limine.conf plugins/sharkcube/sharkcube.plg pl
 	$(LIMINE_DIR)/limine bios-install sharkos.iso
 
 clean:
-	rm -rf isodir arch drivers fs ui shell lib sharkscript doom flappybird pong smb geometrydash fnaf desktop net browser
-	rm -f *.o sharkos.bin sharkos.iso sharkscript plugins/*.o plugins/flappybird/*.o plugins/pong/*.o plugins/smb/*.o plugins/geometrydash/*.o plugins/sharkcube/*.o plugins/sharkcube/*.plg plugins/sharkcraft/*.o plugins/sharkcraft/*.plg plugins/fnaf/*.o plugins/fnaf/*.plg
+	rm -rf isodir isodir-server server server-build arch drivers fs ui shell lib sharkscript doom flappybird pong smb geometrydash fnaf desktop net browser
+	rm -f *.o sharkos.bin sharkos.iso sharkos-server.bin sharkos-server.iso sharkscript plugins/*.o plugins/flappybird/*.o plugins/pong/*.o plugins/smb/*.o plugins/geometrydash/*.o plugins/sharkcube/*.o plugins/sharkcube/*.plg plugins/sharkcraft/*.o plugins/sharkcraft/*.plg plugins/fnaf/*.o plugins/fnaf/*.plg
 
-.PHONY: all clean $(DIRS)
+.PHONY: all clean server $(DIRS)
+gcc-info:
+	$(HOSTCC) --version
+	$(HOSTCC) -dumpmachine
+
+sharkcc: gcc-info
+	tools/sharkcc tools/gcc_smoke.c /tmp/sharkos-gcc-smoke.o
+	readelf -h /tmp/sharkos-gcc-smoke.o
+	rm -f /tmp/sharkos-gcc-smoke.o
+
+.PHONY: gcc-info sharkcc

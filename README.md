@@ -66,15 +66,15 @@ Look for `[audio] found ac97/hda ...`, `[net] RTL8139/e1000`, and `[desktop] wal
 
 **lib/** — Physical memory bump allocator, ELF64 loader, SharkAPI, plugin manager. `pmm.c` hands out page-aligned frames from the 128GB pool; `elf.c` validates and maps `PT_LOAD` segments.
 
-**fs/** — In-memory filesystem (`shmfs`). 128 nodes, 8 children per directory, 2KiB max file. `/sharkuser/` and `/System/` are populated at boot. ATA provides persistence if a disk is present, but by default everything lives in RAM.
+**fs/** — In-memory filesystem (`shmfs`) plus an ATA-backed FAT16 mount driver. The mount adapter reads actual FAT16 boot sectors, partition tables, directories and cluster chains; saves update existing allocated clusters. The kernel RAM filesystem supports 128 nodes, 32 children per directory and files up to 64KiB. FAT32, long filenames, cluster allocation and files beyond the RAM limit are not implemented.
 
-**desktop/** — Window manager, desktop grid, icons, theme engine, PNG/JPEG/GIF/WebP decoders, bootscreen. Right-click on the desktop gives View -> Show Desktop Icons (checked state), Arrange, Refresh, Open Terminal and Settings. Each icon can be Hidden or Deleted, with screen-edge clamping and flat bevels for the WM theme.
+**desktop/** — Window manager, desktop grid, icons, theme engine, PNG/JPEG/GIF/WebP decoders, bootscreen and Shark IDE. The IDE opens files from File Manager, highlights common C syntax, shows line numbers, supports arrow navigation and Tab indentation, and saves with Ctrl+S. Right-click on the desktop gives View -> Show Desktop Icons (checked state), Arrange, Refresh, Open Terminal and Settings. Each icon can be Hidden or Deleted, with screen-edge clamping and flat bevels for the WM theme.
 
-**browser/** — Shark Navigator: HTML, CSS, layout, JS and SVG in `browser/`. It's intentionally small — enough for docs and `https://example.com`, not a full Chromium replacement.
+**browser/** — Shark Navigator: HTML, CSS, layout, JS and SVG, MIME-aware top-level text/image rendering, URL-encoded GET/POST forms, bounded `fetch()` and synchronous XHR shims, and a single-socket JavaScript WebSocket client. It's intentionally small — not a full Chromium replacement.
 
 **net/** — Custom stack: Ethernet, ARP, IPv4, ICMP, UDP, DHCP, DNS, TCP, HTTP/HTTPS (with `crypto.c`/`tls.c`). Drivers for Realtek RTL8139 (`10EC:8139`), AMD PCnet (`1022:2000`) and Intel e1000 (`8086:10D3/1502`).
 
-**shell/** — `nemo-shell`, 90+ commands. Filesystem (`ls/cd/cat/mkdir/rm/cp/mv`), system (`sysinfo/ps/htop/sysinfo`), networking (`ifconfig/dhcp/ping/dns/wget/netstat`), utilities (`sharkfetch/neofetch/banner/cowsay/fortune`), audio (`audio status/beep/tone/test/wav`), and package management (`spkg install/list/uninstall`).
+**shell/** — `nemo-shell`, 90+ commands. Filesystem (`ls/cd/cat/mkdir/rm/cp/mv`), system (`sysinfo/ps/htop/sysinfo`), networking (`ifconfig/dhcp/ping/dns/wget/curl/netstat`) and storage (`mount/umount`), utilities (`sharkfetch/neofetch/banner/cowsay/fortune`), audio (`audio status/beep/tone/test/wav`), and package management (`spkg install/list/uninstall`).
 
 ---
 
@@ -118,10 +118,23 @@ ifconfig
 ping 10.0.2.2
 dns example.com
 wget https://example.com
+curl -L https://example.com
+curl -v -I https://example.com
+curl -X POST -d 'q=sharkos' https://example.com/search
+curl -o page.html https://example.com
+websocket wss://echo.websocket.events 'hello from SharkOS'
 browser https://example.com
 ```
 
-TLS is a minimal implementation in `net/tls.c` — it will fetch most HTTPS sites but don't rely on it for strict certificate validation.
+The curl client supports GET, HEAD, POST data, custom headers, redirect following, verbose status output and `-o` downloads; response buffers now hold up to 64KiB and RAM/FAT-backed files up to 64KiB. WebSocket supports `ws://` and `wss://`, masked frames up to 65,535 bytes, incremental fragmented-message reception, ping/pong, and a JavaScript `WebSocket` object with events. The browser displays HTML, plain text, JSON, XML, JavaScript source and supported image types; URL-encoded forms and bounded `fetch()` GET/POST calls work. `fetch()` remains synchronous with basic immediate `then()` handling; XMLHttpRequest has a synchronous compatibility implementation, not real asynchronous scheduling. The network stack permits only one active HTTP/WebSocket connection, so a live WebSocket cannot coexist with fetch/XHR. Streaming, full Promise scheduling, and modern frameworks are not supported. TLS certificate identity is not validated.
+
+## Shark IDE, GCC and FAT16 mounts
+
+Launch Shark IDE from its desktop icon, open a file in File Manager, or run `edit <path>` from the desktop terminal. Ctrl+S saves. The IDE supports basic C syntax highlighting, line numbers, arrow keys and Tab indentation.
+
+The kernel probes ATA PIO drives at boot. Run `mount` to list them, `mount 0` to mount the first FAT16 disk at `/mnt/disk0`, and `cd /mnt/disk0` to browse it. `umount /mnt/disk0` detaches it. Existing files can be read and edited directly; writes must fit the file's existing cluster allocation. Persistent file creation and directory changes are not implemented yet. See [`docs/IDE-STORAGE-TOOLCHAIN.md`](docs/IDE-STORAGE-TOOLCHAIN.md) for QEMU setup and filesystem limits.
+
+GNU GCC builds the freestanding kernel on the Linux host. `tools/sharkcc source.c output.o` applies the kernel's x86-64 freestanding flags to one C source file; `make gcc-info` reports the compiler and target, while `make sharkcc` verifies a GCC smoke build. The shell's `gcc --version` reports the compiler version used for the kernel. GCC is not a kernel-hosted application: SharkOS has no POSIX userspace or C runtime to run the Linux compiler executable.
 
 ---
 
@@ -154,7 +167,10 @@ You need a Linux host. Cross or native `x86_64` GCC will work as long as it supp
 sudo apt install build-essential nasm xorriso mtools curl qemu-system-x86 ovmf
 git clone https://github.com/mayshecry/Shark-OS.git
 cd Shark-OS
-make              # builds sharkos.bin (9.2M) and sharkos.iso (14M)
+make              # builds sharkos.bin and sharkos.iso
+make gcc-info
+make sharkcc
+make server
 ```
 
 What `make` does:
@@ -170,6 +186,12 @@ Other targets:
 make clean        # removes isodir/ arch/ drivers/ fs/ ... sharkos.bin sharkos.iso
 make limine       # re-fetch Limine binaries only
 ```
+
+### SharkOS Server image
+
+`make sharkos-server.bin` builds the stripped server kernel; `make server` builds its bootable ISO. The image uses a serial CLI rather than the desktop, starts no application services automatically, and provides a small RAM-backed web root at `/User/www`. Use `write index.html <single-line HTML>` to change the default page, then `httpd start [port]`, `httpd status`, or `httpd stop`. The HTTP daemon supports up to four simultaneous TCP clients. Website files are lost on reboot, and HTTP is plaintext.
+
+The server image includes an OpenSSH-compatible SSHv2 transport using Curve25519/SHA-256 key exchange, ephemeral Ed25519 host keys, AES-128-CTR, HMAC-SHA2-256 and password authentication. At the serial CLI, run `sshd password <username>` and enter an 8–63 character password when prompted; input is hidden and the credential is held only in RAM. Then use `sshd start [port]`, `sshd status` or `sshd stop`. Each boot generates a fresh host key from the CPU RDRAND instruction; CPUs without RDRAND leave SSH unavailable rather than falling back to the non-cryptographic kernel generator. The remote shell intentionally exposes only a small command set, and clients will see the host-key fingerprint change after every reboot. Up to four TCP connections are shared between HTTP and SSH.
 
 Common issues:
 
@@ -242,7 +264,7 @@ These are tradeoffs for a small, hackable codebase, not bugs to file.
 
 ## Contributing
 
-Keep arch code in `src/arch/`, don't add hosted libc dependencies, check buffer bounds before touching `fs/` or `desktop/`, and test both BIOS and UEFI in QEMU before opening a PR. Build the ISO and boot it — if it triple-faults, the screen will be blank and serial is the only log and you can use: https://github.com/mayshecry/byos.git to make ur own distro
+Keep arch code in `src/arch/`, don't add hosted libc dependencies, check buffer bounds before touching `fs/` or `desktop/`, and test both BIOS and UEFI in QEMU before opening a PR. Build the ISO and boot it — if it triple-faults, the screen will be blank and serial is the only log.
 
 ---
 
