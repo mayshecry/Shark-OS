@@ -242,7 +242,7 @@ These are tradeoffs for a small, hackable codebase, not bugs to file.
 
 ## Contributing
 
-Keep arch code in `src/arch/`, don't add hosted libc dependencies, check buffer bounds before touching `fs/` or `desktop/`, and test both BIOS and UEFI in QEMU before opening a PR. Build the ISO and boot it — if it triple-faults, the screen will be blank and serial is the only log.
+Keep arch code in `src/arch/`, don't add hosted libc dependencies, check buffer bounds before touching `fs/` or `desktop/`, and test both BIOS and UEFI in QEMU before opening a PR. Build the ISO and boot it — if it triple-faults, the screen will be blank and serial is the only log and you can use: https://github.com/mayshecry/byos.git to make ur own distro
 
 ---
 
