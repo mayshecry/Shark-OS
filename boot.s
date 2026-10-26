@@ -23,8 +23,7 @@ saved_info:  .long 0
 
 .section .bss
 .align 4096
-# Page tables for 64-bit long mode — identity map 0-128GB with 2M pages
-# PML4 (512 entries) -> PDP (512 entries) -> 128×PD (each 512×2M = 1GB)
+
 pml4_table: .skip 4096
 pdp_table:  .skip 4096
 pd_tables:  .skip 524288   # 128 * 4096 = 512KB for 128 PDs (128GB)
