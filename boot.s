@@ -89,8 +89,6 @@ _start:
     dec %ecx
     jnz 1b
 
-    # Fill 128 PDs ×512 entries = 65536 ×2M pages = 128GB
-    # Use 64-bit base in edx:eax, increment by 0x200000
     mov $pd_tables, %edi    # dest pointer
     mov $128, %esi          # outer counter (128 PDs) — use esi so ecx free for inner
     xor %edx, %edx
