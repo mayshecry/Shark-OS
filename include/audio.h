@@ -55,6 +55,7 @@ extern audio_state_t g_audio;
 
 // core
 void audio_init(void);
+void audio_delay_ms(uint32_t ms);
 void audio_tick(void); // call at 1kHz or vsync
 void audio_shutdown(void);
 bool audio_available(void);

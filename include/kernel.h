@@ -55,6 +55,9 @@ static inline uint32_t inl(uint16_t port) {
 extern uint32_t* lfbptr;
 extern uint32_t* hw_lfbptr;
 void serial_init(void);
+void serial_putc(char c);
+int serial_input_ready(void);
+int serial_getchar_nonblocking(void);
 void serial_puts(const char* text);
 void serial_puthex32(uint32_t v);
 void serial_putdec(uint32_t v);
@@ -145,7 +148,7 @@ extern uint8_t font8x8[96][8];
 typedef enum { KERNEL_MODE_CLI, KERNEL_MODE_EDITOR, KERNEL_MODE_FAQ, KERNEL_MODE_SETTINGS, KERNEL_MODE_DESKTOP } kernel_mode_t;
 extern kernel_mode_t current_kernel_mode;
 
-#define MAX_FILE_CONTENT_SIZE 2048
+#define MAX_FILE_CONTENT_SIZE (64 * 1024)
 struct fs_node;
 extern struct fs_node* editor_target_file;
 extern char editor_buffer[MAX_FILE_CONTENT_SIZE];
@@ -309,7 +312,7 @@ void shutdown(void);
 void execute_elf(uint8_t* data, const char* arg);
 
 #define MAX_NODES 128
-#define MAX_CHILDREN 8
+#define MAX_CHILDREN 32
 typedef enum { FS_DIRECTORY, FS_FILE } node_type_t;
 struct fs_node {
     char name[32];
@@ -319,6 +322,13 @@ struct fs_node {
     int num_children;
     char content[MAX_FILE_CONTENT_SIZE];
     int content_len;
+    uint8_t disk_backed;
+    uint8_t disk_drive;
+    uint16_t disk_entry_offset;
+    uint32_t disk_cluster;
+    uint32_t disk_size;
+    uint32_t disk_capacity;
+    uint32_t disk_entry_lba;
 };
 extern struct fs_node node_pool[MAX_NODES];
 extern int pool_index;
@@ -326,7 +336,12 @@ extern struct fs_node* root;
 extern struct fs_node* current_dir;
 struct fs_node* find_node(struct fs_node* parent, const char* name);
 struct fs_node* search_path(const char* name);
+struct fs_node* fs_resolve_path(const char* path);
 struct fs_node* create_node(const char* name, node_type_t type, struct fs_node* parent);
+int fs_node_sync(struct fs_node* node);
+int fat16_mount(int drive, struct fs_node* mountpoint);
+int fat16_unmount(struct fs_node* mountpoint);
+int fat16_is_mounted(struct fs_node* node);
 void fs_initialize(void);
 void execute_command(char* cmd);
 
@@ -369,6 +384,7 @@ extern int settings_selected;
 void show_fastfetch(void);
 void show_welcome_tour(void);
 
+void keyboard_init(void);
 void keyboard_handler(uint8_t scancode);
 char keyboard_getchar(void);
 

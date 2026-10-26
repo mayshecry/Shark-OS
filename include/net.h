@@ -43,13 +43,28 @@ int net_tcp_connect(const uint8_t* ip, uint16_t port,
                     const uint8_t* send_data, uint32_t send_len,
                     uint8_t* resp_buf, uint32_t resp_max);
 
-int  net_tcp_open(const uint8_t* ip, uint16_t port);
-int  net_tcp_send(const uint8_t* data, uint32_t len);
+int net_tcp_open(const uint8_t* ip, uint16_t port);
+int net_tcp_send(const uint8_t* data, uint32_t len);
+int net_tcp_listen(uint16_t port);
+int net_tcp_server_accept(void);
+int net_tcp_server_send(int handle, const uint8_t* data, uint32_t len);
+int net_tcp_server_recv(int handle, uint8_t* out, uint32_t max, uint32_t timeout_ms);
+int net_tcp_server_closed(int handle);
+void net_tcp_server_close(int handle);
+void net_tcp_server_stop(uint16_t port);
 int  net_tcp_recv(uint8_t* out, uint32_t max, uint32_t timeout_ms);
 int  net_tcp_peer_closed(void);
 void net_tcp_close(void);
 
 int net_http_get(const char* url, uint8_t* out_buf, uint32_t out_max);
+int net_http_request(const char* method, const char* url, const char* extra_headers, const uint8_t* request_body, uint32_t request_body_len, uint8_t* out_buf, uint32_t out_max);
+#define NET_WEBSOCKET_NO_DATA (-2)
+#define NET_WEBSOCKET_CLOSED (-3)
+int net_websocket_open(const char* url);
+int net_websocket_send(const uint8_t* data, uint32_t len);
+int net_websocket_recv(uint8_t* out, uint32_t max, uint32_t timeout_ms);
+int net_websocket_poll(uint8_t* out, uint32_t max);
+void net_websocket_close(void);
 void net_http_close_idle(void);
 extern char net_http_last_content_type[128];
 extern int  net_tls_last_error;

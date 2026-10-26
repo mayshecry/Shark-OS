@@ -37,6 +37,9 @@ void x25519_base(uint8_t out[32], const uint8_t scalar[32]);
 
 void tls_random_seed(const uint8_t* data, size_t len);
 void tls_random(uint8_t* out, size_t len);
+int crypto_random_bytes(uint8_t* out, size_t len);
+int ed25519_public_from_seed(const uint8_t seed[32], uint8_t public_key[32]);
+int ed25519_sign(const uint8_t seed[32], const uint8_t* message, size_t message_len, uint8_t signature[64]);
 
 typedef int (*tls_send_fn)(const uint8_t* data, int len);
 typedef int (*tls_recv_fn)(uint8_t* out, int max, int timeout_ms);
