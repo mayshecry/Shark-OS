@@ -50,10 +50,21 @@ struct multiboot_mmap_entry { uint32_t size, addr_low, addr_high, len_low, len_h
 
 static char boot_url[256];
 
+static void boot_trace(const char* stage) {
+    serial_puts("[boot] ");
+    serial_puts(stage);
+    serial_puts(" ticks=");
+    serial_putdec(uptime_ticks);
+    serial_puts(" mem_mb=");
+    serial_putdec((uint32_t)(total_system_memory >> 20));
+    serial_puts("\n");
+}
+
 void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     if (magic != 0x2BADB002) return;
     asm volatile("cli");
     serial_init();
+    boot_trace("kmain entered");
 
     if (mb_info->flags & (1 << 2)) {
         char* cmdline = (char*)(uintptr_t)mb_info->cmdline;
@@ -132,7 +143,9 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         total_system_memory = 137438953472ULL;
     }
 
+    boot_trace("memory map parsed");
     pmm_init(total_system_memory);
+    boot_trace("physical allocator ready");
     ui_init_metrics();
 
     pane_count = 1;
@@ -157,7 +170,9 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
 
                                                                     
                                                                  
+    boot_trace("boot screen begin");
     boot_screen_show();
+    boot_trace("boot screen ready");
 
     boot_screen_info("nemo (SharkOS V2) — SHKRNL, gcc, ring zero");
     {
@@ -220,6 +235,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     outb(0x40, divisor & 0xFF);
     outb(0x40, (divisor >> 8) & 0xFF);
     asm volatile("sti");
+    boot_trace("PIT and interrupts enabled");
     boot_screen_update("Setting up filesystem...", 25);
     terminal_clear();
     strcpy(current_user, "sharkuser");
@@ -227,15 +243,21 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     mouse_enabled = 1;
     selected_theme = 0;
     apply_theme(selected_theme);
+    boot_trace("filesystem initialization begin");
     fs_initialize();
+    boot_trace("filesystem initialization complete");
     boot_screen_update("Initializing input devices...", 40);
 
     outb(0x21, inb(0x21) & ~0x04);
     outb(0xA1, inb(0xA1) & ~0x10);
     outb(0x21, inb(0x21) & ~0x02);
+    boot_trace("input initialization begin");
+    keyboard_init();
     mouse_init();
+    boot_trace("input initialization complete");
     boot_screen_update("Loading plugins...", 55);
 
+    boot_trace("plugin initialization begin");
     plugin_manager_init();
     extern int plugin_init_entry(void);
     extern void plugin_cleanup_entry(void);
@@ -274,18 +296,27 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     extern int fnaf_plugin_command(int argc, char** argv);
     int fnaf_id = plugin_register_builtin("fnaf", fnaf_plugin_init, fnaf_plugin_cleanup, fnaf_plugin_command);
     if(fnaf_id>=0) plugin_unload((uint32_t)fnaf_id);
+    boot_trace("plugin initialization complete");
     boot_screen_update("Detecting hardware...", 70);
 
     boot_screen_update("Probing disks...", 72);
+    boot_trace("ATA probe begin");
     ata_init();
+    boot_trace("ATA probe complete");
 
     boot_screen_update("Initializing audio...", 73);
+    boot_trace("audio initialization begin");
     audio_init();
+    boot_trace("audio initialization complete");
 
+    boot_trace("network initialization begin");
     net_init();
+    boot_trace("network initialization complete");
     boot_screen_update(net_has_nic() ? "Configuring network (DHCP)..."
                                      : "No network adapter found", 75);
+    boot_trace("network stack initialization begin");
     net_stack_init();
+    boot_trace("network stack initialization complete");
     struct fs_node* user_dir = find_node(root, "User");
     if (user_dir) strcpy(user_dir->name, current_user);
     while (keyboard_getchar() != 0);
@@ -293,13 +324,15 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     boot_screen_update("Starting desktop environment...", 85);
 
     current_kernel_mode = KERNEL_MODE_DESKTOP;
+    boot_trace("desktop initialization begin");
     rtc_init();
     desktop_init();
     if (kawaii_mode) desktop_set_wallpaper(WP_ID_KAWAII);
+    boot_trace("desktop initialization complete");
     boot_screen_update("Ready!", 100);
-
-    for (volatile int i = 0; i < 1000000; i++);
+    boot_trace("boot screen hide begin");
     boot_screen_hide();
+    boot_trace("boot screen hide complete");
 
     asm volatile("sti");
 
@@ -323,6 +356,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     uint32_t last_game_tick = uptime_ticks;
     uint32_t last_net_tick = uptime_ticks;
     uint32_t last_audio_tick = uptime_ticks;
+    int last_mouse_buttons = 0;
     int last_net_state = -1;
     uint32_t busy_ms = 0;
     uint32_t frames_this_sec = 0;
@@ -344,9 +378,12 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
             int wheel = mouse_state.wheel;
             mouse_state.wheel = 0;
 
-            if (buttons != 0 || (buttons == 0 && desktop_mouse_down) || wheel != 0) {
+            if (buttons != last_mouse_buttons ||
+                (buttons != 0 && (mx != desktop_mouse_x || my != desktop_mouse_y)) ||
+                wheel != 0) {
                 desktop_handle_mouse(mx, my, buttons, wheel);
             }
+            last_mouse_buttons = buttons;
             if (mx != desktop_mouse_x || my != desktop_mouse_y) {
                 desktop_mouse_x = mx;
                 desktop_mouse_y = my;
@@ -467,12 +504,15 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         }
 
         window_t* focused = window_get_focused();
-        if (focused && !focused->game_tick &&
-            (focused->type == WINDOW_TYPE_TERMINAL || focused->type == WINDOW_TYPE_NOTEPAD) &&
+        if (focused && !focused->game_tick && focused->type == WINDOW_TYPE_TERMINAL &&
             uptime_ticks - last_blink_tick >= 500) {
             last_blink_tick = uptime_ticks;
             focused->needs_redraw = true;
             desktop.dirty = true;
+        } else if (focused && !focused->game_tick && focused->type == WINDOW_TYPE_NOTEPAD &&
+                   uptime_ticks - last_blink_tick >= 500) {
+            last_blink_tick = uptime_ticks;
+            notepad_cursor_tick(focused);
         }
 
         if (focused && focused->game_tick && uptime_ticks - last_game_tick >= 16) {

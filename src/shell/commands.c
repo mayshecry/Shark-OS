@@ -5,6 +5,7 @@
 #include "net.h"
 #include "desktop.h"
 #include "theme.h"
+#include "ata.h"
 #include <stdint.h>
 
 static int simple_atoi(const char* s) {
@@ -130,7 +131,7 @@ static void cmd_cd(const char* args) {
     } else if (strcmp(args, "/") == 0 || strcmp(args, "root") == 0) {
         current_dir = root;
     } else {
-        struct fs_node* target = find_node(current_dir, args);
+        struct fs_node* target = fs_resolve_path(args);
         if (target && target->type == FS_DIRECTORY) current_dir = target;
         else terminal_writestring("Directory not found.");
     }
@@ -196,7 +197,7 @@ static void cmd_cat(const char* args) {
         terminal_writestring("SwapTotal:\t0 kB\n");
         terminal_writestring("SwapFree:\t0 kB\n");
     } else {
-        struct fs_node* target = find_node(current_dir, args);
+        struct fs_node* target = fs_resolve_path(args);
         if (target && target->type == FS_FILE) {
             int yc = 0;
             for (int idx = 0; idx < target->content_len; idx++) {
@@ -228,12 +229,16 @@ static void cmd_edit(const char* args) {
         return;
     }
     if (current_kernel_mode == KERNEL_MODE_DESKTOP) {
-
-        terminal_writestring("edit: not available inside the desktop Terminal - use Notepad.\n");
+        if (!fs_resolve_path(args) && strchr(args, '/')) {
+            terminal_writestring("edit: path not found. Use a filename in the current directory or an existing path.\n");
+            return;
+        }
+        notepad_open_file(args);
+        terminal_writestring("Opened in Shark IDE. Use Ctrl+S to save.\n");
         return;
     }
-    editor_target_file = find_node(current_dir, args);
-    if (!editor_target_file) {
+    editor_target_file = fs_resolve_path(args);
+    if (!editor_target_file && !strchr(args, '/')) {
         terminal_writestring("File not found. Creating new file...\n");
         editor_target_file = create_node(args, FS_FILE, current_dir);
     }
@@ -263,7 +268,7 @@ static void cmd_help(const char* args) {
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("FILESYSTEM  - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    terminal_writestring("ls, cd, cat, touch, edit, mkdir, rm, mv, cp, pwd, tree\n");
+    terminal_writestring("ls, cd, cat, touch, edit, mkdir, rm, mv, cp, pwd, tree, mount, umount\n");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("SYSTEM      - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
@@ -639,6 +644,288 @@ static void cmd_wget(const char* args) {
     }
     net_cmd_wget(args);
 }
+
+static void curl_copy(char* out, const char* in, size_t cap) {
+    if (!cap) return;
+    size_t i = 0;
+    while (in[i] && i + 1 < cap) { out[i] = in[i]; i++; }
+    out[i] = 0;
+}
+
+static void curl_cat(char* out, const char* in, size_t cap) {
+    size_t i = strlen(out);
+    if (i >= cap) return;
+    size_t j = 0;
+    while (in[j] && i + 1 < cap) out[i++] = in[j++];
+    out[i] = 0;
+}
+
+static const char* curl_next_arg(const char* p, char* out, int cap) {
+    while (*p == ' ' || *p == '\t') p++;
+    int o = 0;
+    char quote = 0;
+    if (*p == '\'' || *p == '"') quote = *p++;
+    while (*p) {
+        if (quote) {
+            if (*p == quote) { p++; break; }
+        } else if (*p == ' ' || *p == '\t') break;
+        if (o < cap - 1) out[o++] = *p;
+        p++;
+    }
+    out[o] = 0;
+    return p;
+}
+
+static void curl_resolve_redirect(const char* base, const char* loc, char* out, int cap) {
+    if (strstr(loc, "://")) { curl_copy(out, loc, (size_t)cap); return; }
+    const char* scheme_end = strstr(base, "://");
+    if (!scheme_end) { curl_copy(out, loc, (size_t)cap); return; }
+    int origin_len = (int)(scheme_end - base) + 3;
+    const char* path = base + origin_len;
+    while (*path && *path != '/') path++;
+    int host_len = (int)(path - base);
+    if (loc[0] == '/') {
+        int n = host_len;
+        if (n >= cap) n = cap - 1;
+        memcpy(out, base, n);
+        out[n] = 0;
+        curl_cat(out, loc, (size_t)cap);
+        return;
+    }
+    int n = (int)strlen(base);
+    while (n > host_len && base[n - 1] != '/') n--;
+    if (n > cap - 1) n = cap - 1;
+    memcpy(out, base, n);
+    out[n] = 0;
+    curl_cat(out, loc, (size_t)cap);
+}
+
+static void cmd_curl(const char* args) {
+    static uint8_t response[64 * 1024];
+    char url[512] = "";
+    char output[96] = "";
+    char method[16] = "GET";
+    char data[1024] = "";
+    char headers[768] = "";
+    int follow = 0;
+    int verbose = 0;
+    int head_only = 0;
+    const char* p = args;
+    char arg[512];
+    while (*(p = curl_next_arg(p, arg, sizeof(arg)))) {
+        if (!strcmp(arg, "-L") || !strcmp(arg, "--location")) follow = 1;
+        else if (!strcmp(arg, "-v") || !strcmp(arg, "--verbose")) verbose = 1;
+        else if (!strcmp(arg, "-I") || !strcmp(arg, "--head")) { head_only = 1; strcpy(method, "HEAD"); }
+        else if (!strcmp(arg, "-o") || !strcmp(arg, "--output")) {
+            p = curl_next_arg(p, output, sizeof(output));
+            if (!output[0]) break;
+        } else if (!strcmp(arg, "-X") || !strcmp(arg, "--request")) {
+            p = curl_next_arg(p, method, sizeof(method));
+            if (!method[0]) break;
+        } else if (!strcmp(arg, "-d") || !strcmp(arg, "--data") || !strcmp(arg, "--data-raw")) {
+            p = curl_next_arg(p, data, sizeof(data));
+            if (!data[0]) break;
+        } else if (!strcmp(arg, "-H") || !strcmp(arg, "--header")) {
+            p = curl_next_arg(p, arg, sizeof(arg));
+            if (arg[0] && strlen(headers) + strlen(arg) + 3 < sizeof(headers)) {
+                curl_cat(headers, arg, sizeof(headers));
+                curl_cat(headers, "\r\n", sizeof(headers));
+            }
+        } else if (arg[0] == '-') {
+            terminal_writestring("curl: unsupported option ");
+            terminal_writestring(arg);
+            terminal_writestring("\n");
+            return;
+        } else {
+            curl_copy(url, arg, sizeof(url));
+        }
+        while (*p == ' ' || *p == '\t') p++;
+    }
+    if (!url[0] || *p) {
+        terminal_writestring("Usage: curl [-L] [-v] [-I] [-o file] [-X method] [-H header] [-d data] <http[s]://url>\n");
+        return;
+    }
+    if (data[0] && !strcmp(method, "GET")) strcpy(method, "POST");
+    if (data[0] && !strstr(headers, "Content-Type:")) curl_cat(headers, "Content-Type: application/x-www-form-urlencoded\r\n", sizeof(headers));
+
+    int count = -1;
+    int redirects = 0;
+    char current_url[512];
+    curl_copy(current_url, url, sizeof(current_url));
+    for (;;) {
+        if (verbose) {
+            terminal_writestring("> "); terminal_writestring(method); terminal_putchar(' ');
+            terminal_writestring(current_url); terminal_writestring("\n");
+        }
+        count = net_http_request(method, current_url, headers, (const uint8_t*)data,
+                                 (uint32_t)strlen(data), response, sizeof(response));
+        if (count < 0) {
+            terminal_writestring("curl: request failed\n");
+            return;
+        }
+        if (verbose) {
+            terminal_writestring("< HTTP ");
+            char status[16]; int_to_string((uint32_t)net_http_last_status, status);
+            terminal_writestring(status); terminal_writestring(" ");
+            terminal_writestring(net_http_last_content_type);
+            terminal_writestring("\n");
+        }
+        if (!follow || net_http_last_status < 300 || net_http_last_status >= 400 ||
+            !net_http_last_location[0] || redirects >= 5) break;
+        char next[512];
+        curl_resolve_redirect(current_url, net_http_last_location, next, sizeof(next));
+        if (!strcmp(next, current_url)) break;
+        curl_copy(current_url, next, sizeof(current_url));
+        if (net_http_last_status == 303 || ((net_http_last_status == 301 || net_http_last_status == 302) && strcmp(method, "GET") && strcmp(method, "HEAD"))) {
+            strcpy(method, "GET"); data[0] = 0;
+        }
+        redirects++;
+    }
+    if (head_only && verbose && net_http_last_content_type[0]) {
+        terminal_writestring("Content-Type: "); terminal_writestring(net_http_last_content_type); terminal_writestring("\n");
+    }
+    if (output[0]) {
+        struct fs_node* file = fs_resolve_path(output);
+        if (!file && !strchr(output, '/') && !strchr(output, '\\')) file = create_node(output, FS_FILE, current_dir);
+        if (!file || file->type != FS_FILE) {
+            terminal_writestring("curl: cannot open output path\n");
+            return;
+        }
+        if (count > MAX_FILE_CONTENT_SIZE - 1) {
+            terminal_writestring("curl: response exceeds SharkOS file size limit\n");
+            return;
+        }
+        memcpy(file->content, response, (size_t)count);
+        file->content[count] = 0;
+        file->content_len = count;
+        if (!fs_node_sync(file)) {
+            terminal_writestring("curl: download received but file could not be written to its filesystem\n");
+            return;
+        }
+        terminal_writestring("Saved ");
+        char sizebuf[16]; int_to_string((uint32_t)count, sizebuf);
+        terminal_writestring(sizebuf); terminal_writestring(" bytes to ");
+        terminal_writestring(output); terminal_writestring("\n");
+        return;
+    }
+    if (net_http_last_status < 200 || net_http_last_status >= 300) {
+        terminal_writestring("curl: HTTP status ");
+        char status[16]; int_to_string((uint32_t)net_http_last_status, status);
+        terminal_writestring(status); terminal_writestring("\n");
+    }
+    for (int i = 0; i < count; i++) {
+        if (response[i] == 0) terminal_putchar(' ');
+        else terminal_putchar((char)response[i]);
+    }
+    if (!count || response[count - 1] != '\n') terminal_putchar('\n');
+}
+
+static void cmd_websocket(const char* args) {
+    char url[512];
+    char message[1024];
+    const char* p = curl_next_arg(args, url, sizeof(url));
+    p = curl_next_arg(p, message, sizeof(message));
+    if (!url[0]) {
+        terminal_writestring("Usage: websocket <ws:// or wss:// URL> [text]\n");
+        return;
+    }
+    if (net_websocket_open(url) < 0) {
+        terminal_writestring("websocket: connection or upgrade handshake failed\n");
+        return;
+    }
+    terminal_writestring("websocket: connected\n");
+    if (message[0] && net_websocket_send((const uint8_t*)message, (uint32_t)strlen(message)) < 0) {
+        terminal_writestring("websocket: send failed\n");
+        net_websocket_close();
+        return;
+    }
+    if (message[0]) {
+        static uint8_t response[64 * 1024];
+        int n = net_websocket_recv(response, sizeof(response), 5000);
+        if (n < 0) terminal_writestring("websocket: receive timed out or failed\n");
+        else if (n > 0) {
+            for (int i = 0; i < n; i++) terminal_putchar(response[i] ? (char)response[i] : ' ');
+            terminal_putchar('\n');
+        }
+    }
+    net_websocket_close();
+}
+
+static void cmd_mount(const char* args) {
+    if (!args[0]) {
+        terminal_writestring("Detected ATA drives: ");
+        char number[16];
+        int_to_string((uint32_t)ata_drive_count(), number);
+        terminal_writestring(number);
+        terminal_writestring("\nUsage: mount <drive-index> [directory]\n");
+        for (int i = 0; i < ata_drive_count(); i++) {
+            const ata_drive_t* d = ata_drive_get(i);
+            terminal_writestring("  ");
+            int_to_string((uint32_t)i, number);
+            terminal_writestring(number);
+            terminal_writestring(": ");
+            terminal_writestring(d->model);
+            terminal_writestring("\n");
+        }
+        return;
+    }
+    int drive = 0;
+    const char* p = args;
+    if (*p < '0' || *p > '9') {
+        terminal_writestring("Usage: mount <drive-index> [directory]\n");
+        return;
+    }
+    while (*p >= '0' && *p <= '9') drive = drive * 10 + (*p++ - '0');
+    while (*p == ' ') p++;
+    struct fs_node* target = NULL;
+    if (*p) {
+        target = fs_resolve_path(p);
+    } else {
+        struct fs_node* mnt = fs_resolve_path("/mnt");
+        if (!mnt) mnt = create_node("mnt", FS_DIRECTORY, root);
+        char name[16] = "disk";
+        int_to_string((uint32_t)drive, name + 4);
+        target = find_node(mnt, name);
+        if (!target && mnt) target = create_node(name, FS_DIRECTORY, mnt);
+    }
+    if (!target || target->type != FS_DIRECTORY) {
+        terminal_writestring("mount: mount point must be an existing directory\n");
+        return;
+    }
+    int result = fat16_mount(drive, target);
+    if (result < 0) {
+        terminal_writestring("mount: FAT16 mount failed; use a FAT16 volume and a free mount point\n");
+        return;
+    }
+    terminal_writestring("Mounted FAT16 drive ");
+    char number[16];
+    int_to_string((uint32_t)drive, number);
+    terminal_writestring(number);
+    terminal_writestring(" at ");
+    terminal_writestring(target->name);
+    terminal_writestring("\n");
+}
+
+static void cmd_umount(const char* args) {
+    struct fs_node* target = fs_resolve_path(args);
+    if (!target || !fat16_unmount(target)) {
+        terminal_writestring("umount: path is not a mounted filesystem\n");
+        return;
+    }
+    terminal_writestring("Filesystem unmounted\n");
+}
+
+static void cmd_gcc(const char* args) {
+    if (strcmp(args, "--version") == 0 || strcmp(args, "-v") == 0) {
+        terminal_writestring("GNU GCC build compiler: ");
+        terminal_writestring(__VERSION__);
+        terminal_writestring("\nTarget: x86_64, freestanding kernel C\n");
+        return;
+    }
+    terminal_writestring("GCC is integrated into the SharkOS kernel build toolchain, not bundled as a kernel-hosted process.\n");
+    terminal_writestring("On the Linux build host run: tools/sharkcc source.c output.o\n");
+}
+
 static void cmd_dns(const char* args) {
     if (strlen(args) == 0) {
         terminal_writestring("Usage: dns <hostname>\n");
@@ -948,6 +1235,11 @@ static const cmd_entry_t cmd_table[] = {
     {"dhcp", cmd_dhcp},
     {"ping", cmd_ping},
     {"wget", cmd_wget},
+    {"curl", cmd_curl},
+    {"websocket", cmd_websocket},
+    {"gcc", cmd_gcc},
+    {"mount", cmd_mount},
+    {"umount", cmd_umount},
     {"dns", cmd_dns},
     {"netstat", cmd_netstat},
     {"audio", cmd_audio},
@@ -1186,7 +1478,7 @@ void execute_command(char* cmd) {
             terminal_writestring(args);
             terminal_writestring(" >\n ");
             for (i = 0; i < (int)strlen(args) + 2; i++) terminal_writestring("-");
-            terminal_writestring("\n        \\   ^__^\n         \\  (oo)\\_______\n            (__)\\       )\\/\\\n                ||----w |\n                ||     ||\n");
+            terminal_writestring("\n        \\   ^__^\n         \\  (oo)\\_______\n            (__)\\       )\\/\\n                ||----w |\n                ||     ||\n");
         }
     } else if (strcmp(cmd_name, "sl") == 0) {
         terminal_writestring("      ====        ________                ___________ \n  _/ _  \\_      /        \\   \\_    _/    /           \\ \n /    \\   \\    /    /\\    \\    \\  /     /    /\\    /\\ \n/     /    /  /    /  \\    \\    \\/     /    /  \\   \\ \\ \n\\     \\   /  /    /    \\    \\    /     /    /    \\   \\ \\ \n \\     \\/   /    /      \\    \\  /     /    /      \\   \\ \\ \n  \\        /    /        \\    \\/     /    /        \\   \\ \\ \n   \\______/____/__________\\____\\____/____/__________\\___\\ \\ \n");

@@ -116,14 +116,14 @@ static bool hda_reset(void){
     if (!hda_regs) return false;
     // Enter reset: write 0 to GCTL
     mmio_write32(HDA_GCTL, 0);
-    delay_ms(10);
+    audio_delay_ms(10);
     // Exit reset: write 1
     mmio_write32(HDA_GCTL, 1);
     // poll GCTL bit0
     for (int i=0;i<100;i++){
         uint32_t gctl = mmio_read32(HDA_GCTL);
         if (gctl & 1) break;
-        delay_ms(1);
+        audio_delay_ms(1);
     }
     if (!(mmio_read32(HDA_GCTL) & 1)){
         serial_puts("[hda] reset failed GCTL not ready\n");
@@ -152,12 +152,12 @@ static void hda_setup_corb_rirb(void){
     mmio_write16(HDA_CORBRP, 0x8000);
     for (int i=0;i<10;i++){
         if (mmio_read16(HDA_CORBRP) & 0x8000) break;
-        delay_ms(1);
+        audio_delay_ms(1);
     }
     mmio_write16(HDA_CORBRP, 0);
     for (int i=0;i<10;i++){
         if (!(mmio_read16(HDA_CORBRP) & 0x8000)) break;
-        delay_ms(1);
+        audio_delay_ms(1);
     }
     // Enable CORB DMA
     mmio_write8(HDA_CORBCTL, 0x02); // CORB run
@@ -189,7 +189,7 @@ static uint32_t hda_send_verb(uint32_t verb){
             mmio_write16(HDA_ICS, 0x02); // clear IRV by writing 1?
             return resp;
         }
-        delay_ms(1);
+        audio_delay_ms(1);
     }
     return 0xFFFFFFFF;
 }
@@ -251,13 +251,13 @@ static void hda_setup_dma(void){
     // Program stream descriptor
     // Reset stream
     mmio_write8(sd_offset + HDA_SD_CTL, 1); // SRST
-    delay_ms(1);
+    audio_delay_ms(1);
     mmio_write8(sd_offset + HDA_SD_CTL, 0);
-    delay_ms(1);
+    audio_delay_ms(1);
     // Ensure SRST cleared
     for (int i=0;i<10;i++){
         if (!(mmio_read8(sd_offset + HDA_SD_CTL) & 1)) break;
-        delay_ms(1);
+        audio_delay_ms(1);
     }
     // Set format: 48kHz 16-bit stereo
     // Format bits: [15] type 0=PCM, [14] 0=48k base, [13:11] mult 000= x1, [10:8] div 000= /1, [6:4] bits 001=16, [3:0] ch 0001=2 => value 0x0011? Let's compute
@@ -310,7 +310,7 @@ bool hda_init(void){
     ctl |= HDA_SD_CTL_RUN | HDA_SD_CTL_IOCE;
     mmio_write8(sd_offset + HDA_SD_CTL, ctl);
     // Also need to set GCTL?
-    delay_ms(10);
+    audio_delay_ms(10);
     uint8_t sts = mmio_read8(sd_offset + HDA_SD_STS);
     serial_puts("[hda] STS after run 0x"); serial_puthex32(sts); serial_puts("\n");
     initialized = true;

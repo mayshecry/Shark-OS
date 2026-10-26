@@ -102,7 +102,7 @@ void start_menu_open(void) {
     types[start_menu_count] = WINDOW_TYPE_DISKMGMT;
     start_menu_count++;
 
-    names[start_menu_count] = "Notepad";
+    names[start_menu_count] = "Shark IDE";
     types[start_menu_count] = WINDOW_TYPE_NOTEPAD;
     start_menu_count++;
 

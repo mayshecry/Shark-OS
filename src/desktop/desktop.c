@@ -203,6 +203,8 @@ void desktop_icon_launch_offset(window_type_t type, const char* title) {
         win_w = 400; win_h = 545;
     } else if (type == WINDOW_TYPE_DISKMGMT) {
         win_w = 540; win_h = 400;
+    } else if (type == WINDOW_TYPE_NOTEPAD) {
+        win_w = 720; win_h = 500;
     } else if (type == WINDOW_TYPE_FAQ) {
         win_w = 480; win_h = 420;
     } else if (type == WINDOW_TYPE_BROWSER) {
@@ -1296,7 +1298,7 @@ void desktop_init(void) {
 
     desktop_icon_add("My Computer", WINDOW_TYPE_FASTFETCH);
     desktop_icon_add("Terminal", WINDOW_TYPE_TERMINAL);
-    desktop_icon_add("Notepad", WINDOW_TYPE_NOTEPAD);
+    desktop_icon_add("Shark IDE", WINDOW_TYPE_NOTEPAD);
     desktop_icon_add("File Manager", WINDOW_TYPE_FILEMANAGER);
     desktop_icon_add("Settings", WINDOW_TYPE_SETTINGS);
     desktop_icon_add("Disk Mgmt", WINDOW_TYPE_DISKMGMT);

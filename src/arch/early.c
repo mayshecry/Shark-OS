@@ -27,6 +27,16 @@ static int serial_tx_ready(void) {
     return inb(COM1_BASE + 5) & 0x20;
 }
 
+int serial_input_ready(void) {
+    uint8_t status = inb(COM1_BASE + 5);
+    return status != 0xFF && (status & 1);
+}
+
+int serial_getchar_nonblocking(void) {
+    if (!serial_input_ready()) return -1;
+    return inb(COM1_BASE);
+}
+
 void serial_putc(char c) {
                                                                 
     for (int i = 0; i < 100000 && !serial_tx_ready(); i++) { }

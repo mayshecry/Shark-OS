@@ -425,3 +425,26 @@ void tls_random(uint8_t* out, size_t len) {
         sha256_final(&c, drbg_state);
     }
 }
+
+int crypto_random_bytes(uint8_t* out, size_t len) {
+    if (!out && len) return -1;
+    if (!len) return 0;
+    uint32_t eax = 1, ebx, ecx = 0, edx;
+    asm volatile("cpuid" : "+a"(eax), "=b"(ebx), "+c"(ecx), "=d"(edx));
+    if (!(ecx & (1u << 30))) return -1;
+    while (len) {
+        uint64_t value = 0;
+        uint8_t ready = 0;
+        for (int attempt = 0; attempt < 10 && !ready; attempt++) {
+            asm volatile("rdrand %0; setc %1" : "=r"(value), "=qm"(ready));
+            asm volatile("pause");
+        }
+        if (!ready) return -1;
+        size_t take = len < sizeof(value) ? len : sizeof(value);
+        for (size_t i = 0; i < take; i++) out[i] = (uint8_t)(value >> (8 * i));
+        out += take;
+        len -= take;
+        value = 0;
+    }
+    return 0;
+}

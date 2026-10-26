@@ -68,40 +68,97 @@ void pic_mask_irq(uint8_t irq){
 }
 
 // probe all audio PCI devices and pick best
-static void audio_probe_pci(void){
-    // scan all b/s/f for audio class
+static uint64_t audio_read_tsc(void){
+    uint32_t lo;
+    uint32_t hi;
+    asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static uint64_t audio_tsc_frequency(void){
+    static uint64_t cached_frequency = 0;
+    if (cached_frequency) return cached_frequency;
+
+    uint32_t eax;
+    uint32_t ebx;
+    uint32_t ecx;
+    uint32_t edx;
+    asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0), "c"(0));
+    uint32_t max_leaf = eax;
+
+    if (max_leaf >= 0x15){
+        eax = 0x15;
+        ecx = 0;
+        asm volatile("cpuid" : "+a"(eax), "=b"(ebx), "+c"(ecx), "=d"(edx));
+        if (eax && ebx && ecx) cached_frequency = ((uint64_t)ecx * ebx) / eax;
+    }
+
+    if (!cached_frequency && max_leaf >= 0x16){
+        eax = 0x16;
+        ecx = 0;
+        asm volatile("cpuid" : "+a"(eax), "=b"(ebx), "+c"(ecx), "=d"(edx));
+        if (eax) cached_frequency = (uint64_t)eax * 1000000ULL;
+    }
+
+    if (!cached_frequency) cached_frequency = 2500000000ULL;
+    return cached_frequency;
+}
+
+static bool audio_probe_pci(void){
+    uint32_t start_ticks = uptime_ticks;
+    uint64_t start_tsc = audio_read_tsc();
+    uint64_t timeout_cycles = audio_tsc_frequency() * 3ULL;
+
     for (uint32_t b=0;b<256;b++){
         for (uint32_t s=0;s<32;s++){
-            for (uint32_t f=0;f<8;f++){
-                uint32_t d = pci_config_read(b,s,f,0);
+            if ((uint32_t)(uptime_ticks - start_ticks) >= 3000 ||
+                audio_read_tsc() - start_tsc >= timeout_cycles){
+                serial_puts("[audio] no audio device found within 3 seconds; skipping drivers\n");
+                return false;
+            }
+
+            uint32_t d0 = pci_config_read(b,s,0,0);
+            if (d0==0xFFFFFFFF) continue;
+            uint32_t header = pci_config_read(b,s,0,0x0C);
+            uint32_t function_count = ((header >> 23) & 1) ? 8 : 1;
+            for (uint32_t f=0;f<function_count;f++){
+                if ((uint32_t)(uptime_ticks - start_ticks) >= 3000 ||
+                    audio_read_tsc() - start_tsc >= timeout_cycles){
+                    serial_puts("[audio] no audio device found within 3 seconds; skipping drivers\n");
+                    return false;
+                }
+                uint32_t d = f == 0 ? d0 : pci_config_read(b,s,f,0);
                 if (d==0xFFFFFFFF) continue;
                 uint32_t cls = pci_config_read(b,s,f,0x08);
                 uint8_t base = (cls>>24)&0xFF;
                 uint8_t sub = (cls>>16)&0xFF;
-                if (base!=0x04) continue;
-                uint16_t ven = d & 0xFFFF;
-                uint16_t dev = (d>>16)&0xFFFF;
+                if (base!=0x04 || (sub!=0x01 && sub!=0x03)) continue;
                 uint32_t irq = pci_config_read(b,s,f,0x3C);
-                uint8_t irq_line = irq & 0xFF;
                 serial_puts("[audio] PCI audio ");
                 serial_puthex32(d); serial_puts(" class ");
-                serial_puthex32(cls); serial_puts(" IRQ "); serial_putdec(irq_line); serial_puts("\n");
-                if (sub==0x03){
-                    // HDA
-                    if (hda_probe((uint8_t)b,(uint8_t)s,(uint8_t)f)){
-                        // init will be done outside
-                    }
-                } else if (sub==0x01){
-                    if (ac97_probe((uint8_t)b,(uint8_t)s,(uint8_t)f)){
-                        // init
-                    }
-                }
-                // also handle Intel vendor specific still try both
-                // QEMU AC97 shows as 8086:2415 subclass 01
-                // QEMU HDA 8086:2668 subclass 03
-                (void)ven; (void)dev;
+                serial_puthex32(cls); serial_puts(" IRQ "); serial_putdec(irq & 0xFF); serial_puts("\n");
+                if (sub==0x03 && hda_probe((uint8_t)b,(uint8_t)s,(uint8_t)f)) return true;
+                if (sub==0x01 && ac97_probe((uint8_t)b,(uint8_t)s,(uint8_t)f)) return true;
             }
         }
+    }
+
+    serial_puts("[audio] no audio device found; skipping drivers\n");
+    return false;
+}
+
+void audio_delay_ms(uint32_t ms){
+    uint32_t start_ticks = uptime_ticks;
+    uint32_t lo;
+    uint32_t hi;
+    asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    uint64_t start_tsc = ((uint64_t)hi << 32) | lo;
+    uint64_t max_cycles = (uint64_t)ms * 4000000ULL;
+    while ((uint32_t)(uptime_ticks - start_ticks) < ms){
+        asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
+        uint64_t now_tsc = ((uint64_t)hi << 32) | lo;
+        if (now_tsc - start_tsc >= max_cycles) break;
+        asm volatile("pause");
     }
 }
 
@@ -116,10 +173,16 @@ void audio_init(void){
     g_audio.has_pcspkr = true;
 
     // probe pci devices (will set internal state for ac97/hda)
-    audio_probe_pci();
+    if (!audio_probe_pci()){
+        g_audio.initialized = true;
+        serial_puts("[audio] init done, PC speaker fallback only\n");
+        return;
+    }
+    serial_puts("[audio] PCI scan complete\n");
 
     // try backends in order: HDA first (better), then AC97, then null
     // backends array populated by probe? Simpler try init directly:
+    serial_puts("[audio] HDA init begin\n");
     if (hda_init()){
         g_audio.has_hda = true;
         g_audio_backend = NULL;
@@ -127,14 +190,20 @@ void audio_init(void){
         extern audio_backend_t hda_backend;
         g_audio_backend = &hda_backend;
         serial_puts("[audio] using HDA backend\n");
-    } else if (ac97_init()){
-        g_audio.has_ac97 = true;
-        extern audio_backend_t ac97_backend;
-        g_audio_backend = &ac97_backend;
-        serial_puts("[audio] using AC97 backend\n");
     } else {
-        serial_puts("[audio] no DMA backend, using pcspkr fallback + null sink\n");
-        g_audio_backend = NULL;
+        serial_puts("[audio] HDA init skipped or failed\n");
+    }
+    if (!g_audio_backend){
+        serial_puts("[audio] AC97 init begin\n");
+        if (ac97_init()){
+            g_audio.has_ac97 = true;
+            extern audio_backend_t ac97_backend;
+            g_audio_backend = &ac97_backend;
+            serial_puts("[audio] using AC97 backend\n");
+        } else {
+            serial_puts("[audio] no DMA backend, using pcspkr fallback + null sink\n");
+            g_audio_backend = NULL;
+        }
     }
     g_audio.initialized = true;
     serial_puts("[audio] init done, backend=");

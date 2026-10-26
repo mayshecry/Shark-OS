@@ -188,7 +188,7 @@ void app_window_draw_terminal(window_t* w) {
 
 static bool terminal_cmd_blocked(const char* cmd, char* why, int why_len) {
     static const char* blocked[] = {
-        "edit", "guess", "tictactoe", "python", "doom", "flappybird", "smb",
+        "guess", "tictactoe", "python", "doom", "flappybird", "smb",
         "pong", "gdash", "sharkcube", "sharkcraft", "microsoft", "htop", "exec", NULL
     };
     char name[32];
@@ -1222,122 +1222,448 @@ void app_window_draw_fastfetch(window_t* w) {
                 theme_get_name(theme_get_id()), W98_BTNTEXT);
 }
 
-static char notepad_buffer[4096] = "";
+static char notepad_buffer[MAX_FILE_CONTENT_SIZE] = "";
 static int notepad_len = 0;
 static char notepad_path[128] = "";
 static int notepad_cursor = 0;
+static int notepad_view_line = 0;
 static bool notepad_dirty = false;
+static bool notepad_highlight_dirty = true;
+static bool notepad_cursor_visible = true;
+static struct fs_node* notepad_file = NULL;
+static char notepad_status[48] = "Ready";
+
+static void notepad_save(void) {
+    if (!notepad_file) {
+        strcpy(notepad_status, "No file selected");
+        return;
+    }
+    if (notepad_len >= MAX_FILE_CONTENT_SIZE) {
+        strcpy(notepad_status, "File exceeds filesystem limit");
+        return;
+    }
+    memcpy(notepad_file->content, notepad_buffer, (size_t)notepad_len);
+    notepad_file->content[notepad_len] = 0;
+    notepad_file->content_len = notepad_len;
+    if (!fs_node_sync(notepad_file)) {
+        strcpy(notepad_status, "Disk full or file too large");
+        return;
+    }
+    notepad_dirty = false;
+    strcpy(notepad_status, "Saved");
+}
+
+void notepad_open_node(struct fs_node* file) {
+    if (!file || file->type != FS_FILE) return;
+    notepad_file = file;
+    notepad_len = file->content_len;
+    if (notepad_len >= (int)sizeof(notepad_buffer)) notepad_len = (int)sizeof(notepad_buffer) - 1;
+    memcpy(notepad_buffer, file->content, (size_t)notepad_len);
+    notepad_buffer[notepad_len] = 0;
+    notepad_cursor = notepad_len;
+    notepad_view_line = 0;
+    notepad_cursor_visible = true;
+    notepad_dirty = false;
+    notepad_highlight_dirty = true;
+    notepad_status[0] = 0;
+    char parts[8][32];
+    int count = 0;
+    struct fs_node* n = file;
+    while (n && n != root && count < 8) {
+        strcpy(parts[count++], n->name);
+        n = n->parent;
+    }
+    int pos = 0;
+    notepad_path[pos++] = '/';
+    for (int i = count - 1; i >= 0 && pos < (int)sizeof(notepad_path) - 2; i--) {
+        for (int j = 0; parts[i][j] && pos < (int)sizeof(notepad_path) - 2; j++) notepad_path[pos++] = parts[i][j];
+        if (i) notepad_path[pos++] = '/';
+    }
+    notepad_path[pos] = 0;
+    desktop_icon_launch_offset(WINDOW_TYPE_NOTEPAD, "Shark IDE");
+}
+
+void notepad_open_file(const char* path) {
+    struct fs_node* file = fs_resolve_path(path);
+    if (!file && path && !strchr(path, '/') && !strchr(path, '\\')) file = create_node(path, FS_FILE, current_dir);
+    notepad_open_node(file);
+}
+
+static uint32_t notepad_colors[MAX_FILE_CONTENT_SIZE];
+
+static int notepad_word_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+static int notepad_keyword(const char* text, int len) {
+    static const char* words[] = {"int", "char", "void", "return", "if", "else", "for", "while", "struct", "const", "static", "uint8_t", "uint32_t", "size_t", "include", "define", "bool", "unsigned", "break", "switch", "case", "NULL"};
+    for (int k = 0; k < (int)(sizeof(words) / sizeof(words[0])); k++) {
+        int word_len = (int)strlen(words[k]);
+        if (word_len != len) continue;
+        int match = 1;
+        for (int j = 0; j < len; j++) if (text[j] != words[k][j]) match = 0;
+        if (match) return 1;
+    }
+    return 0;
+}
+
+static void notepad_highlight(void) {
+    if (!notepad_highlight_dirty) return;
+    int i = 0;
+    while (i < notepad_len) {
+        uint32_t color = W98_WINDOWTEXT;
+        if (i + 1 < notepad_len && notepad_buffer[i] == '/' && notepad_buffer[i + 1] == '/') {
+            int end = i;
+            while (end < notepad_len && notepad_buffer[end] != '\n') notepad_colors[end++] = 0xFF6A9955u;
+            i = end;
+            continue;
+        }
+        if (i + 1 < notepad_len && notepad_buffer[i] == '/' && notepad_buffer[i + 1] == '*') {
+            int end = i;
+            while (end < notepad_len) {
+                notepad_colors[end] = 0xFF6A9955u;
+                if (notepad_buffer[end] == '*' && end + 1 < notepad_len && notepad_buffer[end + 1] == '/') {
+                    notepad_colors[end + 1] = 0xFF6A9955u;
+                    end += 2;
+                    break;
+                }
+                end++;
+            }
+            i = end;
+            continue;
+        }
+        if (notepad_buffer[i] == '"' || notepad_buffer[i] == 39) {
+            char quote = notepad_buffer[i];
+            int end = i;
+            int escaped = 0;
+            while (end < notepad_len) {
+                char c = notepad_buffer[end];
+                notepad_colors[end++] = 0xFFCE9178u;
+                if (c == quote && !escaped && end - 1 != i) break;
+                if (c == '\\' && !escaped) escaped = 1;
+                else escaped = 0;
+            }
+            i = end;
+            continue;
+        }
+        if (notepad_buffer[i] >= '0' && notepad_buffer[i] <= '9') {
+            int end = i;
+            while (end < notepad_len && ((notepad_buffer[end] >= '0' && notepad_buffer[end] <= '9') || (notepad_buffer[end] >= 'a' && notepad_buffer[end] <= 'z') || (notepad_buffer[end] >= 'A' && notepad_buffer[end] <= 'Z') || notepad_buffer[end] == '.' || notepad_buffer[end] == '_')) notepad_colors[end++] = 0xFFB5CEA8u;
+            i = end;
+            continue;
+        }
+        if (notepad_word_char(notepad_buffer[i])) {
+            int end = i + 1;
+            while (end < notepad_len && (notepad_word_char(notepad_buffer[end]) || (notepad_buffer[end] >= '0' && notepad_buffer[end] <= '9'))) end++;
+            if (notepad_keyword(notepad_buffer + i, end - i)) color = 0xFF569CD6u;
+            for (int j = i; j < end; j++) notepad_colors[j] = color;
+            i = end;
+            continue;
+        }
+        notepad_colors[i++] = color;
+    }
+    notepad_highlight_dirty = false;
+}
 
 #define NOTEPAD_MENU_H 16
 
 static const char* notepad_menus[] = { "File", "Edit", "Search", "Help" };
+
+
+static void notepad_draw_header(window_t* w) {
+    int cx = w->rect.client_x;
+    int cy = w->rect.client_y;
+    int cw = w->rect.client_w;
+    w98_fill(cx, cy, cw, NOTEPAD_MENU_H, W98_BTNFACE);
+    int mx = cx + 2;
+    for (int i = 0; i < 4; i++) {
+        int tw = w98_text_width(notepad_menus[i], 1) + 10;
+        w98_text(notepad_menus[i], mx + 5, cy + 4, W98_BTNTEXT, W98_BTNFACE, 1, NULL);
+        mx += tw;
+    }
+    char title[160];
+    if (notepad_path[0]) strcpy(title, notepad_path);
+    else strcpy(title, "Untitled");
+    if (notepad_dirty) {
+        int n = (int)strlen(title);
+        title[n++] = ' ';
+        title[n++] = '*';
+        title[n] = 0;
+    }
+    w98_text(title, cx + cw - w98_text_width(title, 1) - 6, cy + 4,
+             W98_GRAYTEXT, W98_BTNFACE, 1, NULL);
+}
+
+static void notepad_draw_footer(window_t* w) {
+    int cx = w->rect.client_x;
+    int cy = w->rect.client_y;
+    int cw = w->rect.client_w;
+    int ch = w->rect.client_h;
+    w98_fill(cx + 2, cy + ch - 16, cw - 4, 14, W98_BTNFACE);
+    w98_text("C IDE  |  Ctrl+S Save  |  Tab Indent  |  Arrows Move",
+             cx + 6, cy + ch - 12, W98_BTNTEXT, W98_BTNFACE, 1, NULL);
+    if (notepad_status[0])
+        w98_text(notepad_status, cx + cw - w98_text_width(notepad_status, 1) - 8,
+                 cy + ch - 12, W98_HIGHLIGHT, W98_BTNFACE, 1, NULL);
+}
+
+extern void mouse_restore_under_cursor(void);
+extern void mouse_draw_cursor(void);
+
+static int notepad_line_start(int target_line) {
+    int index = 0;
+    int line = 0;
+    while (index < notepad_len && line < target_line) {
+        if (notepad_buffer[index++] == '\n') line++;
+    }
+    return index;
+}
+
+static void notepad_metrics(window_t* w, int* ta_x, int* ta_y, int* ta_w,
+                            int* ta_h, int* text_x, int* max_chars,
+                            int* visible_lines) {
+    *ta_x = w->rect.client_x + 2;
+    *ta_y = w->rect.client_y + NOTEPAD_MENU_H + 2;
+    *ta_w = w->rect.client_w - 4;
+    *ta_h = w->rect.client_h - NOTEPAD_MENU_H - 22;
+    *text_x = *ta_x + 32;
+    *max_chars = (*ta_w - 40) / 6;
+    if (*max_chars > 90) *max_chars = 90;
+    *visible_lines = (*ta_h - 8) / 11;
+}
+
+static void notepad_draw_line(window_t* w, int logical_line) {
+    int ta_x, ta_y, ta_w, ta_h, text_x, max_chars, visible_lines;
+    notepad_metrics(w, &ta_x, &ta_y, &ta_w, &ta_h, &text_x, &max_chars, &visible_lines);
+    int row = logical_line - notepad_view_line;
+    if (row < 0 || row >= visible_lines || max_chars < 1) return;
+    int line_start = notepad_line_start(logical_line);
+    int line_end = line_start;
+    while (line_end < notepad_len && notepad_buffer[line_end] != '\n') line_end++;
+    int line_len = line_end - line_start;
+    if (line_len > max_chars) line_len = max_chars;
+    int y = ta_y + 4 + row * 11;
+    w98_fill(ta_x + 3, y - 1, 26, 12, 0xFFF1F1F1u);
+    w98_fill(text_x, y - 1, max_chars * 6, 12, W98_WINDOW);
+    char number[12];
+    int_to_string((uint32_t)(logical_line + 1), number);
+    w98_text(number, ta_x + 4, y, 0xFF777777u, 0xFFF1F1F1u, 1, NULL);
+    int run_start = 0;
+    while (run_start < line_len) {
+        uint32_t color = notepad_colors[line_start + run_start];
+        int run_end = run_start + 1;
+        while (run_end < line_len && notepad_colors[line_start + run_end] == color) run_end++;
+        char run[96];
+        int run_len = run_end - run_start;
+        for (int i = 0; i < run_len; i++) run[i] = notepad_buffer[line_start + run_start + i];
+        run[run_len] = 0;
+        w98_text(run, text_x + run_start * 6, y, color, W98_WINDOW, 1, NULL);
+        run_start = run_end;
+    }
+}
+
+static void notepad_cursor_position(int* line, int* col) {
+    *line = 0;
+    *col = 0;
+    for (int i = 0; i < notepad_cursor && i < notepad_len; i++) {
+        if (notepad_buffer[i] == '\n') { (*line)++; *col = 0; }
+        else (*col)++;
+    }
+}
+
+static void notepad_draw_cursor(window_t* w) {
+    if (!notepad_cursor_visible) return;
+    int line, col;
+    notepad_cursor_position(&line, &col);
+    int ta_x, ta_y, ta_w, ta_h, text_x, max_chars, visible_lines;
+    notepad_metrics(w, &ta_x, &ta_y, &ta_w, &ta_h, &text_x, &max_chars, &visible_lines);
+    int row = line - notepad_view_line;
+    if (row < 0 || row >= visible_lines || col < 0 || col >= max_chars) return;
+    w98_fill(text_x + col * 6, ta_y + 4 + row * 11, 6, 11, W98_HIGHLIGHT);
+}
+
+static void notepad_direct_update(window_t* w, int old_line, bool redraw_all,
+                                  bool redraw_header, bool redraw_footer) {
+    notepad_highlight();
+    int line, col;
+    notepad_cursor_position(&line, &col);
+    int ta_x, ta_y, ta_w, ta_h, text_x, max_chars, visible_lines;
+    notepad_metrics(w, &ta_x, &ta_y, &ta_w, &ta_h, &text_x, &max_chars, &visible_lines);
+    if (visible_lines < 1) redraw_all = true;
+    int old_view = notepad_view_line;
+    if (line < notepad_view_line) notepad_view_line = line;
+    if (visible_lines > 0 && line >= notepad_view_line + visible_lines)
+        notepad_view_line = line - visible_lines + 1;
+    if (notepad_view_line != old_view) redraw_all = true;
+    w98_classic_font_force = true;
+    mouse_restore_under_cursor();
+    if (redraw_all) {
+        app_window_draw_notepad(w);
+        mouse_draw_cursor();
+        flush_rows_to_hw(w->rect.client_y, w->rect.client_y + w->rect.client_h);
+        return;
+    }
+    notepad_draw_line(w, old_line);
+    if (line != old_line) notepad_draw_line(w, line);
+    if (redraw_header) notepad_draw_header(w);
+    if (redraw_footer) notepad_draw_footer(w);
+    notepad_draw_cursor(w);
+    w98_classic_font_force = false;
+    mouse_draw_cursor();
+    int old_row = old_line - notepad_view_line;
+    if (old_row >= 0 && old_row < visible_lines) {
+        int y = ta_y + 3 + old_row * 11;
+        flush_rows_to_hw(y, y + 13);
+    }
+    int row = line - notepad_view_line;
+    if (row >= 0 && row < visible_lines && line != old_line) {
+        int y = ta_y + 3 + row * 11;
+        flush_rows_to_hw(y, y + 13);
+    }
+    if (redraw_header) flush_rows_to_hw(w->rect.client_y, w->rect.client_y + NOTEPAD_MENU_H);
+    if (redraw_footer) flush_rows_to_hw(w->rect.client_y + w->rect.client_h - 16,
+                                        w->rect.client_y + w->rect.client_h);
+    if (mouse_cursor_y >= 0 && mouse_cursor_y < (int)screen_height)
+        flush_rows_to_hw(mouse_cursor_y, mouse_cursor_y + 16);
+}
 
 void app_window_draw_notepad(window_t* w) {
     int cx = w->rect.client_x;
     int cy = w->rect.client_y;
     int cw = w->rect.client_w;
     int ch = w->rect.client_h;
-
+    int ta_x, ta_y, ta_w, ta_h, text_x, max_chars, visible_lines;
+    notepad_metrics(w, &ta_x, &ta_y, &ta_w, &ta_h, &text_x, &max_chars, &visible_lines);
     w98_classic_font_force = true;
-
     w98_fill(cx, cy, cw, ch, W98_BTNFACE);
-
-    int mx = cx + 2;
-    for (int i = 0; i < 4; i++) {
-        int tw = w98_text_width(notepad_menus[i], 1) + 10;
-        w98_text(notepad_menus[i], mx + 5, cy + 4, W98_BTNTEXT, W98_BTNFACE,
-                 1, NULL);
-        mx += tw;
-    }
-
-    char title[160];
-    int p = 0;
-    if (notepad_path[0]) { strcpy(title + p, notepad_path); p = (int)strlen(title); }
-    else { strcpy(title + p, "Untitled"); p = (int)strlen(title); }
-    if (notepad_dirty) { strcpy(title + p, " *"); }
-    w98_text(title, cx + cw - w98_text_width(title, 1) - 6, cy + 4,
-             W98_GRAYTEXT, W98_BTNFACE, 1, NULL);
-
-    int ta_x = cx + 2, ta_y = cy + NOTEPAD_MENU_H + 2;
-    int ta_w = cw - 4, ta_h = ch - NOTEPAD_MENU_H - 6;
+    notepad_draw_header(w);
     w98_surface(ta_x, ta_y, ta_w, ta_h, W98_BEVEL_SUNKEN, W98_WINDOW);
-
-    w98_rect_t clip;
-    clip.x = ta_x + 3; clip.y = ta_y + 3; clip.w = ta_w - 6; clip.h = ta_h - 6;
-
-    int max_chars_per_line = (ta_w - 8) / 6;
-    if (max_chars_per_line > 90) max_chars_per_line = 90;
-    int visible_lines = (ta_h - 8) / 11;
-
-    int line = 0;
-    int col = 0;
-    for (int i = 0; i < notepad_len && line < visible_lines; i++) {
-        char c = notepad_buffer[i];
-        if (c == '\n') { line++; col = 0; }
-        else {
-            if (col < max_chars_per_line) {
-                char str[2] = { c, 0 };
-                w98_text(str, ta_x + 4 + col * 6, ta_y + 4 + line * 11,
-                         W98_WINDOWTEXT, W98_WINDOW, 1, &clip);
-                col++;
-            }
-        }
-    }
-
-    static int blink = 0;
-    if (blink < 30 && notepad_cursor <= notepad_len) {
-        int cur_line = 0;
-        int cur_col = 0;
-        for (int i = 0; i < notepad_cursor && i < notepad_len; i++) {
-            if (notepad_buffer[i] == '\n') { cur_line++; cur_col = 0; }
-            else { cur_col++; }
-        }
-        if (cur_line < visible_lines && cur_col < max_chars_per_line) {
-            int cur_x = ta_x + 4 + cur_col * 6;
-            int cur_y = ta_y + 4 + cur_line * 11;
-            if (cur_x >= clip.x && cur_y >= clip.y &&
-                cur_x < clip.x + clip.w && cur_y < clip.y + clip.h) {
-                w98_fill(cur_x, cur_y, 6, 11, W98_HIGHLIGHT);
-            }
-        }
-    }
-    if (blink++ >= 60) blink = 0;
-
+    w98_fill(ta_x + 3, ta_y + 3, 26, ta_h - 6, 0xFFF1F1F1u);
+    notepad_highlight();
+    int cursor_line, cursor_col;
+    notepad_cursor_position(&cursor_line, &cursor_col);
+    if (cursor_line < notepad_view_line) notepad_view_line = cursor_line;
+    if (visible_lines > 0 && cursor_line >= notepad_view_line + visible_lines)
+        notepad_view_line = cursor_line - visible_lines + 1;
+    for (int row = 0; row < visible_lines; row++)
+        notepad_draw_line(w, notepad_view_line + row);
+    notepad_draw_footer(w);
+    notepad_draw_cursor(w);
     w98_classic_font_force = false;
 }
 
+void notepad_cursor_tick(window_t* w) {
+    if (!w || !w->visible) return;
+    int line, col;
+    notepad_cursor_position(&line, &col);
+    notepad_cursor_visible = !notepad_cursor_visible;
+    w98_classic_font_force = true;
+    mouse_restore_under_cursor();
+    notepad_draw_line(w, line);
+    notepad_draw_cursor(w);
+    w98_classic_font_force = false;
+    mouse_draw_cursor();
+    int ta_x, ta_y, ta_w, ta_h, text_x, max_chars, visible_lines;
+    notepad_metrics(w, &ta_x, &ta_y, &ta_w, &ta_h, &text_x, &max_chars, &visible_lines);
+    int row = line - notepad_view_line;
+    if (row >= 0 && row < visible_lines) {
+        int y = ta_y + 3 + row * 11;
+        flush_rows_to_hw(y, y + 13);
+    }
+    if (mouse_cursor_y >= 0 && mouse_cursor_y < (int)screen_height)
+        flush_rows_to_hw(mouse_cursor_y, mouse_cursor_y + 16);
+}
+
 void app_window_keyboard_notepad(window_t* w, char c) {
-    if (c == '\n') {
-        if (notepad_len < (int)sizeof(notepad_buffer) - 1) {
-            if (notepad_cursor < notepad_len) {
-                kmemmove(notepad_buffer + notepad_cursor + 1,
-                         notepad_buffer + notepad_cursor,
-                         notepad_len - notepad_cursor);
+    if (!w) return;
+    int old_cursor = notepad_cursor;
+    int old_line, old_col;
+    notepad_cursor_position(&old_line, &old_col);
+    bool was_dirty = notepad_dirty;
+    char old_status[48];
+    strcpy(old_status, notepad_status);
+    bool changed_text = false;
+    bool redraw_all = false;
+    bool handled = true;
+
+    if (ctrl_pressed && (c == 's' || c == 'S')) {
+        notepad_save();
+    } else if (c == 0x12) {
+        if (notepad_cursor > 0) notepad_cursor--;
+    } else if (c == 0x13) {
+        if (notepad_cursor < notepad_len) notepad_cursor++;
+    } else if (c == 0x10 || c == 0x11) {
+        int current_start = notepad_cursor;
+        while (current_start > 0 && notepad_buffer[current_start - 1] != '\n') current_start--;
+        int col = notepad_cursor - current_start;
+        if (c == 0x10 && current_start > 0) {
+            int prev_end = current_start - 1;
+            int prev_start = prev_end;
+            while (prev_start > 0 && notepad_buffer[prev_start - 1] != '\n') prev_start--;
+            int prev_len = prev_end - prev_start;
+            notepad_cursor = prev_start + (col < prev_len ? col : prev_len);
+        } else if (c == 0x11) {
+            int current_end = notepad_cursor;
+            while (current_end < notepad_len && notepad_buffer[current_end] != '\n') current_end++;
+            if (current_end < notepad_len) {
+                int next_start = current_end + 1;
+                int next_end = next_start;
+                while (next_end < notepad_len && notepad_buffer[next_end] != '\n') next_end++;
+                int next_len = next_end - next_start;
+                notepad_cursor = next_start + (col < next_len ? col : next_len);
             }
-            notepad_buffer[notepad_cursor] = '\n';
-            notepad_len++; notepad_cursor++; notepad_dirty = true;
+        }
+    } else if (c == '\t') {
+        for (int n = 0; n < 4 && notepad_len < (int)sizeof(notepad_buffer) - 1; n++) {
+            kmemmove(notepad_buffer + notepad_cursor + 1, notepad_buffer + notepad_cursor,
+                     notepad_len - notepad_cursor);
+            notepad_buffer[notepad_cursor++] = ' ';
+            notepad_len++;
+            changed_text = true;
+        }
+    } else if (c == '\n') {
+        if (notepad_len < (int)sizeof(notepad_buffer) - 1) {
+            if (notepad_cursor < notepad_len)
+                kmemmove(notepad_buffer + notepad_cursor + 1, notepad_buffer + notepad_cursor,
+                         notepad_len - notepad_cursor);
+            notepad_buffer[notepad_cursor++] = '\n';
+            notepad_len++;
+            changed_text = true;
+            redraw_all = true;
         }
     } else if (c == '\b') {
         if (notepad_cursor > 0) {
+            if (notepad_buffer[notepad_cursor - 1] == '\n') redraw_all = true;
             notepad_cursor--;
-            kmemmove(notepad_buffer + notepad_cursor,
-                     notepad_buffer + notepad_cursor + 1,
+            kmemmove(notepad_buffer + notepad_cursor, notepad_buffer + notepad_cursor + 1,
                      notepad_len - notepad_cursor - 1);
-            notepad_len--; notepad_dirty = true;
+            notepad_len--;
+            changed_text = true;
         }
-    } else if (c == 27) { return; }
-    else if (c >= 32 && c < 127) {
+    } else if (c >= 32 && c < 127) {
         if (notepad_len < (int)sizeof(notepad_buffer) - 1) {
-            if (notepad_cursor < notepad_len) {
-                kmemmove(notepad_buffer + notepad_cursor + 1,
-                         notepad_buffer + notepad_cursor,
+            if (notepad_cursor < notepad_len)
+                kmemmove(notepad_buffer + notepad_cursor + 1, notepad_buffer + notepad_cursor,
                          notepad_len - notepad_cursor);
-            }
-            notepad_buffer[notepad_cursor] = c;
-            notepad_len++; notepad_cursor++; notepad_dirty = true;
+            notepad_buffer[notepad_cursor++] = c;
+            notepad_len++;
+            changed_text = true;
         }
+    } else {
+        handled = false;
     }
-    w->needs_redraw = true;
+
+    if (!handled) return;
+    if (changed_text) {
+        notepad_dirty = true;
+        notepad_highlight_dirty = true;
+        strcpy(notepad_status, "Modified");
+    }
+    notepad_cursor_visible = true;
+    notepad_direct_update(w, old_line, redraw_all, was_dirty != notepad_dirty,
+                          strcmp(old_status, notepad_status) != 0);
+    (void)old_cursor;
+    (void)old_col;
 }
 
 static struct fs_node* fm_current_dir = NULL;
@@ -1439,6 +1765,8 @@ void app_window_mouse_filemanager(window_t* w, int mx, int my, int buttons) {
         struct fs_node* child = fm_current_dir->children[fm_hovered_item - 1];
         if (child && child->type == FS_DIRECTORY) {
             fm_current_dir = child;
+        } else if (child && child->type == FS_FILE) {
+            notepad_open_node(child);
         }
     }
     w->needs_redraw = true;

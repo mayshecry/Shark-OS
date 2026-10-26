@@ -127,7 +127,7 @@ static int timer_next_id = 1;
 
 static void throw_error(const char* msg, const char* detail);
 
-#define JS_STR_MAX (16 * 1024)
+#define JS_STR_MAX (64 * 1024)
 static char str_overflow[JS_STR_MAX + 1];
 
 static char* js_alloc_str(int n) {
@@ -3492,7 +3492,425 @@ static value_t n_decodeURIComponent(int t, value_t* a, int n) {
 }
 static value_t n_String_fromCharCode(int t, value_t* a, int n) { (void)t; char* d = js_alloc_str(n); for (int i = 0; i < n; i++) { int c = (int)(to_num(a[i]) >> FX_SHIFT); d[i] = (char)(c > 0 && c < 128 ? c : '?'); } d[n] = 0; return mk_str(d); }
 static value_t n_Number_isInteger(int t, value_t* a, int n) { (void)t; return mk_bool(n && a[0].type == V_NUM && (a[0].u.n & (FX_ONE - 1)) == 0 && !is_nan(a[0].u.n)); }
-static value_t n_fetch(int t, value_t* a, int n) { (void)t; (void)a; (void)n; br_js_console("fetch() is not supported in this browser"); int p = new_object(O_PLAIN); def_native(p, "then", n_noop); def_native(p, "catch", n_noop); return mk_obj(p); }
+static value_t n_resolved_then(int t, value_t* a, int n);
+static value_t n_resolved_catch(int t, value_t* a, int n);
+static value_t n_fetch_text(int t, value_t* a, int n);
+static value_t n_fetch_json(int t, value_t* a, int n);
+
+static value_t js_resolved_value(value_t v) {
+    int p = new_object(O_PLAIN);
+    if (p < 0) return UNDEF;
+    set_prop(p, "__value", v);
+    def_native(p, "then", n_resolved_then);
+    def_native(p, "catch", n_resolved_catch);
+    return mk_obj(p);
+}
+
+static value_t js_rejected_value(value_t v) {
+    int p = new_object(O_PLAIN);
+    if (p < 0) return UNDEF;
+    set_prop(p, "__error", v);
+    def_native(p, "then", n_resolved_then);
+    def_native(p, "catch", n_resolved_catch);
+    return mk_obj(p);
+}
+
+static value_t js_chain_result(value_t v) {
+    if ((v.type == V_OBJ || v.type == V_FUNC) && get_prop(v.u.obj, "then").type == V_FUNC) return v;
+    return js_resolved_value(v);
+}
+
+static value_t n_resolved_then(int t, value_t* a, int n) {
+    value_t err = get_prop(t, "__error");
+    if (err.type != V_UNDEF) {
+        if (n > 1 && a[1].type == V_FUNC) return js_chain_result(call_function(a[1], -1, &err, 1));
+        return js_rejected_value(err);
+    }
+    value_t v = get_prop(t, "__value");
+    if (n && a[0].type == V_FUNC) return js_chain_result(call_function(a[0], -1, &v, 1));
+    return js_resolved_value(v);
+}
+
+static value_t n_resolved_catch(int t, value_t* a, int n) {
+    value_t err = get_prop(t, "__error");
+    if (err.type != V_UNDEF) {
+        if (n && a[0].type == V_FUNC) return js_chain_result(call_function(a[0], -1, &err, 1));
+        return js_rejected_value(err);
+    }
+    return js_resolved_value(get_prop(t, "__value"));
+}
+
+static value_t n_fetch_text(int t, value_t* a, int n) {
+    (void)a; (void)n;
+    return js_resolved_value(get_prop(t, "body"));
+}
+
+static value_t n_fetch_json(int t, value_t* a, int n) {
+    (void)a; (void)n;
+    const char* p = to_string(get_prop(t, "body"));
+    return js_resolved_value(json_parse_value(&p));
+}
+
+static value_t n_fetch(int t, value_t* a, int n) {
+    (void)t;
+    if (!n) return UNDEF;
+    char url[BR_URL_MAX];
+    br_resolve_url(brs.url, to_string(a[0]), url, sizeof(url));
+    char method[16] = "GET";
+    char headers[768] = "";
+    static char body[64 * 1024];
+    body[0] = 0;
+    if (n > 1 && a[1].type == V_OBJ) {
+        int opts = a[1].u.obj;
+        value_t mv = get_prop(opts, "method");
+        if (mv.type != V_UNDEF) {
+            const char* m = to_string(mv);
+            int i = 0; while (m[i] && i < (int)sizeof(method) - 1) { method[i] = m[i]; i++; } method[i] = 0;
+        }
+        value_t bv = get_prop(opts, "body");
+        if (bv.type != V_UNDEF && bv.type != V_NULL) {
+            const char* b = to_string(bv);
+            int i = 0; while (b[i] && i < (int)sizeof(body) - 1) { body[i] = b[i]; i++; } body[i] = 0;
+        }
+        value_t hv = get_prop(opts, "headers");
+        if (hv.type == V_OBJ) {
+            int ho = hv.u.obj;
+            for (int q = objects[ho].first_prop; q >= 0; q = props[q].next) {
+                const char* key = props[q].key;
+                const char* val = to_string(props[q].val);
+                if (strlen(headers) + strlen(key) + strlen(val) + 5 >= sizeof(headers)) break;
+                br_strlcat(headers, key, sizeof(headers));
+                br_strlcat(headers, ": ", sizeof(headers));
+                br_strlcat(headers, val, sizeof(headers));
+                br_strlcat(headers, "\r\n", sizeof(headers));
+            }
+        }
+    }
+    static uint8_t response_body[64 * 1024];
+    char request_url[BR_URL_MAX];
+    br_strlcpy(request_url, url, sizeof(request_url));
+    int count = -1;
+    for (int redirects = 0; redirects <= 4; redirects++) {
+        count = net_http_request(method, request_url, headers, (const uint8_t*)body, (uint32_t)strlen(body), response_body, sizeof(response_body) - 1);
+        if (count < 0 || net_http_last_status < 300 || net_http_last_status >= 400 || !net_http_last_location[0] || redirects == 4) break;
+        char next[BR_URL_MAX];
+        br_resolve_url(request_url, net_http_last_location, next, sizeof(next));
+        if (br_streq(next, request_url)) break;
+        br_strlcpy(request_url, next, sizeof(request_url));
+        if (net_http_last_status == 303 || ((net_http_last_status == 301 || net_http_last_status == 302) && br_strieq(method, "POST"))) {
+            br_strlcpy(method, "GET", sizeof(method));
+            body[0] = 0;
+        }
+    }
+    if (count < 0) {
+        int p = new_object(O_PLAIN);
+        if (p < 0) return UNDEF;
+        set_prop(p, "__error", mk_str(js_strdup("fetch request failed")));
+        def_native(p, "then", n_resolved_then);
+        def_native(p, "catch", n_resolved_catch);
+        return mk_obj(p);
+    }
+    response_body[count] = 0;
+    int response = new_object(O_PLAIN);
+    if (response < 0) return UNDEF;
+    set_prop(response, "status", mk_int(net_http_last_status));
+    set_prop(response, "ok", mk_bool(net_http_last_status >= 200 && net_http_last_status < 300));
+    set_prop(response, "url", mk_str(js_strdup(request_url)));
+    set_prop(response, "body", mk_str(js_strdup_n((const char*)response_body, count)));
+    def_native(response, "text", n_fetch_text);
+    def_native(response, "json", n_fetch_json);
+    return js_resolved_value(mk_obj(response));
+}
+static int js_websocket_obj = -1;
+static int js_websocket_state = 3;
+static int js_websocket_open_pending;
+static int js_websocket_close_pending;
+static int js_websocket_error_pending;
+static uint8_t js_websocket_message[65536];
+
+void br_js_close_network(void) {
+    if (js_websocket_state == 1) net_websocket_close();
+    js_websocket_obj = -1;
+    js_websocket_state = 3;
+    js_websocket_open_pending = js_websocket_close_pending = js_websocket_error_pending = 0;
+}
+
+static void js_websocket_event(const char* type, const char* data, int close_code) {
+    if (js_websocket_obj < 0) return;
+    int e = new_object(O_PLAIN);
+    if (e < 0) return;
+    set_prop(e, "type", mk_str(type));
+    set_prop(e, "target", mk_obj(js_websocket_obj));
+    set_prop(e, "currentTarget", mk_obj(js_websocket_obj));
+    if (data) set_prop(e, "data", mk_str(js_strdup(data)));
+    if (br_streq(type, "close")) {
+        set_prop(e, "code", mk_int(close_code ? close_code : 1000));
+        set_prop(e, "reason", mk_str(""));
+        set_prop(e, "wasClean", mk_bool(1));
+    }
+    int prevented = 0;
+    dispatch_event_on(js_websocket_obj, type, mk_obj(e), &prevented);
+}
+
+static value_t n_websocket_send(int t, value_t* a, int n) {
+    if (t != js_websocket_obj || js_websocket_state != 1 || !n) return UNDEF;
+    const char* text = to_string(a[0]);
+    if (net_websocket_send((const uint8_t*)text, (uint32_t)strlen(text)) < 0) {
+        net_websocket_close();
+        js_websocket_state = 3;
+        set_prop(t, "readyState", mk_int(3));
+        js_websocket_error_pending = 1;
+    }
+    return UNDEF;
+}
+
+static value_t n_websocket_close(int t, value_t* a, int n) {
+    (void)a; (void)n;
+    if (t == js_websocket_obj && js_websocket_state == 1) {
+        net_websocket_close();
+        js_websocket_state = 3;
+        set_prop(t, "readyState", mk_int(3));
+        js_websocket_close_pending = 1;
+    }
+    return UNDEF;
+}
+
+static value_t n_websocket_add_listener(int t, value_t* a, int n) {
+    if (t < 0 || n < 2 || a[1].type != V_FUNC) return UNDEF;
+    char key[48]; int k = 0;
+    const char* prefix = "__listeners_";
+    while (prefix[k]) { key[k] = prefix[k]; k++; }
+    const char* type = to_string(a[0]);
+    for (int i = 0; type[i] && k < (int)sizeof(key) - 1; i++) key[k++] = type[i];
+    key[k] = 0;
+    prop_t* p = find_own(t, key);
+    int arr;
+    if (p && p->val.type == V_OBJ) arr = p->val.u.obj;
+    else { arr = new_array(); set_prop(t, js_strdup(key), mk_obj(arr)); }
+    array_push(arr, a[1]);
+    return UNDEF;
+}
+
+static value_t n_websocket_remove_listener(int t, value_t* a, int n) {
+    if (t < 0 || n < 2) return UNDEF;
+    char key[48]; int k = 0;
+    const char* prefix = "__listeners_";
+    while (prefix[k]) { key[k] = prefix[k]; k++; }
+    const char* type = to_string(a[0]);
+    for (int i = 0; type[i] && k < (int)sizeof(key) - 1; i++) key[k++] = type[i];
+    key[k] = 0;
+    prop_t* p = find_own(t, key);
+    if (p && p->val.type == V_OBJ) {
+        int arr = p->val.u.obj;
+        for (int i = 0; i < objects[arr].len; i++) if (strict_eq(objects[arr].items[i], a[1])) {
+            for (int j = i + 1; j < objects[arr].len; j++) objects[arr].items[j - 1] = objects[arr].items[j];
+            objects[arr].len--; break;
+        }
+    }
+    return UNDEF;
+}
+
+static value_t n_websocket_constructor(int t, value_t* a, int n) {
+    (void)t;
+    if (!n) return UNDEF;
+    if (js_websocket_state == 1) net_websocket_close();
+    js_websocket_obj = new_object(O_PLAIN);
+    if (js_websocket_obj < 0) return UNDEF;
+    js_websocket_open_pending = js_websocket_close_pending = js_websocket_error_pending = 0;
+    js_websocket_state = 0;
+    const char* supplied = to_string(a[0]);
+    char address[BR_URL_MAX];
+    if (br_streq_prefix(supplied, "ws://") || br_streq_prefix(supplied, "wss://")) br_strlcpy(address, supplied, sizeof(address));
+    else {
+        br_resolve_url(brs.url, supplied, address, sizeof(address));
+        if (br_streq_prefix(address, "https://")) {
+            char tmp[BR_URL_MAX]; br_strlcpy(tmp, address, sizeof(tmp));
+            br_strlcpy(address, "wss://", sizeof(address)); br_strlcat(address, tmp + 8, sizeof(address));
+        } else if (br_streq_prefix(address, "http://")) {
+            char tmp[BR_URL_MAX]; br_strlcpy(tmp, address, sizeof(tmp));
+            br_strlcpy(address, "ws://", sizeof(address)); br_strlcat(address, tmp + 7, sizeof(address));
+        }
+    }
+    set_prop(js_websocket_obj, "url", mk_str(js_strdup(address)));
+    set_prop(js_websocket_obj, "readyState", mk_int(0));
+    set_prop(js_websocket_obj, "bufferedAmount", mk_int(0));
+    set_prop(js_websocket_obj, "extensions", mk_str(""));
+    set_prop(js_websocket_obj, "protocol", mk_str(""));
+    set_prop(js_websocket_obj, "binaryType", mk_str("arraybuffer"));
+    def_native(js_websocket_obj, "send", n_websocket_send);
+    def_native(js_websocket_obj, "close", n_websocket_close);
+    def_native(js_websocket_obj, "addEventListener", n_websocket_add_listener);
+    def_native(js_websocket_obj, "removeEventListener", n_websocket_remove_listener);
+    if (net_websocket_open(address) == 0) {
+        js_websocket_state = 1;
+        set_prop(js_websocket_obj, "readyState", mk_int(1));
+        js_websocket_open_pending = 1;
+    } else {
+        js_websocket_state = 3;
+        set_prop(js_websocket_obj, "readyState", mk_int(3));
+        js_websocket_error_pending = 1;
+    }
+    return mk_obj(js_websocket_obj);
+}
+
+static void xhr_event(int o, const char* type) {
+    value_t e = make_event(type, NULL);
+    if (e.type == V_OBJ) {
+        set_prop(e.u.obj, "target", mk_obj(o));
+        set_prop(e.u.obj, "currentTarget", mk_obj(o));
+        int prevented = 0;
+        dispatch_event_on(o, type, e, &prevented);
+    }
+}
+
+static value_t n_xhr_open(int t, value_t* a, int n) {
+    if (t < 0 || n < 2) return UNDEF;
+    const char* method = to_string(a[0]);
+    const char* raw_url = to_string(a[1]);
+    char url[BR_URL_MAX];
+    br_resolve_url(brs.url, raw_url, url, sizeof(url));
+    set_prop(t, "_method", mk_str(js_strdup(method)));
+    set_prop(t, "_url", mk_str(js_strdup(url)));
+    set_prop(t, "_headers", mk_str(""));
+    set_prop(t, "_contentType", mk_str(""));
+    set_prop(t, "_location", mk_str(""));
+    set_prop(t, "readyState", mk_int(1));
+    set_prop(t, "status", mk_int(0));
+    set_prop(t, "statusText", mk_str(""));
+    set_prop(t, "responseText", mk_str(""));
+    set_prop(t, "response", mk_null());
+    set_prop(t, "responseURL", mk_str(url));
+    set_prop(t, "async", mk_bool(n < 3 || truthy(a[2])));
+    xhr_event(t, "readystatechange");
+    return UNDEF;
+}
+
+static value_t n_xhr_set_header(int t, value_t* a, int n) {
+    if (t < 0 || n < 2) return UNDEF;
+    char line[512];
+    br_strlcpy(line, to_string(a[0]), sizeof(line));
+    br_strlcat(line, ": ", sizeof(line));
+    br_strlcat(line, to_string(a[1]), sizeof(line));
+    br_strlcat(line, "\r\n", sizeof(line));
+    char headers[768];
+    br_strlcpy(headers, to_string(get_prop(t, "_headers")), sizeof(headers));
+    br_strlcat(headers, line, sizeof(headers));
+    set_prop(t, "_headers", mk_str(js_strdup(headers)));
+    return UNDEF;
+}
+
+static value_t n_xhr_send(int t, value_t* a, int n) {
+    if (t < 0 || get_prop(t, "_url").type == V_UNDEF) return UNDEF;
+    static char body[64 * 1024];
+    body[0] = 0;
+    if (n && a[0].type != V_NULL && a[0].type != V_UNDEF) {
+        const char* b = to_string(a[0]);
+        int i = 0; while (b[i] && i < (int)sizeof(body) - 1) { body[i] = b[i]; i++; } body[i] = 0;
+    }
+    const char* method = to_string(get_prop(t, "_method"));
+    const char* headers = to_string(get_prop(t, "_headers"));
+    char request_url[BR_URL_MAX];
+    br_strlcpy(request_url, to_string(get_prop(t, "_url")), sizeof(request_url));
+    static uint8_t response[64 * 1024];
+    int count = -1;
+    for (int redirects = 0; redirects <= 4; redirects++) {
+        count = net_http_request(method, request_url, headers, (const uint8_t*)body, (uint32_t)strlen(body), response, sizeof(response) - 1);
+        if (count < 0 || net_http_last_status < 300 || net_http_last_status >= 400 || !net_http_last_location[0] || redirects == 4) break;
+        char next[BR_URL_MAX];
+        br_resolve_url(request_url, net_http_last_location, next, sizeof(next));
+        if (br_streq(next, request_url)) break;
+        br_strlcpy(request_url, next, sizeof(request_url));
+        if (net_http_last_status == 303 || ((net_http_last_status == 301 || net_http_last_status == 302) && br_strieq(method, "POST"))) {
+            method = "GET";
+            body[0] = 0;
+        }
+    }
+    if (count < 0) {
+        set_prop(t, "status", mk_int(0));
+        set_prop(t, "_contentType", mk_str(""));
+        set_prop(t, "_location", mk_str(""));
+        set_prop(t, "readyState", mk_int(4));
+        xhr_event(t, "readystatechange");
+        xhr_event(t, "error");
+        xhr_event(t, "loadend");
+        return UNDEF;
+    }
+    response[count] = 0;
+    set_prop(t, "status", mk_int(net_http_last_status));
+    set_prop(t, "_contentType", mk_str(js_strdup(net_http_last_content_type)));
+    set_prop(t, "_location", mk_str(js_strdup(net_http_last_location)));
+    set_prop(t, "readyState", mk_int(2)); xhr_event(t, "readystatechange");
+    set_prop(t, "readyState", mk_int(3)); xhr_event(t, "readystatechange");
+    set_prop(t, "readyState", mk_int(4));
+    set_prop(t, "responseText", mk_str(js_strdup_n((const char*)response, count)));
+    set_prop(t, "responseURL", mk_str(js_strdup(request_url)));
+    const char* response_type = to_string(get_prop(t, "responseType"));
+    if (br_strieq(response_type, "json")) {
+        const char* p = to_string(get_prop(t, "responseText"));
+        set_prop(t, "response", json_parse_value(&p));
+    } else set_prop(t, "response", mk_str(js_strdup_n((const char*)response, count)));
+    xhr_event(t, "readystatechange");
+    xhr_event(t, "load");
+    xhr_event(t, "loadend");
+    return UNDEF;
+}
+
+static value_t n_xhr_abort(int t, value_t* a, int n) {
+    (void)a; (void)n;
+    if (t >= 0) {
+        set_prop(t, "readyState", mk_int(0));
+        set_prop(t, "status", mk_int(0));
+        xhr_event(t, "abort");
+    }
+    return UNDEF;
+}
+
+static value_t n_xhr_get_header(int t, value_t* a, int n) {
+    if (t < 0 || !n) return mk_null();
+    const char* name = to_string(a[0]);
+    if (br_strieq(name, "content-type")) { const char* v=to_string(get_prop(t,"_contentType")); return v[0]?mk_str(js_strdup(v)):mk_null(); }
+    if (br_strieq(name, "location")) { const char* v=to_string(get_prop(t,"_location")); return v[0]?mk_str(js_strdup(v)):mk_null(); }
+    return mk_null();
+}
+
+static value_t n_xhr_all_headers(int t, value_t* a, int n) {
+    (void)a; (void)n;
+    static char headers[256];
+    headers[0] = 0;
+    const char* ct=t>=0?to_string(get_prop(t,"_contentType")):"";
+    const char* loc=t>=0?to_string(get_prop(t,"_location")):"";
+    if (ct[0]) { br_strlcat(headers, "Content-Type: ", sizeof(headers)); br_strlcat(headers, ct, sizeof(headers)); br_strlcat(headers, "\r\n", sizeof(headers)); }
+    if (loc[0]) { br_strlcat(headers, "Location: ", sizeof(headers)); br_strlcat(headers, loc, sizeof(headers)); br_strlcat(headers, "\r\n", sizeof(headers)); }
+    return mk_str(js_strdup(headers));
+}
+
+static value_t n_xhr_constructor(int t, value_t* a, int n) {
+    (void)t; (void)a; (void)n;
+    int o = new_object(O_PLAIN);
+    if (o < 0) return UNDEF;
+    set_prop(o, "readyState", mk_int(0));
+    set_prop(o, "status", mk_int(0));
+    set_prop(o, "statusText", mk_str(""));
+    set_prop(o, "responseText", mk_str(""));
+    set_prop(o, "response", mk_null());
+    set_prop(o, "responseType", mk_str(""));
+    set_prop(o, "responseURL", mk_str(""));
+    set_prop(o, "_contentType", mk_str(""));
+    set_prop(o, "_location", mk_str(""));
+    set_prop(o, "timeout", mk_int(0));
+    set_prop(o, "withCredentials", mk_bool(0));
+    def_native(o, "open", n_xhr_open);
+    def_native(o, "setRequestHeader", n_xhr_set_header);
+    def_native(o, "send", n_xhr_send);
+    def_native(o, "abort", n_xhr_abort);
+    def_native(o, "getResponseHeader", n_xhr_get_header);
+    def_native(o, "getAllResponseHeaders", n_xhr_all_headers);
+    def_native(o, "overrideMimeType", n_noop);
+    def_native(o, "addEventListener", n_websocket_add_listener);
+    def_native(o, "removeEventListener", n_websocket_remove_listener);
+    return mk_obj(o);
+}
+
 static value_t n_matchMedia(int t, value_t* a, int n) { (void)t; (void)a; (void)n; int r = new_object(O_PLAIN); set_prop(r, "matches", mk_bool(0)); def_native(r, "addListener", n_noop); def_native(r, "addEventListener", n_noop); return mk_obj(r); }
 static value_t n_window_addEventListener(int t, value_t* a, int n) {
     if (n > 1 && a[1].type == V_FUNC) {
@@ -3566,6 +3984,14 @@ static void setup_globals(void) {
     def_native(g, "escape", n_encodeURIComponent);
     def_native(g, "unescape", n_decodeURIComponent);
     def_native(g, "fetch", n_fetch);
+    def_native(g, "WebSocket", n_websocket_constructor);
+    {
+        int ctor = get_prop(g, "WebSocket").u.obj;
+        set_prop(ctor, "CONNECTING", mk_int(0));
+        set_prop(ctor, "OPEN", mk_int(1));
+        set_prop(ctor, "CLOSING", mk_int(2));
+        set_prop(ctor, "CLOSED", mk_int(3));
+    }
     def_native(g, "matchMedia", n_matchMedia);
     def_native(g, "open", n_location_assign);
     def_native(g, "close", n_noop);
@@ -3589,7 +4015,16 @@ static void setup_globals(void) {
     def_native(g, "Map", n_Object); def_native(g, "Set", n_Object); def_native(g, "WeakMap", n_Object); def_native(g, "Symbol", n_String);
     def_native(g, "IntersectionObserver", n_IntersectionObserver); def_native(g, "MutationObserver", n_Observer); def_native(g, "ResizeObserver", n_Observer); def_native(g, "PerformanceObserver", n_Observer);
     def_native(g, "__ioFire", n_io_fire);
-    def_native(g, "Event", n_Object); def_native(g, "CustomEvent", n_Object); def_native(g, "Image", n_Object); def_native(g, "XMLHttpRequest", n_Object);
+    def_native(g, "Event", n_Object); def_native(g, "CustomEvent", n_Object); def_native(g, "Image", n_Object);
+    def_native(g, "XMLHttpRequest", n_xhr_constructor);
+    {
+        int ctor = get_prop(g, "XMLHttpRequest").u.obj;
+        set_prop(ctor, "UNSENT", mk_int(0));
+        set_prop(ctor, "OPENED", mk_int(1));
+        set_prop(ctor, "HEADERS_RECEIVED", mk_int(2));
+        set_prop(ctor, "LOADING", mk_int(3));
+        set_prop(ctor, "DONE", mk_int(4));
+    }
     def_native(g, "HTMLElement", n_Object); objects[get_prop(g, "HTMLElement").u.obj].name = "HTMLElement";
     def_native(g, "Element", n_Object); objects[get_prop(g, "Element").u.obj].name = "Element";
     def_native(g, "Node", n_Object); objects[get_prop(g, "Node").u.obj].name = "Node";
@@ -3697,6 +4132,7 @@ static void setup_globals(void) {
 }
 
 void br_js_reset(void) {
+    br_js_close_network();
     node_count = 0; list_count = 0; obj_count = 0; prop_count = 0; str_used = 0; scope_count = 0; arr_used = 0;
     tok_count = 0; steps = 0; js_aborted = 0; js_error = 0; flow = F_NONE; depth = 0; eval_nest = 0; parse_nest = 0;
     scope_pinned = 0;
@@ -3788,12 +4224,13 @@ static void form_submit_now(br_node_t* form) {
     if (!form) return;
     const char* action = br_attr(form, "action");
     const char* method = br_attr(form, "method");
-    if (method && br_strieq(method, "post")) { br_status("POST forms are not supported"); return; }
+    int is_post = method && br_strieq(method, "post");
     static char url[BR_URL_MAX * 2];
+    static char body[16 * 1024];
+    body[0] = 0;
     br_resolve_url(brs.url, action && action[0] ? action : brs.url, url, BR_URL_MAX);
-                                                                         
     int first = 1;
-    for (char* q = url; *q; q++) if (*q == '?') { first = 0; break; }
+    if (!is_post) for (char* q = url; *q; q++) if (*q == '?') { first = 0; break; }
     for (int i = 0; i < br_dom_node_count(); i++) {
         br_node_t* k = br_dom_node(i);
         if (k->type != BR_NODE_ELEMENT || !(br_streq(k->tag, "input") || br_streq(k->tag, "select") || br_streq(k->tag, "textarea"))) continue;
@@ -3819,14 +4256,22 @@ static void form_submit_now(br_node_t* form) {
             }
             val = sel ? sel : (firstv ? firstv : "");
         }
-        br_strlcat(url, first ? "?" : "&", sizeof(url)); first = 0;
-        br_strlcat(url, name, sizeof(url)); br_strlcat(url, "=", sizeof(url));
+        char* target = is_post ? body : url;
+        size_t target_size = is_post ? sizeof(body) : sizeof(url);
+        br_strlcat(target, first ? (is_post ? "" : "?") : "&", target_size); first = 0;
+        value_t nv = mk_str(name); value_t ne = n_encodeURIComponent(-1, &nv, 1);
+        br_strlcat(target, ne.u.s, target_size); br_strlcat(target, "=", target_size);
         value_t ev = mk_str(val); value_t enc = n_encodeURIComponent(-1, &ev, 1);
-        br_strlcat(url, enc.u.s, sizeof(url));
+        br_strlcat(target, enc.u.s, target_size);
     }
-    br_js_console(concat("form submit -> ", url));
-    br_strlcpy(brs.address, url, sizeof(brs.address));
-    brs.needs_layout = 2;
+    if (is_post) {
+        br_js_console(concat("form POST -> ", url));
+        br_submit_post(url, body);
+    } else {
+        br_js_console(concat("form submit -> ", url));
+        br_strlcpy(brs.address, url, sizeof(brs.address));
+        brs.needs_layout = 2;
+    }
 }
 
 void br_js_dispatch_click(br_node_t* n) {
@@ -3906,12 +4351,50 @@ void br_js_dispatch_change(br_node_t* n) {
 }
 
 int br_js_has_timers(void) {
+    if (js_websocket_state == 1 || js_websocket_open_pending || js_websocket_close_pending || js_websocket_error_pending) return 1;
     for (int i = 0; i < JS_MAX_TIMERS; i++) if (timers[i].active) return 1;
     return 0;
 }
 
 void br_js_tick(void) {
     if (obj_window < 0) return;
+    if (js_websocket_obj >= 0) {
+        if (js_websocket_open_pending) {
+            js_websocket_open_pending = 0;
+            steps = 0; js_aborted = 0; flow = F_NONE; depth = 0; eval_nest = 0;
+            js_websocket_event("open", NULL, 0);
+        }
+        if (js_websocket_error_pending) {
+            js_websocket_error_pending = 0;
+            steps = 0; js_aborted = 0; flow = F_NONE; depth = 0; eval_nest = 0;
+            js_websocket_event("error", NULL, 0);
+        }
+        if (js_websocket_close_pending) {
+            js_websocket_close_pending = 0;
+            steps = 0; js_aborted = 0; flow = F_NONE; depth = 0; eval_nest = 0;
+            js_websocket_event("close", NULL, 1000);
+        }
+        if (js_websocket_state == 1) {
+            int got = net_websocket_poll(js_websocket_message, sizeof(js_websocket_message) - 1);
+            if (got >= 0) {
+                js_websocket_message[got] = 0;
+                steps = 0; js_aborted = 0; flow = F_NONE; depth = 0; eval_nest = 0;
+                js_websocket_event("message", (const char*)js_websocket_message, 0);
+            } else if (got == NET_WEBSOCKET_CLOSED) {
+                net_websocket_close();
+                js_websocket_state = 3;
+                set_prop(js_websocket_obj, "readyState", mk_int(3));
+                steps = 0; js_aborted = 0; flow = F_NONE; depth = 0; eval_nest = 0;
+                js_websocket_event("close", NULL, 1000);
+            } else if (got == -1) {
+                net_websocket_close();
+                js_websocket_state = 3;
+                set_prop(js_websocket_obj, "readyState", mk_int(3));
+                steps = 0; js_aborted = 0; flow = F_NONE; depth = 0; eval_nest = 0;
+                js_websocket_event("error", NULL, 0);
+            }
+        }
+    }
     int now = (int)uptime_ticks;
     for (int i = 0; i < JS_MAX_TIMERS; i++) {
         if (!timers[i].active) continue;

@@ -40,8 +40,45 @@ struct fs_node* find_node(struct fs_node* parent, const char* name) {
     return NULL;
 }
 
+struct fs_node* fs_resolve_path(const char* path) {
+    if (!path || !path[0]) return NULL;
+    struct fs_node* node = path[0] == '/' ? root : current_dir;
+    char part[32];
+    int i = 0;
+    const char* p = path;
+    while (*p) {
+        while (*p == '/') p++;
+        if (!*p) break;
+        i = 0;
+        while (*p && *p != '/') {
+            if (i < 31) part[i++] = *p;
+            p++;
+        }
+        part[i] = 0;
+        if (strcmp(part, ".") == 0) continue;
+        if (strcmp(part, "..") == 0) {
+            if (node && node->parent) node = node->parent;
+            continue;
+        }
+        struct fs_node* next = NULL;
+        if (node && node->type == FS_DIRECTORY) {
+            for (int child = 0; child < node->num_children; child++) {
+                if (strcasecmp(node->children[child]->name, part) == 0) {
+                    next = node->children[child];
+                    break;
+                }
+            }
+        }
+        node = next;
+        if (!node) return NULL;
+    }
+    return node;
+}
+
 struct fs_node* search_path(const char* name) {
-    struct fs_node* n = find_node(current_dir, name);
+    struct fs_node* n = fs_resolve_path(name);
+    if (n && n->type == FS_FILE) return n;
+    n = find_node(current_dir, name);
     if (n && n->type == FS_FILE) return n;
 
     struct fs_node* sys = find_node(root, "System");
@@ -65,6 +102,13 @@ struct fs_node* create_node(const char* name, node_type_t type, struct fs_node* 
     node->num_children = 0;
     node->content[0] = '\0';
     node->content_len = 0;
+    node->disk_backed = 0;
+    node->disk_drive = 0;
+    node->disk_entry_offset = 0;
+    node->disk_cluster = 0;
+    node->disk_size = 0;
+    node->disk_capacity = 0;
+    node->disk_entry_lba = 0;
     if (parent && parent->num_children < MAX_CHILDREN) {
         parent->children[parent->num_children++] = node;
     }
@@ -358,6 +402,9 @@ void fs_initialize() {
         "c0100a00 T syscall_handler\n");
 
     create_node("shs", FS_FILE, bin_dir);
+
+    struct fs_node* mount_dir = create_node("mnt", FS_DIRECTORY, root);
+    (void)mount_dir;
 
     struct fs_node* pc_dir = create_node("pc", FS_DIRECTORY, root);
     struct fs_node* wallpaper = create_node("9fc3fc59d52dc24748feb8836feded7e.png", FS_FILE, pc_dir);

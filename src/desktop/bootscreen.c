@@ -81,20 +81,20 @@ static uint32_t boot_ok_color(void) {
                                                : BOOT_OK_GREEN;
 }
 
-static void boot_delay(volatile int iters) {
-    for (volatile int i = 0; i < iters; i++);
+static uint64_t boot_read_tsc(void) {
+    uint32_t lo;
+    uint32_t hi;
+    asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
 }
 
-                                                                      
-                                                             
 static void boot_wait_ms(uint32_t ms) {
-    uint32_t a = uptime_ticks;
-    boot_delay(200000);
-    if (uptime_ticks != a) {
-        uint32_t t0 = uptime_ticks;
-        while (uptime_ticks - t0 < ms) asm volatile("hlt");
-    } else {
-        boot_delay((int)(ms * 400000u));
+    uint32_t start_ticks = uptime_ticks;
+    uint64_t start_tsc = boot_read_tsc();
+    uint64_t max_cycles = (uint64_t)ms * 4000000ULL;
+    while ((uint32_t)(uptime_ticks - start_ticks) < ms) {
+        if (boot_read_tsc() - start_tsc >= max_cycles) break;
+        asm volatile("pause");
     }
 }
 
@@ -208,9 +208,6 @@ void boot_screen_hide(void) {
 
                                                                       
                                                                       
-    boot_wait_ms(400);
-    while (uptime_ticks < 4600) asm volatile("hlt");
-    boot_wait_ms(300);
-
+    boot_wait_ms(250);
     draw_rect(0, 0, (int)screen_width, (int)screen_height, BOOT_BG);
 }

@@ -113,10 +113,10 @@ static void ac97_reset_controller(void){
     outb(nabmbar + AC97_BM_PO_OFF + AC97_X_CR, 0x00);
     // Global Control: cold reset
     outl(nabmbar + AC97_BM_GLOB_CNT, 0x00000002); // bit1 = cold reset
-    delay_ms(10);
+    audio_delay_ms(10);
     // Reset mixer: write 1 to 0x00?
     outw(nambar + 0x00, 0x0000); // reset
-    delay_ms(10);
+    audio_delay_ms(10);
     // Check extended audio support
     uint16_t eid = ac97_read_mixer(0x28); // extended audio ID
     serial_puts("[ac97] EID 0x"); serial_puthex32(eid); serial_puts("\n");

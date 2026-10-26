@@ -8,6 +8,17 @@ br_node_t* br_doc = NULL;
 int br_js_disabled = 0;                                                                  
 char br_page_src[BR_PAGE_MAX];
 int br_page_len = 0;
+static char pending_post_url[BR_URL_MAX];
+static char pending_post_body[16 * 1024];
+static int pending_post_active;
+
+void br_submit_post(const char* url, const char* body) {
+    br_strlcpy(pending_post_url, url, sizeof(pending_post_url));
+    br_strlcpy(pending_post_body, body, sizeof(pending_post_body));
+    pending_post_active = 1;
+    br_strlcpy(brs.address, url, sizeof(brs.address));
+    brs.needs_layout = 2;
+}
 
 #define BR_TOOLBAR_H   30
 #define BR_ADDR_H      26
@@ -210,7 +221,7 @@ static const char home_page[] =
     "<p>Toolbar: <b>Back</b>, <b>Fwd</b>, <b>Reload</b>, <b>Home</b> and the <b>Go</b> button. "
     "The <b>Links</b> button opens the bookmark menu.</p>"
     "<p class=small>Supports HTML 4-ish markup, a useful subset of CSS, a JavaScript interpreter with DOM access, "
-    "PNG/GIF/JPEG images, TrueType and @font-face fonts, forms (GET), <code>http://</code> and <code>https://</code> (TLS 1.3, AES-128-GCM, X25519) over the built-in TCP/IP stack (DHCP configured at boot). "
+    "PNG/GIF/JPEG/WebP/SVG images, TrueType and @font-face fonts, GET/POST forms, synchronous <code>fetch()</code>/XHR, and single-connection <code>WebSocket</code>, <code>http://</code> and <code>https://</code> (TLS 1.3, AES-128-GCM, X25519) over the built-in TCP/IP stack (DHCP configured at boot). "
     "Note: certificates are <b>not</b> validated - the connection is encrypted but the server's identity is taken on trust.</p>"
     "</div>"
     "<div class=card><h2>Status</h2><p id=net>Network: <span id=netstate>checking...</span></p>"
@@ -702,6 +713,77 @@ static void page_apply_charset(void) {
     br_page_src[br_page_len] = 0;
 }
 
+static int br_wrap_remote_content(int n){
+    const char* ct=net_http_last_content_type;
+    const char* mime=NULL;
+    if(my_strstr_ci(ct,"image/png"))mime="image/png";
+    else if(my_strstr_ci(ct,"image/jpeg")||my_strstr_ci(ct,"image/jpg"))mime="image/jpeg";
+    else if(my_strstr_ci(ct,"image/gif"))mime="image/gif";
+    else if(my_strstr_ci(ct,"image/webp"))mime="image/webp";
+    else if(my_strstr_ci(ct,"image/svg+xml"))mime="image/svg+xml";
+    if(mime){
+        static const char alphabet[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        char prefix[192]="<html><head><title>Image</title></head><body style=\"margin:0;text-align:center;background:#333\"><img style=\"max-width:100%;height:auto\" src=\"data:";
+        br_strlcat(prefix,mime,sizeof(prefix));
+        br_strlcat(prefix,";base64,",sizeof(prefix));
+        int pl=(int)strlen(prefix);
+        const char* suffix="\"></body></html>";
+        int sl=(int)strlen(suffix);
+        int enc=((n+2)/3)*4;
+        if(n<0)return -1;
+        if(n>256*1024||pl+enc+sl>=BR_PAGE_MAX){
+            const char* too_large="<html><body><p>This image exceeds SharkOS Navigator's display limit.</p></body></html>";
+            n=(int)strlen(too_large); memcpy(br_page_src,too_large,(size_t)n); br_page_src[n]=0; return n;
+        }
+        for(int end=n;end>0;){
+            int start=((end-1)/3)*3;
+            uint32_t v=(uint8_t)br_page_src[start]<<16;
+            if(start+1<n)v|=(uint32_t)(uint8_t)br_page_src[start+1]<<8;
+            if(start+2<n)v|=(uint8_t)br_page_src[start+2];
+            char q[4]={alphabet[(v>>18)&63],alphabet[(v>>12)&63],start+1<n?alphabet[(v>>6)&63]:'=',start+2<n?alphabet[v&63]:'='};
+            memcpy(br_page_src+pl+(start/3)*4,q,4);
+            end=start;
+        }
+        memcpy(br_page_src,prefix,(size_t)pl);
+        memcpy(br_page_src+pl+enc,suffix,(size_t)sl);
+        n=pl+enc+sl;
+        br_page_src[n]=0;
+        return n;
+    }
+
+    int json=my_strstr_ci(ct,"application/json")!=NULL||my_strstr_ci(ct,"+json")!=NULL;
+    int xml=my_strstr_ci(ct,"application/xml")!=NULL||my_strstr_ci(ct,"text/xml")!=NULL||my_strstr_ci(ct,"+xml")!=NULL;
+    int script=my_strstr_ci(ct,"javascript")!=NULL;
+    int plain=my_strstr_ci(ct,"text/")!=NULL&&!my_strstr_ci(ct,"text/html");
+    if(!plain&&!json&&!xml&&!script)return n;
+
+    const char* prefix=json?"<html><head><title>JSON</title></head><body><pre style=\"white-space:pre;font-family:monospace\">":
+                       xml?"<html><head><title>XML</title></head><body><pre style=\"white-space:pre;font-family:monospace\">":
+                       script?"<html><head><title>Source</title></head><body><pre style=\"white-space:pre;font-family:monospace\">":
+                       "<html><head><title>Text</title></head><body><pre style=\"white-space:pre-wrap;font-family:monospace\">";
+    const char* suffix="</pre></body></html>";
+    int pl=(int)strlen(prefix), sl=(int)strlen(suffix);
+    int limit=(BR_PAGE_MAX-pl-sl-8)/6;
+    if(n>limit)n=limit;
+    int escaped=0;
+    for(int i=0;i<n;i++)escaped+=br_page_src[i]=='&'?5:br_page_src[i]=='<'||br_page_src[i]=='>'?4:1;
+    if(pl+escaped+sl>=BR_PAGE_MAX)return -1;
+    for(int i=n-1;i>=0;i--)br_page_src[pl+i]=br_page_src[i];
+    int o=pl+escaped;
+    for(int i=n-1;i>=0;i--){
+        char c=br_page_src[pl+i];
+        if(c=='&'){br_page_src[--o]=';';br_page_src[--o]='p';br_page_src[--o]='m';br_page_src[--o]='a';br_page_src[--o]='&';}
+        else if(c=='<'){br_page_src[--o]=';';br_page_src[--o]='t';br_page_src[--o]='l';br_page_src[--o]='&';}
+        else if(c=='>'){br_page_src[--o]=';';br_page_src[--o]='t';br_page_src[--o]='g';br_page_src[--o]='&';}
+        else br_page_src[--o]=c;
+    }
+    memcpy(br_page_src,prefix,(size_t)pl);
+    memcpy(br_page_src+pl+escaped,suffix,(size_t)sl);
+    n=pl+escaped+sl;
+    br_page_src[n]=0;
+    return n;
+}
+
 static int redirect_depth = 0;
 
 void br_navigate(const char* url_in, int push_history) {
@@ -745,6 +827,7 @@ void br_navigate(const char* url_in, int push_history) {
     if (brs.win) { brs.win->needs_redraw = true; desktop_render(); }
 
     if (!br_streq(full, "about:source")) { source_copy_len = br_page_len; memcpy(source_copy, br_page_src, (size_t)br_page_len); }
+    br_js_close_network();
 
     int ok = 1;
     if (br_streq(full, "about:home") || br_streq(full, "about:") || br_streq(full, "about:blank")) {
@@ -792,12 +875,25 @@ void br_navigate(const char* url_in, int push_history) {
             build_error_page(full, "The network is not configured yet (no DHCP lease). Wait a few seconds after boot, check the Network window in the tray, or run <b>dhcp</b> in a Terminal.");
             ok = 0;
         } else {
-            int n = br_fetch_resource(full, (uint8_t*)br_page_src, BR_PAGE_MAX - 1);
+            int n;
+            if (pending_post_active && br_streq(full, pending_post_url)) {
+                n = net_http_request("POST", full, "Content-Type: application/x-www-form-urlencoded\r\n",
+                                     (const uint8_t*)pending_post_body, (uint32_t)strlen(pending_post_body),
+                                     (uint8_t*)br_page_src, BR_PAGE_MAX - 1);
+                pending_post_active = 0;
+            } else {
+                pending_post_active = 0;
+                n = br_fetch_resource(full, (uint8_t*)br_page_src, BR_PAGE_MAX - 1);
+            }
             if (n < 0) n = 0;
             br_page_src[n] = 0; br_page_len = n;
+            int is_http = is_net_url(full);
+            if (is_http && n > 0) {
+                int wrapped = br_wrap_remote_content(n);
+                if (wrapped >= 0) { n = wrapped; br_page_len = wrapped; }
+            }
             page_apply_charset();
             n = br_page_len;
-            int is_http = is_net_url(full);
             int is_https = br_streq_prefix(full, "https://");
             int status = is_http ? net_http_last_status : 200;
             if (is_http && status >= 300 && status <= 399 && net_http_last_location[0]) {

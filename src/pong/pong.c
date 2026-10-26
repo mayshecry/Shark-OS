@@ -320,8 +320,8 @@ void pong_run(void) {
                     init_game();
                 }
             }
-            if (c == 'w' || c == 'W') key_up_pressed = 1;
-            if (c == 's' || c == 'S') key_down_pressed = 1;
+            if (c == 'w' || c == 'W' || c == 0x10) key_up_pressed = 1;
+            if (c == 's' || c == 'S' || c == 0x11) key_down_pressed = 1;
         }
 
         uint32_t now = uptime_ticks;
@@ -414,8 +414,8 @@ void pong_handle_key(int key) {
             init_game();
         }
     }
-    if (key == 'w' || key == 'W' || key == 72 || key == 80) key_up_pressed = 1;
-    if (key == 's' || key == 'S' || key == 80) key_down_pressed = 1;
+    if (key == 'w' || key == 'W' || key == 0x10 || key == 72) key_up_pressed = 1;
+    if (key == 's' || key == 'S' || key == 0x11 || key == 80) key_down_pressed = 1;
 }
 
 void pong_set_kernel_mode(void) {

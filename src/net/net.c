@@ -975,6 +975,7 @@ typedef void (*l4_cb_t)(const uint8_t* payload, uint32_t len, const uint8_t* src
 static l4_cb_t icmp_cb = NULL;
 static l4_cb_t udp_cb  = NULL;
 static l4_cb_t tcp_cb  = NULL;
+static void tcp_server_on_segment(const uint8_t* payload, uint32_t len, const uint8_t* src_ip);
 
 static void dhcp_recv(const uint8_t* payload, uint32_t len, const uint8_t* src_ip);
 
@@ -1049,6 +1050,7 @@ static void net_on_frame(const uint8_t* frame, uint32_t len) {
         const uint8_t* sip = &frame[14 + 12];
         const uint8_t* dip = &frame[14 + 16];
         const uint8_t* payload = &frame[14 + ihl];
+        if (net_configured) arp_add(sip, frame + 6);
         uint16_t total = (uint16_t)((frame[14 + 2] << 8) | frame[14 + 3]);
         uint32_t plen = (total > ihl) ? (total - ihl) : 0;
         if (plen > len - 14 - ihl) plen = len - 14 - ihl;
@@ -1063,6 +1065,7 @@ static void net_on_frame(const uint8_t* frame, uint32_t len) {
             }
         } else if (proto == IP_TCP) {
             if (tcp_cb) tcp_cb(payload, plen, sip);
+            tcp_server_on_segment(payload, plen, sip);
         } else if (proto == IP_UDP) {
             if (plen < 8) return;
             uint16_t sport = (uint16_t)((payload[0] << 8) | payload[1]);
@@ -1332,6 +1335,37 @@ static uint8_t tcp_rx_buf[262144];
 static volatile uint32_t tcp_rx_len = 0;
 static uint32_t tcp_rx_rd = 0;
 
+#define TCP_SERVER_CONNECTIONS 4
+#define TCP_SERVER_LISTENERS 8
+#define TCP_SERVER_RX_SIZE 16384
+
+typedef struct {
+    uint8_t state;
+    uint8_t accepted;
+    uint8_t peer_closed;
+    uint8_t local_closed;
+    uint8_t peer_ip[4];
+    uint8_t peer_mac[6];
+    uint16_t local_port;
+    uint16_t peer_port;
+    uint32_t send_seq;
+    uint32_t send_acked;
+    uint32_t recv_seq;
+    uint16_t peer_window;
+    uint8_t rx[TCP_SERVER_RX_SIZE];
+    uint32_t rx_len;
+    uint32_t rx_rd;
+} tcp_server_conn_t;
+
+static tcp_server_conn_t tcp_server_connections[TCP_SERVER_CONNECTIONS];
+static uint16_t tcp_server_listeners[TCP_SERVER_LISTENERS];
+static uint32_t rdtsc_lo(void);
+
+static int tcp_server_is_listening(uint16_t port) {
+    for (int i = 0; i < TCP_SERVER_LISTENERS; i++) if (tcp_server_listeners[i] == port) return 1;
+    return 0;
+}
+
 static uint16_t tcp_csum(const uint8_t* ih, const uint8_t* tcp, uint32_t tcplen) {
     uint32_t sum = 0;
     uint32_t src = ((uint32_t)ih[12] << 24) | ((uint32_t)ih[13] << 16) |
@@ -1442,6 +1476,183 @@ static void tcp_recv(const uint8_t* payload, uint32_t len, const uint8_t* src_ip
         return;
     }
 
+}
+
+static void tcp_server_emit(tcp_server_conn_t* c, uint32_t seq, uint8_t flags, const uint8_t* data, uint32_t dlen) {
+    uint8_t pkt[14 + 20 + 20 + 536];
+    if (dlen > 536) dlen = 536;
+    uint32_t off = build_eth(pkt, c->peer_mac, ETH_IP);
+    uint8_t* ip = pkt + off;
+    ip[0] = 0x45; ip[1] = 0;
+    uint16_t total = (uint16_t)(40 + dlen);
+    ip[2] = (uint8_t)(total >> 8); ip[3] = (uint8_t)total;
+    ip[4] = 0; ip[5] = 0; ip[6] = 0x40; ip[7] = 0;
+    ip[8] = 64; ip[9] = IP_TCP; ip[10] = 0; ip[11] = 0;
+    memcpy(ip + 12, net_ip, 4); memcpy(ip + 16, c->peer_ip, 4);
+    uint16_t ipcs = csum16(ip, 20);
+    ip[10] = (uint8_t)(ipcs >> 8); ip[11] = (uint8_t)ipcs;
+    uint8_t* tcp = ip + 20;
+    tcp[0] = (uint8_t)(c->local_port >> 8); tcp[1] = (uint8_t)c->local_port;
+    tcp[2] = (uint8_t)(c->peer_port >> 8); tcp[3] = (uint8_t)c->peer_port;
+    tcp[4] = (uint8_t)(seq >> 24); tcp[5] = (uint8_t)(seq >> 16); tcp[6] = (uint8_t)(seq >> 8); tcp[7] = (uint8_t)seq;
+    tcp[8] = (uint8_t)(c->recv_seq >> 24); tcp[9] = (uint8_t)(c->recv_seq >> 16); tcp[10] = (uint8_t)(c->recv_seq >> 8); tcp[11] = (uint8_t)c->recv_seq;
+    tcp[12] = 0x50; tcp[13] = flags;
+    uint32_t used = c->rx_len - c->rx_rd;
+    uint32_t window = sizeof(c->rx) > used ? (uint32_t)sizeof(c->rx) - used : 0;
+    if (window > 65535) window = 65535;
+    tcp[14] = (uint8_t)(window >> 8); tcp[15] = (uint8_t)window;
+    tcp[16] = tcp[17] = tcp[18] = tcp[19] = 0;
+    if (dlen) memcpy(tcp + 20, data, dlen);
+    uint16_t tc = tcp_csum(ip, tcp, 20 + dlen);
+    tcp[16] = (uint8_t)(tc >> 8); tcp[17] = (uint8_t)tc;
+    net_send_raw(pkt, off + 40 + dlen);
+}
+
+static void tcp_server_on_segment(const uint8_t* payload, uint32_t len, const uint8_t* src_ip) {
+    if (len < 20) return;
+    uint16_t sport = (uint16_t)((payload[0] << 8) | payload[1]);
+    uint16_t dport = (uint16_t)((payload[2] << 8) | payload[3]);
+    uint32_t seq = ((uint32_t)payload[4] << 24) | ((uint32_t)payload[5] << 16) | ((uint32_t)payload[6] << 8) | payload[7];
+    uint32_t ack = ((uint32_t)payload[8] << 24) | ((uint32_t)payload[9] << 16) | ((uint32_t)payload[10] << 8) | payload[11];
+    uint32_t hlen = (uint32_t)(payload[12] >> 4) * 4;
+    uint8_t flags = payload[13];
+    if (hlen < 20 || hlen > len) return;
+    tcp_server_conn_t* c = NULL;
+    int free_slot = -1;
+    for (int i = 0; i < TCP_SERVER_CONNECTIONS; i++) {
+        tcp_server_conn_t* q = &tcp_server_connections[i];
+        if (q->state && q->local_port == dport && q->peer_port == sport && q->peer_ip[0] == src_ip[0] && q->peer_ip[1] == src_ip[1] && q->peer_ip[2] == src_ip[2] && q->peer_ip[3] == src_ip[3]) { c = q; break; }
+        if (!q->state && free_slot < 0) free_slot = i;
+    }
+    if (!c && (flags & 0x02) && tcp_server_is_listening(dport) && free_slot >= 0) {
+        c = &tcp_server_connections[free_slot];
+        memset(c, 0, sizeof(*c));
+        memcpy(c->peer_ip, src_ip, 4);
+        if (!net_arp_resolve(src_ip, c->peer_mac)) { memset(c, 0, sizeof(*c)); return; }
+        c->local_port = dport; c->peer_port = sport;
+        c->recv_seq = seq + 1;
+        c->send_seq = 0x6D2B79F5u ^ uptime_ticks ^ rdtsc_lo();
+        if (!c->send_seq) c->send_seq = 1;
+        c->state = 1;
+        tcp_server_emit(c, c->send_seq, 0x12, NULL, 0);
+        c->send_seq++;
+        return;
+    }
+    if (!c) return;
+    c->peer_window = (uint16_t)((payload[14] << 8) | payload[15]);
+    if (flags & 0x04) { memset(c, 0, sizeof(*c)); return; }
+    if (flags & 0x02) {
+        if (c->state == 1) tcp_server_emit(c, c->send_seq - 1, 0x12, NULL, 0);
+        return;
+    }
+    if (c->state == 1) {
+        if ((flags & 0x10) && ack == c->send_seq && seq == c->recv_seq) {
+            c->state = 2;
+            c->send_acked = ack;
+            tcp_server_emit(c, c->send_seq, 0x10, NULL, 0);
+        }
+        return;
+    }
+    if (c->state != 2) return;
+    if ((flags & 0x10) && ack >= c->send_acked && ack <= c->send_seq) c->send_acked = ack;
+    uint32_t dlen = len - hlen;
+    if (dlen && seq == c->recv_seq) {
+        if (c->rx_len + dlen > sizeof(c->rx) && c->rx_rd) {
+            uint32_t keep = c->rx_len - c->rx_rd;
+            for (uint32_t i = 0; i < keep; i++) c->rx[i] = c->rx[c->rx_rd + i];
+            c->rx_len = keep; c->rx_rd = 0;
+        }
+        if (dlen <= sizeof(c->rx) - c->rx_len) {
+            memcpy(c->rx + c->rx_len, payload + hlen, dlen);
+            c->rx_len += dlen; c->recv_seq += dlen;
+        }
+    }
+    if ((flags & 0x01) && seq + dlen == c->recv_seq) { c->recv_seq++; c->peer_closed = 1; }
+    if (dlen || (flags & 0x01)) tcp_server_emit(c, c->send_seq, 0x10, NULL, 0);
+}
+
+int net_tcp_listen(uint16_t port) {
+    if (!port) return -1;
+    if (tcp_server_is_listening(port)) return 0;
+    for (int i = 0; i < TCP_SERVER_LISTENERS; i++) if (!tcp_server_listeners[i]) { tcp_server_listeners[i] = port; return 0; }
+    return -1;
+}
+
+int net_tcp_server_accept(void) {
+    for (int i = 0; i < TCP_SERVER_CONNECTIONS; i++) {
+        tcp_server_conn_t* c = &tcp_server_connections[i];
+        if (c->state == 2 && !c->accepted) { c->accepted = 1; return i; }
+    }
+    return -1;
+}
+
+int net_tcp_server_send(int handle, const uint8_t* data, uint32_t len) {
+    if (handle < 0 || handle >= TCP_SERVER_CONNECTIONS || (!data && len)) return -1;
+    tcp_server_conn_t* c = &tcp_server_connections[handle];
+    if (c->state != 2 || c->local_closed) return -1;
+    uint32_t done = 0;
+    while (done < len) {
+        uint32_t n = len - done; if (n > 536) n = 536;
+        uint32_t seq = c->send_seq;
+        tcp_server_emit(c, seq, 0x18, data + done, n);
+        c->send_seq += n;
+        uint32_t last_retry = uptime_ticks;
+        uint32_t started = uptime_ticks;
+        uint32_t retries = 0;
+        while (c->send_acked < c->send_seq) {
+            net_poll();
+            if (!c->state) return done ? (int)done : -1;
+            if (uptime_ticks - last_retry >= 500) {
+                if (retries++ >= 5) return done ? (int)done : -1;
+                tcp_server_emit(c, seq, 0x18, data + done, n);
+                last_retry = uptime_ticks;
+            }
+            if (uptime_ticks - started > 3000) return done ? (int)done : -1;
+            delay_ms(1);
+        }
+        done += n;
+    }
+    return (int)done;
+}
+
+int net_tcp_server_recv(int handle, uint8_t* out, uint32_t max, uint32_t timeout_ms) {
+    if (handle < 0 || handle >= TCP_SERVER_CONNECTIONS || !out || !max) return -1;
+    tcp_server_conn_t* c = &tcp_server_connections[handle];
+    uint32_t start = uptime_ticks;
+    for (;;) {
+        net_poll();
+        if (c->rx_rd < c->rx_len) {
+            uint32_t n = c->rx_len - c->rx_rd; if (n > max) n = max;
+            memcpy(out, c->rx + c->rx_rd, n); c->rx_rd += n;
+            if (c->rx_rd == c->rx_len) c->rx_rd = c->rx_len = 0;
+            return (int)n;
+        }
+        if (!c->state || c->peer_closed) return -1;
+        if (!timeout_ms || uptime_ticks - start >= timeout_ms) return 0;
+        delay_ms(1);
+    }
+}
+
+int net_tcp_server_closed(int handle) {
+    if (handle < 0 || handle >= TCP_SERVER_CONNECTIONS) return 1;
+    tcp_server_conn_t* c = &tcp_server_connections[handle];
+    return !c->state || (c->peer_closed && c->rx_rd == c->rx_len);
+}
+
+void net_tcp_server_close(int handle) {
+    if (handle < 0 || handle >= TCP_SERVER_CONNECTIONS) return;
+    tcp_server_conn_t* c = &tcp_server_connections[handle];
+    if (c->state == 2 && !c->local_closed) {
+        tcp_server_emit(c, c->send_seq, 0x11, NULL, 0);
+        c->send_seq++;
+        c->local_closed = 1;
+    }
+    memset(c, 0, sizeof(*c));
+}
+
+void net_tcp_server_stop(uint16_t port) {
+    for (int i = 0; i < TCP_SERVER_CONNECTIONS; i++) if (tcp_server_connections[i].state && tcp_server_connections[i].local_port == port) net_tcp_server_close(i);
+    for (int i = 0; i < TCP_SERVER_LISTENERS; i++) if (tcp_server_listeners[i] == port) tcp_server_listeners[i] = 0;
 }
 
 static uint32_t rdtsc_lo(void) {
@@ -1576,6 +1787,7 @@ static struct {
     uint16_t port;
     uint32_t last_used;
 } http_conn;
+static int ws_active;
 
 static int https_send(const uint8_t* data, int len) { return net_tcp_send(data, (uint32_t)len) < 0 ? -1 : len; }
 static int https_recv(uint8_t* out, int max, int timeout_ms) { return net_tcp_recv(out, (uint32_t)max, (uint32_t)timeout_ms); }
@@ -1720,13 +1932,16 @@ static void chunk_feed(chunk_dec_t* d, const uint8_t* buf, uint32_t n) {
     }
 }
 
-int net_http_get(const char* url, uint8_t* out_buf, uint32_t out_max) {
+int net_http_request(const char* method, const char* url, const char* extra_headers, const uint8_t* request_body, uint32_t request_body_len, uint8_t* out_buf, uint32_t out_max) {
     net_http_last_status = 0;
     net_http_last_location[0] = 0;
     net_http_last_content_type[0] = 0;
     net_tls_last_error = 0;
     net_tls_peer_cn[0] = 0;
-    if (!out_buf || out_max < 16) return -1;
+    if (!method || !url || !out_buf || out_max < 16 || ws_active) return -1;
+    int method_len = (int)strlen(method);
+    if (method_len < 1 || method_len > 15) return -1;
+    for (int i = 0; i < method_len; i++) if (!((method[i] >= 'A' && method[i] <= 'Z') || (method[i] >= 'a' && method[i] <= 'z'))) return -1;
 
     const char* p = url;
     int secure = 0;
@@ -1766,18 +1981,34 @@ int net_http_get(const char* url, uint8_t* out_buf, uint32_t out_max) {
         char hostport[140];
         if (explicit_port) net_snprintf(hostport, sizeof(hostport), "%s:%u", host, (uint32_t)port);
         else net_snprintf(hostport, sizeof(hostport), "%s", host);
-        int rl = net_snprintf(req, sizeof(req),
-            "GET %s HTTP/1.1\r\n"
-            "Host: %s\r\n"
-            "User-Agent: Mozilla/5.0 (X11; SharkOS i686) AppleWebKit/537.36 (KHTML, like Gecko) SharkNavigator/2.3 Safari/537.36\r\n"
-            "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5\r\n"
-            "Accept-Language: en-US,en;q=0.7,nl;q=0.3\r\n"
-            "Accept-Encoding: gzip, deflate\r\n"
-            "Upgrade-Insecure-Requests: 1\r\n"
-            "Connection: keep-alive\r\n\r\n",
-            path, hostport);
+        int rl;
+        if (request_body_len) {
+            rl = net_snprintf(req, sizeof(req),
+                "%s %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "User-Agent: SharkOS/2.3 (x86_64; freestanding) SharkNavigator/2.3\r\n"
+                "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5\r\n"
+                "Accept-Language: en-US,en;q=0.7,nl;q=0.3\r\n"
+                "Accept-Encoding: gzip, deflate\r\n"
+                "%s"
+                "Content-Length: %u\r\n"
+                "Connection: keep-alive\r\n\r\n",
+                method, path, hostport, extra_headers ? extra_headers : "", request_body_len);
+        } else {
+            rl = net_snprintf(req, sizeof(req),
+                "%s %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "User-Agent: SharkOS/2.3 (x86_64; freestanding) SharkNavigator/2.3\r\n"
+                "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5\r\n"
+                "Accept-Language: en-US,en;q=0.7,nl;q=0.3\r\n"
+                "Accept-Encoding: gzip, deflate\r\n"
+                "%s"
+                "Connection: keep-alive\r\n\r\n",
+                method, path, hostport, extra_headers ? extra_headers : "");
+        }
 
-        if (conn_send((const uint8_t*)req, rl) < 0) {
+        if (conn_send((const uint8_t*)req, rl) < 0 ||
+            (request_body_len && conn_send(request_body, (int)request_body_len) < 0)) {
             http_close_conn();
             if (reused) continue;
             return -1;
@@ -1838,7 +2069,7 @@ int net_http_get(const char* url, uint8_t* out_buf, uint32_t out_max) {
                                                          
         if (status >= 100 && status < 200) { http_close_conn(); continue; }
 
-        int no_body = (status == 204 || status == 304);
+        int no_body = (status == 204 || status == 304 || !strcmp(method, "HEAD") || !strcmp(method, "head"));
         if (!chunked && !have_clen && !no_body) close_after = 1;                                 
 
                           
@@ -1909,6 +2140,239 @@ int net_http_get(const char* url, uint8_t* out_buf, uint32_t out_max) {
         return (int)body_len;
     }
     return -1;
+}
+
+int net_http_get(const char* url, uint8_t* out_buf, uint32_t out_max) {
+    return net_http_request("GET", url, NULL, NULL, 0, out_buf, out_max);
+}
+
+#define WS_MAX_PAYLOAD 65535
+static uint8_t ws_rx_pending[WS_MAX_PAYLOAD + 14];
+static uint32_t ws_rx_pending_len;
+static uint8_t ws_message_buf[WS_MAX_PAYLOAD];
+static uint32_t ws_message_len;
+static int ws_message_opcode;
+static uint8_t ws_tx_frame[WS_MAX_PAYLOAD + 14];
+
+typedef struct {
+    uint32_t h[5];
+    uint64_t bytes;
+    uint32_t used;
+    uint8_t block[64];
+} ws_sha1_t;
+
+static uint32_t ws_rotl(uint32_t v, uint32_t n){ return (v << n) | (v >> (32 - n)); }
+
+static void ws_sha1_transform(ws_sha1_t* c, const uint8_t* b){
+    uint32_t w[80];
+    for (int i=0;i<16;i++) w[i]=((uint32_t)b[i*4]<<24)|((uint32_t)b[i*4+1]<<16)|((uint32_t)b[i*4+2]<<8)|b[i*4+3];
+    for (int i=16;i<80;i++) w[i]=ws_rotl(w[i-3]^w[i-8]^w[i-14]^w[i-16],1);
+    uint32_t a=c->h[0], d=c->h[3], e=c->h[4], f, k, t;
+    uint32_t bb=c->h[1], cc=c->h[2];
+    for (int i=0;i<80;i++){
+        if (i<20){ f=(bb&cc)|((~bb)&d); k=0x5A827999; }
+        else if (i<40){ f=bb^cc^d; k=0x6ED9EBA1; }
+        else if (i<60){ f=(bb&cc)|(bb&d)|(cc&d); k=0x8F1BBCDC; }
+        else { f=bb^cc^d; k=0xCA62C1D6; }
+        t=ws_rotl(a,5)+f+e+k+w[i];
+        e=d; d=cc; cc=ws_rotl(bb,30); bb=a; a=t;
+    }
+    c->h[0]+=a; c->h[1]+=bb; c->h[2]+=cc; c->h[3]+=d; c->h[4]+=e;
+}
+
+static void ws_sha1(const uint8_t* data, uint32_t len, uint8_t out[20]){
+    ws_sha1_t c;
+    c.h[0]=0x67452301; c.h[1]=0xEFCDAB89; c.h[2]=0x98BADCFE; c.h[3]=0x10325476; c.h[4]=0xC3D2E1F0;
+    c.bytes=0; c.used=0;
+    for (uint32_t i=0;i<len;i++){
+        c.block[c.used++]=data[i]; c.bytes++;
+        if (c.used==64){ ws_sha1_transform(&c,c.block); c.used=0; }
+    }
+    uint64_t bits=c.bytes*8;
+    c.block[c.used++]=0x80;
+    if (c.used>56){ while(c.used<64)c.block[c.used++]=0; ws_sha1_transform(&c,c.block); c.used=0; }
+    while(c.used<56)c.block[c.used++]=0;
+    for (int i=7;i>=0;i--) c.block[c.used++]=(uint8_t)(bits>>(i*8));
+    ws_sha1_transform(&c,c.block);
+    for (int i=0;i<5;i++){ out[i*4]=(uint8_t)(c.h[i]>>24); out[i*4+1]=(uint8_t)(c.h[i]>>16); out[i*4+2]=(uint8_t)(c.h[i]>>8); out[i*4+3]=(uint8_t)c.h[i]; }
+}
+
+static int ws_base64(const uint8_t* in, int len, char* out, int cap){
+    static const char t[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    int o=0;
+    for(int i=0;i<len;i+=3){
+        uint32_t v=(uint32_t)in[i]<<16;
+        if(i+1<len)v|=(uint32_t)in[i+1]<<8;
+        if(i+2<len)v|=in[i+2];
+        if(o+4>=cap)return -1;
+        out[o++]=t[(v>>18)&63]; out[o++]=t[(v>>12)&63];
+        out[o++]=i+1<len?t[(v>>6)&63]:'='; out[o++]=i+2<len?t[v&63]:'=';
+    }
+    out[o]=0;
+    return o;
+}
+
+static int ws_send_frame(uint8_t opcode, const uint8_t* data, uint32_t len);
+
+static int ws_fill_input(uint32_t need, uint32_t timeout_ms){
+    while(ws_rx_pending_len<need){
+        if(ws_rx_pending_len>=sizeof(ws_rx_pending))return -1;
+        uint32_t room=(uint32_t)sizeof(ws_rx_pending)-ws_rx_pending_len;
+        if(room>4096)room=4096;
+        int n=conn_recv(ws_rx_pending+ws_rx_pending_len,(int)room,(int)timeout_ms);
+        if(n<=0)return n;
+        ws_rx_pending_len+=(uint32_t)n;
+    }
+    return 1;
+}
+
+static void ws_consume_input(uint32_t n){
+    if(n>=ws_rx_pending_len){ws_rx_pending_len=0;return;}
+    uint32_t left=ws_rx_pending_len-n;
+    for(uint32_t i=0;i<left;i++)ws_rx_pending[i]=ws_rx_pending[n+i];
+    ws_rx_pending_len=left;
+}
+
+static int ws_receive_one(uint8_t* out,uint32_t max,uint32_t timeout_ms){
+    for(;;){
+        int ready=ws_fill_input(2,timeout_ms);
+        if(ready<=0)return ready==0?NET_WEBSOCKET_NO_DATA:-1;
+        uint8_t* h=ws_rx_pending;
+        int fin=(h[0]&0x80)!=0;uint8_t opcode=h[0]&0x0F;int masked=(h[1]&0x80)!=0;
+        uint64_t len=h[1]&0x7F;uint32_t head=2;
+        if(len==126){ready=ws_fill_input(4,timeout_ms);if(ready<=0)return ready==0?NET_WEBSOCKET_NO_DATA:-1;len=((uint64_t)ws_rx_pending[2]<<8)|ws_rx_pending[3];head=4;}
+        else if(len==127){ready=ws_fill_input(10,timeout_ms);if(ready<=0)return ready==0?NET_WEBSOCKET_NO_DATA:-1;len=0;for(int i=0;i<8;i++)len=(len<<8)|ws_rx_pending[2+i];if(len>WS_MAX_PAYLOAD)return -1;head=10;}
+        uint8_t mask[4]={0,0,0,0};
+        if(masked){ready=ws_fill_input(head+4,timeout_ms);if(ready<=0)return ready==0?NET_WEBSOCKET_NO_DATA:-1;memcpy(mask,ws_rx_pending+head,4);head+=4;}
+        if(len>WS_MAX_PAYLOAD||head+len>sizeof(ws_rx_pending))return -1;
+        ready=ws_fill_input(head+(uint32_t)len,timeout_ms);
+        if(ready<=0)return ready==0?NET_WEBSOCKET_NO_DATA:-1;
+        uint8_t* payload=ws_rx_pending+head;
+        if(masked)for(uint32_t i=0;i<(uint32_t)len;i++)payload[i]^=mask[i&3];
+        if(opcode>=8&&(!fin||len>125))return -1;
+        if(opcode==8){ws_consume_input(head+(uint32_t)len);if(ws_active)ws_send_frame(8,NULL,0);ws_active=0;ws_message_len=0;ws_message_opcode=-1;return NET_WEBSOCKET_CLOSED;}
+        if(opcode==9){ws_send_frame(10,payload,(uint32_t)len);ws_consume_input(head+(uint32_t)len);continue;}
+        if(opcode==10){ws_consume_input(head+(uint32_t)len);continue;}
+        if(opcode==1||opcode==2){if(ws_message_opcode>=0)return -1;ws_message_opcode=opcode;}
+        else if(opcode!=0||ws_message_opcode<0)return -1;
+        if(len>WS_MAX_PAYLOAD-ws_message_len)return -1;
+        memcpy(ws_message_buf+ws_message_len,payload,(size_t)len);
+        ws_message_len+=(uint32_t)len;
+        ws_consume_input(head+(uint32_t)len);
+        if(!fin)continue;
+        if(ws_message_len>max)return -1;
+        memcpy(out,ws_message_buf,ws_message_len);
+        int result=(int)ws_message_len;
+        ws_message_len=0;ws_message_opcode=-1;
+        return result;
+    }
+}
+
+static int ws_send_frame(uint8_t opcode, const uint8_t* data, uint32_t len){
+    if(!ws_active || len>WS_MAX_PAYLOAD)return -1;
+    uint32_t p=0;
+    ws_tx_frame[p++]=(uint8_t)(0x80|(opcode&0x0F));
+    if(len<126)ws_tx_frame[p++]=(uint8_t)(0x80|len);
+    else{ws_tx_frame[p++]=0x80|126;ws_tx_frame[p++]=(uint8_t)(len>>8);ws_tx_frame[p++]=(uint8_t)len;}
+    uint8_t mask[4];tls_random(mask,4);
+    for(int i=0;i<4;i++)ws_tx_frame[p++]=mask[i];
+    for(uint32_t i=0;i<len;i++)ws_tx_frame[p++]=(data?data[i]:0)^mask[i&3];
+    return conn_send(ws_tx_frame,(int)p)<0?-1:(int)len;
+}
+
+int net_websocket_open(const char* url){
+    if(!url)return -1;
+    http_close_conn();
+    ws_active=0; ws_rx_pending_len=0; ws_message_len=0; ws_message_opcode=-1;
+    const char* p=url;
+    int secure=0;
+    if(my_strncmp_prefix(p,"ws://"))p+=5;
+    else if(my_strncmp_prefix(p,"wss://")){p+=6;secure=1;}
+    else return -1;
+    char host[128]; int hi=0;
+    while(*p&&*p!=':'&&*p!='/'&&*p!='?'&&*p!='#'){if(hi<127)host[hi++]=*p;p++;}
+    host[hi]=0;
+    for(int i=0;i<hi;i++)if(host[i]>='A'&&host[i]<='Z')host[i]=(char)(host[i]+32);
+    if(!hi)return -1;
+    uint16_t port=secure?443:80; int explicit_port=0;
+    if(*p==':'){explicit_port=1;port=0;p++;while(*p>='0'&&*p<='9'){port=(uint16_t)(port*10+(*p-'0'));p++;}}
+    char path[1024];int pi=0;
+    if(*p!='/'&&*p!='?')path[pi++]='/';
+    if(*p=='?')path[pi++]='/';
+    while(*p&&*p!='#'&&pi<1023)path[pi++]=*p++;
+    path[pi]=0;
+    if(http_connect(host,port,secure)<0)return -1;
+    uint8_t nonce[16], digest[20]; char key[32], expected[32];
+    tls_random(nonce,sizeof(nonce));
+    if(ws_base64(nonce,sizeof(nonce),key,sizeof(key))<0){http_close_conn();return -1;}
+    char challenge[96];
+    int cl=net_snprintf(challenge,sizeof(challenge),"%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11",key);
+    ws_sha1((const uint8_t*)challenge,(uint32_t)cl,digest);
+    if(ws_base64(digest,sizeof(digest),expected,sizeof(expected))<0){http_close_conn();return -1;}
+    char hostport[140];
+    if(explicit_port)net_snprintf(hostport,sizeof(hostport),"%s:%u",host,(uint32_t)port);
+    else net_snprintf(hostport,sizeof(hostport),"%s",host);
+    char req[1600];
+    int rl=net_snprintf(req,sizeof(req),"GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nOrigin: %s://%s\r\nUser-Agent: SharkOS/2.3\r\n\r\n",path,hostport,key,secure?"https":"http",hostport);
+    if(conn_send((const uint8_t*)req,rl)<0){http_close_conn();return -1;}
+    int hl=0,head_end=-1;
+    while(hl<(int)sizeof(http_hdr)-1&&head_end<0){
+        int n=conn_recv(http_hdr+hl,(int)sizeof(http_hdr)-1-hl,15000);
+        if(n<=0)break;
+        int from=hl>3?hl-3:0; hl+=n;
+        for(int i=from;i+3<hl;i++)if(http_hdr[i]=='\r'&&http_hdr[i+1]=='\n'&&http_hdr[i+2]=='\r'&&http_hdr[i+3]=='\n'){head_end=i+4;break;}
+    }
+    if(head_end<0){http_close_conn();return -1;}
+    http_hdr[hl]=0;
+    int status=0;
+    const char* line=(const char*)http_hdr;
+    while(*line&&*line!=' ')line++;
+    while(*line==' ')line++;
+    while(*line>='0'&&*line<='9'){status=status*10+(*line-'0');line++;}
+    char accept[64]="";
+    line=(const char*)http_hdr;
+    while(*line&&*line!='\n')line++;
+    if(*line=='\n')line++;
+    while((const uint8_t*)line<http_hdr+head_end&&*line&&*line!='\r'&&*line!='\n'){
+        if(hdr_name_is(line,"sec-websocket-accept")){
+            const char* v=hdr_value(line);int i=0;
+            while(*v&&*v!='\r'&&*v!='\n'&&i<(int)sizeof(accept)-1)accept[i++]=*v++;
+            accept[i]=0;
+        }
+        while(*line&&*line!='\n')line++;
+        if(*line=='\n')line++;
+    }
+    if(hl>head_end){
+        uint32_t extra=(uint32_t)(hl-head_end);if(extra>sizeof(ws_rx_pending))extra=sizeof(ws_rx_pending);
+        memcpy(ws_rx_pending,http_hdr+head_end,extra);ws_rx_pending_len=extra;
+    }
+    if(status!=101||strcmp(accept,expected)!=0){http_close_conn();ws_rx_pending_len=0;return -1;}
+    ws_active=1;
+    return 0;
+}
+
+int net_websocket_send(const uint8_t* data,uint32_t len){
+    if(!data&&len)return -1;
+    return ws_send_frame(1,data,len);
+}
+
+int net_websocket_poll(uint8_t* out,uint32_t max){
+    if(!ws_active||!out||!max)return -1;
+    return ws_receive_one(out,max,0);
+}
+
+int net_websocket_recv(uint8_t* out,uint32_t max,uint32_t timeout_ms){
+    if(!ws_active||!out||!max)return -1;
+    int n=ws_receive_one(out,max,timeout_ms);
+    if(n==NET_WEBSOCKET_NO_DATA)return -1;
+    if(n==NET_WEBSOCKET_CLOSED)return 0;
+    return n;
+}
+
+void net_websocket_close(void){
+    if(ws_active)ws_send_frame(8,NULL,0);
+    ws_active=0;ws_rx_pending_len=0;ws_message_len=0;ws_message_opcode=-1;
+    http_close_conn();
 }
 
 void net_stack_init(void) {

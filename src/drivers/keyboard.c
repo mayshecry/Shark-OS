@@ -7,6 +7,44 @@ static uint8_t extended_scancode = 0;
 
 extern void sharkapi_dispatch_key_event(char key, uint8_t scancode);
 
+static bool keyboard_wait_input_empty(void) {
+    for (uint32_t i = 0; i < 100000; i++) {
+        if (!(inb(0x64) & 0x02)) return true;
+    }
+    return false;
+}
+
+static bool keyboard_wait_output_full(void) {
+    for (uint32_t i = 0; i < 100000; i++) {
+        if (inb(0x64) & 0x01) return true;
+    }
+    return false;
+}
+
+void keyboard_init(void) {
+    uint64_t eflags;
+    asm volatile("pushfq; popq %0; cli" : "=r"(eflags) :: "memory");
+
+    if (inb(0x64) == 0xFF) {
+        if (eflags & 0x200) asm volatile("sti");
+        return;
+    }
+
+    if (keyboard_wait_input_empty()) outb(0x64, 0xAD);
+    if (keyboard_wait_input_empty()) outb(0x64, 0x20);
+    if (keyboard_wait_output_full()) {
+        uint8_t command = inb(0x60);
+        command = (uint8_t)((command | 0x41) & (uint8_t)~0x10);
+        if (keyboard_wait_input_empty()) outb(0x64, 0x60);
+        if (keyboard_wait_input_empty()) outb(0x60, command);
+    }
+    if (keyboard_wait_input_empty()) outb(0x64, 0xAE);
+
+    for (int i = 0; i < 32 && (inb(0x64) & 0x01); i++) (void)inb(0x60);
+
+    if (eflags & 0x200) asm volatile("sti");
+}
+
 void keyboard_handler(uint8_t scancode) {
     if (scancode == 0xE0) {
         extended_scancode = 1;
