@@ -71,8 +71,6 @@ _start:
     mov %esi, saved_magic
     mov %edx, saved_info
 
-    # ---- Build paging structures: identity 0-128GB ----
-    # PML4[0] -> PDP
     mov $pdp_table, %eax
     or $0x03, %eax
     mov %eax, pml4_table
