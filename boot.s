@@ -12,7 +12,7 @@
 .long CHECKSUM
 .long 0, 0, 0, 0, 0
 .long 0          
-.long 1024       # width
+.long 1024       
 .long 768        # height
 .long 32         # depth (32-bit color)
 
