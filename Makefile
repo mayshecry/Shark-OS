@@ -54,7 +54,6 @@ drivers/keyboard.o: src/drivers/keyboard.c include/kernel.h | drivers
 drivers/pci.o: src/drivers/pci.c include/kernel.h | drivers
 	$(CC) -c src/drivers/pci.c -o drivers/pci.o $(CFLAGS)
 
-# Audio subsystem (AC97/HDA + mixer)
 drivers/audio/audio.o: src/drivers/audio/audio.c include/kernel.h include/audio.h | drivers/audio
 	$(CC) -c src/drivers/audio/audio.c -o drivers/audio/audio.o $(CFLAGS)
 drivers/audio/mixer.o: src/drivers/audio/mixer.c include/kernel.h include/audio.h | drivers/audio
