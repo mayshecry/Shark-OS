@@ -116,38 +116,38 @@ const desktop_theme_t theme_kawaii = {
 
 const desktop_theme_t theme_windowmaker = {
     "WindowMaker",
-    0xFF5B5E82u,  // desktop - Window Maker slate blue (pixel-matched to screenshot)
-    0xFF4A4E6Au,  // desktop_dark
-    0xFFBFBFBFu,  // btnface - light gray window chrome
-    0xFFE8E8E8u,  // btnhilite
-    0xFFC8C8C8u,  // btnlight
-    0xFF808080u,  // btnshadow
-    0xFF000000u,  // btndkshadow - sharp black border
-    0xFF000000u,  // btntext - black
-    0xFF808080u,  // graytext
-    0xFF000000u,  // active_title - flat black like screenshot
-    0xFF000000u,  // active_title2 - no gradient
-    0xFF4A4A4Au,  // inactive_title - dark gray
-    0xFF4A4A4Au,  // inactive_title2
-    0xFFFFFFFFu,  // titletext - white centered
-    0xFFC8C8C8u,  // titletext_inact - light gray
-    0xFF000000u,  // highlight - black selection (Window Maker style)
-    0xFFFFFFFFu, // highlighttext - white
-    0xFFC8C8C8u,  // window - light gray body like Info panel
-    0xFF000000u,  // windowtext - black
-    0xFF000000u,  // caption_start - flat black
-    0xFF000000u,  // caption_end - flat black
-    0xFFC8C8C8u,  // menu_bg - light gray menus
-    0xFFFFFFFFu,  // icon_label - white with shadow
-    0xFF000000u,  // logo - black
-    false,       // title_gradient - NO gradient (pixel accurate)
-    true,        // flat_bevels - NeXT flat
-    false,       // nice_font - sharp bitmap
-    false,       // animations - Window Maker has no fancy anim
-    true,        // flat_taskbar
-    false,       // title_accent_line
-    false,       // modern_icons - use classic icons for WM
-    0            // ui_font_size - bitmap
+    0xFF5B5E82u,   
+    0xFF4A4E6Au,   
+    0xFFBFBFBFu,   
+    0xFFE8E8E8u,   
+    0xFFC8C8C8u,   
+    0xFF808080u,   
+    0xFF000000u,   
+    0xFF000000u,   
+    0xFF808080u,   
+    0xFF000000u,   
+    0xFF000000u,   
+    0xFF4A4A4Au,   
+    0xFF4A4A4Au,   
+    0xFFFFFFFFu,   
+    0xFFC8C8C8u,   
+    0xFF000000u,   
+    0xFFFFFFFFu,  
+    0xFFC8C8C8u,   
+    0xFF000000u,   
+    0xFF000000u,   
+    0xFF000000u,   
+    0xFFC8C8C8u,   
+    0xFFFFFFFFu,   
+    0xFF000000u,   
+    false,        
+    true,         
+    false,        
+    false,        
+    true,         
+    false,        
+    false,        
+    0             
 };
 
 const desktop_theme_t* theme_current = &theme_win98;

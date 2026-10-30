@@ -153,7 +153,7 @@ void start_menu_open(void) {
         }
     }
 
-    // Always show FNAF 1 even when uninstalled (lazy-install on launch)
+     
     if (start_menu_count < STARTMENU_MAX - 1) {
         bool found=false;
         for(int _i=0;_i<start_menu_count;_i++) if(types[_i]==WINDOW_TYPE_FNAF) found=true;

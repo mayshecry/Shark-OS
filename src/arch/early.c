@@ -13,6 +13,9 @@
 
 #define COM1_BASE 0x3F8
 
+extern void server_console_putchar(char c) __attribute__((weak));
+extern int server_output_capture_char(char c) __attribute__((weak));
+
 void serial_init(void) {
     outb(COM1_BASE + 1, 0x00);                 
     outb(COM1_BASE + 3, 0x80);            
@@ -38,7 +41,8 @@ int serial_getchar_nonblocking(void) {
 }
 
 void serial_putc(char c) {
-                                                                
+    if (server_output_capture_char && server_output_capture_char(c)) return;
+    if (server_console_putchar) server_console_putchar(c);
     for (int i = 0; i < 100000 && !serial_tx_ready(); i++) { }
     if (!serial_tx_ready()) return;
     outb(COM1_BASE, (uint8_t)c);

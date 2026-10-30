@@ -14,7 +14,7 @@ void irq_handler(struct registers* r) {
     if (r->int_no == 32) {
         uptime_ticks++;
     }
-    // Audio IRQs - poll and clear status (AC97/HDA may share vectors 32-47)
+     
     if (r->int_no >= 37 && r->int_no <= 47) {
         extern void audio_irq_handler(uint8_t irq);
         uint8_t irq = (uint8_t)(r->int_no - 32);

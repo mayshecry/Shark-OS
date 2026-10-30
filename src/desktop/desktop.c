@@ -181,7 +181,7 @@ void desktop_set_show_icons(bool show) {
 }
 
 void desktop_icon_launch_offset(window_type_t type, const char* title) {
-    // lazy install for FNAF plugin (uninstalled by default)
+     
     if (type == WINDOW_TYPE_FNAF) {
         plugin_t* pf = plugin_get_by_name("fnaf");
         if (!pf || !pf->loaded) {
@@ -519,7 +519,7 @@ void desktop_draw_icons(void) {
     }
 }
 
-/* ========== Desktop context menu (right-click) ========== */
+ 
 #define CTX_ITEM_H 18
 #define CTX_PAD_X 8
 #define CTX_W 180
@@ -558,12 +558,12 @@ static void desktop_context_menu_build(int mx, int my, int icon_idx) {
         strcpy(m->items[p], "Properties"); m->enabled[p]=false; p++;
     }
     m->item_count = p;
-    // calc size
+     
     int h = 6;
     for (int i=0;i<p;i++) h += m->is_sep[i] ? 6 : CTX_ITEM_H;
     m->w = CTX_W;
     m->h = h;
-    // clamp to screen
+     
     if (m->x + m->w > (int)screen_width - 4) m->x = (int)screen_width - m->w - 4;
     if (m->x < 2) m->x = 2;
     if (m->y + m->h > (int)screen_height - TASKBAR_HEIGHT - 4) m->y = (int)screen_height - TASKBAR_HEIGHT - m->h - 4;
@@ -574,7 +574,7 @@ void desktop_context_menu_open(int mx, int my, int icon_idx) {
     desktop_context_menu_build(mx, my, icon_idx);
     desktop.ctx_menu.visible = true;
     desktop.dirty = true;
-    // close start menu if open
+     
     if (desktop.start_menu.visible) {
         desktop.start_menu.visible = false;
         desktop.start_menu.active = false;
@@ -619,7 +619,7 @@ void desktop_context_menu_handle_action(int item) {
     if (!m->enabled[item] || m->is_sep[item]) return;
     const char* label = m->items[item];
     int target = m->target_icon;
-    // close first to avoid recursion dirty
+     
     desktop_context_menu_close();
     if (strcmp(label, "Open")==0 && target>=0) {
         desktop_icon_launch(target);
@@ -645,7 +645,7 @@ void desktop_context_menu_handle_action(int item) {
         return;
     }
     if (strcmp(label, "Arrange Icons")==0) {
-        // restore hidden icons as well
+         
         for (int i=0;i<desktop.icon_count;i++) desktop.icons[i].visible = true;
         desktop.show_desktop_icons = true;
         desktop_layout_icons();
@@ -656,7 +656,7 @@ void desktop_context_menu_handle_action(int item) {
     if (strcmp(label, "Refresh")==0) {
         desktop.dirty = true;
         desktop.icons_dirty = true;
-        // also reload theme icons
+         
         desktop_icons_load();
         return;
     }
@@ -683,11 +683,11 @@ void desktop_context_menu_draw(void) {
     desktop_context_menu_t* m = &desktop.ctx_menu;
     if (!m->visible) return;
     int x = m->x, y = m->y, w = m->w, h = m->h;
-    // background
+     
     w98_fill(x, y, w, h, W98_BTNFACE);
     w98_bevel(x, y, w, h, W98_BEVEL_RAISED);
-    // inner sunken border for Win98 look
-    // draw items
+     
+     
     int cur_y = y + 3;
     for (int i=0;i<m->item_count;i++) {
         if (m->is_sep[i]) {
@@ -703,14 +703,14 @@ void desktop_context_menu_draw(void) {
             w98_fill(x+2, cur_y, w-4, CTX_ITEM_H, W98_HIGHLIGHT);
         }
         uint32_t tc = (!en) ? W98_GRAYTEXT : (hov ? W98_HIGHLIGHTTEXT : W98_BTNTEXT);
-        // checkmark
+         
         if (m->checked[i]) {
-            // simple tick
+             
             w98_text("x", x+6, cur_y+5, tc, hov?W98_HIGHLIGHT:W98_BTNFACE, 1, NULL);
         }
-        // text
+         
         w98_text(m->items[i], x+CTX_PAD_X+10, cur_y+5, tc, hov?W98_HIGHLIGHT:W98_BTNFACE, 1, NULL);
-        // for disabled, also shadow?
+         
         cur_y += CTX_ITEM_H;
     }
 }
@@ -997,31 +997,31 @@ void desktop_handle_mouse(int mx, int my, int buttons, int wheel) {
         start_menu_scroll(wheel);
         return;
     }
-    // Right-click context menu (button 2)
+     
     static bool right_down = false;
     if (buttons & 2) {
         if (!right_down) {
             right_down = true;
-            // if context menu already visible, check hit
+             
             if (desktop.ctx_menu.visible) {
                 int hit = desktop_context_menu_hit_test(mx, my);
                 if (hit >= 0) {
-                    // will be handled on release? handle immediately
+                     
                     desktop_context_menu_handle_action(hit);
                     return;
                 } else {
                     desktop_context_menu_close();
-                    // fall through to maybe open new one below
+                     
                 }
             }
-            // ignore taskbar area for desktop menu
+             
             int taskbar_hit = desktop_get_taskbar_hover(mx, my);
             if (taskbar_hit != -1) {
-                // no desktop menu on taskbar; just close any
+                 
                 if (desktop.ctx_menu.visible) desktop_context_menu_close();
                 return;
             }
-            // check if on window - if so, don't open desktop menu? For now allow but prefer window handling
+             
             bool over_window = false;
             for (int i = desktop.window_count - 1; i >= 0; i--) {
                 window_t* wc = &desktop.windows[i];
@@ -1033,17 +1033,17 @@ void desktop_handle_mouse(int mx, int my, int buttons, int wheel) {
                 }
             }
             if (over_window) {
-                // close context menu if clicking window
+                 
                 if (desktop.ctx_menu.visible) desktop_context_menu_close();
                 return;
             }
-            // determine icon hit
+             
             int icon_idx = desktop_icon_hit_test(mx, my);
-            // if icons are hidden globally, still allow opening desktop menu to re-enable
+             
             if (icon_idx < 0 && !desktop.show_desktop_icons) icon_idx = -1;
-            // also if icons hidden, hit_test returns -1, still want desktop menu
+             
             desktop_context_menu_open(mx, my, icon_idx);
-            // select icon under cursor
+             
             if (icon_idx >= 0) {
                 desktop_icons_clear_selection();
                 desktop.icons[icon_idx].selected = true;
@@ -1052,7 +1052,7 @@ void desktop_handle_mouse(int mx, int my, int buttons, int wheel) {
             }
             return;
         } else {
-            // right held, handle hover for menu
+             
             if (desktop.ctx_menu.visible) {
                 desktop_context_menu_handle_hover(mx, my);
             }
@@ -1060,27 +1060,27 @@ void desktop_handle_mouse(int mx, int my, int buttons, int wheel) {
         }
     } else {
         if (right_down) right_down = false;
-        // if context menu visible and left click handling below, handle left click on menu first
+         
         if (desktop.ctx_menu.visible) {
             if (buttons & 1) {
-                // left press while menu visible -> handle click
-                // we need to detect if press inside menu
+                 
+                 
                 int hit = desktop_context_menu_hit_test(mx, my);
                 if (hit >= 0) {
                     desktop_context_menu_handle_action(hit);
-                    desktop_mouse_down = true; // consume
+                    desktop_mouse_down = true;  
                     return;
                 } else {
-                    // click outside closes menu, but also allow normal handling after close?
-                    // check if click inside menu bounds -> just close
-                    // click inside menu decoration (separator area) just close
+                     
+                     
+                     
                     desktop_context_menu_close();
                     return;
                 }
             } else {
-                // hover without button
+                 
                 desktop_context_menu_handle_hover(mx, my);
-                // don't block desktop hover rendering
+                 
             }
         }
     }

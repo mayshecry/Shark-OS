@@ -3,7 +3,7 @@
 #define FS_CACHE_SIZE 16
 typedef struct {
     struct fs_node* parent;
-    const char* name;
+    char name[32];
     struct fs_node* result;
 } fs_cache_entry_t;
 
@@ -13,7 +13,7 @@ static int fs_cache_idx = 0;
 void fs_cache_clear(void) {
     for (int i = 0; i < FS_CACHE_SIZE; i++) {
         fs_cache[i].parent = NULL;
-        fs_cache[i].name = NULL;
+        fs_cache[i].name[0] = 0;
         fs_cache[i].result = NULL;
     }
     fs_cache_idx = 0;
@@ -23,17 +23,19 @@ struct fs_node* find_node(struct fs_node* parent, const char* name) {
     if (!parent) return NULL;
 
     for (int i = 0; i < FS_CACHE_SIZE; i++) {
-        if (fs_cache[i].parent == parent && fs_cache[i].name == name) {
+        if (fs_cache[i].parent == parent && strcasecmp(fs_cache[i].name, name) == 0) {
             return fs_cache[i].result;
         }
     }
 
     for (int i = 0; i < parent->num_children; i++) {
         if (strcasecmp(parent->children[i]->name, name) == 0) {
-            fs_cache[fs_cache_idx].parent = parent;
-            fs_cache[fs_cache_idx].name = name;
-            fs_cache[fs_cache_idx].result = parent->children[i];
-            fs_cache_idx = (fs_cache_idx + 1) % FS_CACHE_SIZE;
+            if (strlen(name) < sizeof(fs_cache[0].name)) {
+                fs_cache[fs_cache_idx].parent = parent;
+                strcpy(fs_cache[fs_cache_idx].name, name);
+                fs_cache[fs_cache_idx].result = parent->children[i];
+                fs_cache_idx = (fs_cache_idx + 1) % FS_CACHE_SIZE;
+            }
             return parent->children[i];
         }
     }
@@ -94,14 +96,26 @@ struct fs_node* search_path(const char* name) {
 }
 
 struct fs_node* create_node(const char* name, node_type_t type, struct fs_node* parent) {
-    if (pool_index >= MAX_NODES) return NULL;
-    struct fs_node* node = &node_pool[pool_index++];
+    if (parent && parent->num_children >= MAX_CHILDREN) return NULL;
+    uint32_t index = 0;
+    while (index < (uint32_t)pool_index && node_pool[index].allocated) index++;
+    if (index >= MAX_NODES) return NULL;
+    struct fs_node* node = &node_pool[index];
+    char* content = node->content;
+    uint32_t capacity = node->content_capacity;
+    if (type == FS_FILE && (!content || capacity < MAX_FILE_CONTENT_SIZE)) {
+        content = (char*)kmalloc(MAX_FILE_CONTENT_SIZE);
+        if (!content) return NULL;
+        capacity = MAX_FILE_CONTENT_SIZE;
+    }
+    memset(node, 0, sizeof(*node));
     strcpy(node->name, name);
     node->type = type;
     node->parent = parent;
-    node->num_children = 0;
-    node->content[0] = '\0';
+    node->content = content;
+    node->content_capacity = capacity;
     node->content_len = 0;
+    if (node->content) node->content[0] = 0;
     node->disk_backed = 0;
     node->disk_drive = 0;
     node->disk_entry_offset = 0;
@@ -109,15 +123,86 @@ struct fs_node* create_node(const char* name, node_type_t type, struct fs_node* 
     node->disk_size = 0;
     node->disk_capacity = 0;
     node->disk_entry_lba = 0;
-    if (parent && parent->num_children < MAX_CHILDREN) {
-        parent->children[parent->num_children++] = node;
-    }
+    node->allocated = 1;
+    if (index == (uint32_t)pool_index) pool_index++;
+    if (parent) parent->children[parent->num_children++] = node;
+    fs_cache_clear();
     return node;
 }
 
+static int fs_node_ensure_capacity(struct fs_node* node, uint32_t needed) {
+    if (!node || node->type != FS_FILE || needed > FS_MAX_FILE_SIZE + 1u) return -1;
+    if (needed <= node->content_capacity) return 0;
+    uint32_t capacity = node->content_capacity ? node->content_capacity : MAX_FILE_CONTENT_SIZE;
+    while (capacity < needed) {
+        if (capacity > (FS_MAX_FILE_SIZE + 1u) / 2u) {
+            capacity = FS_MAX_FILE_SIZE + 1u;
+            break;
+        }
+        capacity *= 2u;
+    }
+    char* expanded = (char*)kmalloc(capacity);
+    if (!expanded) return -1;
+    if (node->content_len > 0) memcpy(expanded, node->content, (uint32_t)node->content_len);
+    if ((uint32_t)node->content_len < capacity) expanded[node->content_len] = 0;
+    node->content = expanded;
+    node->content_capacity = capacity;
+    return 0;
+}
+
+const char* fs_node_data(const struct fs_node* node) {
+    return node && node->type == FS_FILE ? node->content : NULL;
+}
+
+int fs_node_write(struct fs_node* node, uint32_t offset, const void* data, uint32_t length) {
+    if (!node || node->type != FS_FILE || offset > FS_MAX_FILE_SIZE || length > FS_MAX_FILE_SIZE - offset) return -1;
+    uint32_t old_length = (uint32_t)node->content_len;
+    uint32_t end = offset + length;
+    uint32_t new_length = end > old_length ? end : old_length;
+    if (fs_node_ensure_capacity(node, new_length + 1u) != 0) return -1;
+    if (offset > old_length) memset(node->content + old_length, 0, offset - old_length);
+    if (length) memcpy(node->content + offset, data, length);
+    node->content[new_length] = 0;
+    node->content_len = (int)new_length;
+    node->disk_backed = 0;
+    return 0;
+}
+
+int fs_node_truncate(struct fs_node* node, uint32_t length) {
+    if (!node || node->type != FS_FILE || length > FS_MAX_FILE_SIZE || fs_node_ensure_capacity(node, length + 1u) != 0) return -1;
+    if (length > (uint32_t)node->content_len) memset(node->content + node->content_len, 0, length - (uint32_t)node->content_len);
+    node->content[length] = 0;
+    node->content_len = (int)length;
+    node->disk_backed = 0;
+    return 0;
+}
+
+int fs_node_remove(struct fs_node* node) {
+    if (!node || !node->allocated || !node->parent || (node->type == FS_DIRECTORY && node->num_children)) return -1;
+    struct fs_node* parent = node->parent;
+    uint32_t i = 0;
+    while (i < (uint32_t)parent->num_children && parent->children[i] != node) i++;
+    if (i >= (uint32_t)parent->num_children) return -1;
+    while (i + 1 < (uint32_t)parent->num_children) {
+        parent->children[i] = parent->children[i + 1];
+        i++;
+    }
+    parent->num_children--;
+    if (node->content) node->content[0] = 0;
+    node->content_len = 0;
+    node->parent = NULL;
+    node->num_children = 0;
+    node->name[0] = 0;
+    node->allocated = 0;
+    node->disk_backed = 0;
+    fs_cache_clear();
+    return 0;
+}
+
 static void set_content(struct fs_node* node, const char* data) {
-    strcpy(node->content, data);
-    node->content_len = strlen(data);
+    if (!node || node->type != FS_FILE || !node->content || !data) return;
+    uint32_t length = (uint32_t)strlen(data);
+    if (length > FS_MAX_FILE_SIZE || fs_node_write(node, 0, data, length) != 0) return;
 }
 
 void fs_initialize() {
