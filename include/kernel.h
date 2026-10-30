@@ -149,6 +149,7 @@ typedef enum { KERNEL_MODE_CLI, KERNEL_MODE_EDITOR, KERNEL_MODE_FAQ, KERNEL_MODE
 extern kernel_mode_t current_kernel_mode;
 
 #define MAX_FILE_CONTENT_SIZE (64 * 1024)
+#define FS_MAX_FILE_SIZE (4 * 1024 * 1024)
 struct fs_node;
 extern struct fs_node* editor_target_file;
 extern char editor_buffer[MAX_FILE_CONTENT_SIZE];
@@ -197,6 +198,8 @@ extern char command_history[MAX_HISTORY][80];
 extern int history_count;
 extern int history_index;
 extern volatile uint32_t uptime_ticks;
+extern volatile uint32_t server_idle_ticks;
+extern volatile uint8_t server_idle_waiting;
 
 #define TICKS_PER_SEC 1000u
 
@@ -246,13 +249,20 @@ extern int mouse_cursor_y;
 
 extern char stack_top;
 
+#ifdef SHARKOS_32BIT
+struct registers {
+    uint32_t edi, esi, ebp, esp, ebx, edx, ecx, eax;
+    uint32_t int_no, err_code;
+    uint32_t eip, cs, eflags;
+};
+#else
 struct registers {
     uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
     uint64_t rdi, rsi, rbp, rbx, rdx, rcx, rax;
     uint64_t int_no, err_code;
     uint64_t rip, cs, rflags, rsp, ss;
-    // compat aliases for old 32-bit code (low 32 bits)
 };
+#endif
 
 typedef struct {
     uint8_t  e_ident[16]; uint16_t e_type; uint16_t e_machine;
@@ -294,8 +304,15 @@ void hex_to_string(uint32_t value, char* buffer);
 void int_to_string(uint32_t value, char* buffer);
 void delay_ms(uint32_t ms);
 
+typedef struct {
+    uint64_t start;
+    uint64_t end;
+} pmm_memory_region_t;
+
 void init_descriptor_tables(void);
 void pmm_init(uint64_t mem_size_bytes);
+void pmm_init_regions(const pmm_memory_region_t* regions, uint32_t count);
+uint64_t pmm_free_memory_bytes(void);
 void pmm_reserve(uintptr_t base, size_t len);
 void* kmalloc(size_t size);
 void kfree(void* ptr);
@@ -312,7 +329,7 @@ void shutdown(void);
 void execute_elf(uint8_t* data, const char* arg);
 
 #define MAX_NODES 128
-#define MAX_CHILDREN 32
+#define MAX_CHILDREN 64
 typedef enum { FS_DIRECTORY, FS_FILE } node_type_t;
 struct fs_node {
     char name[32];
@@ -320,7 +337,8 @@ struct fs_node {
     struct fs_node* parent;
     struct fs_node* children[MAX_CHILDREN];
     int num_children;
-    char content[MAX_FILE_CONTENT_SIZE];
+    char* content;
+    uint32_t content_capacity;
     int content_len;
     uint8_t disk_backed;
     uint8_t disk_drive;
@@ -329,6 +347,7 @@ struct fs_node {
     uint32_t disk_size;
     uint32_t disk_capacity;
     uint32_t disk_entry_lba;
+    uint8_t allocated;
 };
 extern struct fs_node node_pool[MAX_NODES];
 extern int pool_index;
@@ -338,11 +357,16 @@ struct fs_node* find_node(struct fs_node* parent, const char* name);
 struct fs_node* search_path(const char* name);
 struct fs_node* fs_resolve_path(const char* path);
 struct fs_node* create_node(const char* name, node_type_t type, struct fs_node* parent);
+const char* fs_node_data(const struct fs_node* node);
+int fs_node_write(struct fs_node* node, uint32_t offset, const void* data, uint32_t length);
+int fs_node_truncate(struct fs_node* node, uint32_t length);
+int fs_node_remove(struct fs_node* node);
 int fs_node_sync(struct fs_node* node);
 int fat16_mount(int drive, struct fs_node* mountpoint);
 int fat16_unmount(struct fs_node* mountpoint);
 int fat16_is_mounted(struct fs_node* node);
 void fs_initialize(void);
+void fs_cache_clear(void);
 void execute_command(char* cmd);
 
 void draw_char(char c, int x, int y, uint32_t fg, uint32_t bg);

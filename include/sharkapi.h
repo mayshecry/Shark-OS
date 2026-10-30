@@ -85,7 +85,7 @@ uint32_t sharkapi_get_current_task_id(void);
 void     sharkapi_yield(void);
 void     sharkapi_sleep_ms(uint32_t ms);
 
-// Audio - SharkAPI simple: audio_play(buf, len, rate) + mixer
+ 
 int      sharkapi_audio_play(const void* data, uint32_t bytes, uint32_t sample_rate, uint16_t channels, uint16_t bits, uint32_t volume);
 int      sharkapi_audio_play_wav(const void* wav_data, uint32_t wav_len, uint32_t volume);
 void     sharkapi_audio_stop(int handle);
