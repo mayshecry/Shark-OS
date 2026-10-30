@@ -7,6 +7,12 @@
 #include "theme.h"
 #include "ata.h"
 #include <stdint.h>
+#ifdef SERVER_IMAGE
+#include "server_console.h"
+#include "server_cli.h"
+#include "httpd.h"
+#include "ssh.h"
+#endif
 
 static int simple_atoi(const char* s) {
     int result = 0;
@@ -179,11 +185,13 @@ static void cmd_cat(const char* args) {
         terminal_writestring("flags\t\t: fpu vme de pse tsc msr pae mce cx8 apic\n");
     } else if (strcasecmp(args, "meminfo") == 0 || (strchr(args, '/') && strstr(args, "meminfo"))) {
         char buf[64];
-        uint32_t total_kb = (uint32_t)total_system_memory;
-        uint32_t free_kb = (uint32_t)(total_system_memory * 3 / 4);
-        uint32_t avail_kb = (uint32_t)(total_system_memory * 7 / 8);
-        uint32_t buffers_kb = (uint32_t)(total_system_memory / 16);
-        uint32_t cached_kb = (uint32_t)(total_system_memory / 8);
+        uint32_t total_kb = (uint32_t)(total_system_memory / 1024);
+        uint64_t free_bytes = pmm_free_memory_bytes();
+        if (free_bytes > total_system_memory) free_bytes = total_system_memory;
+        uint32_t free_kb = (uint32_t)(free_bytes / 1024);
+        uint32_t avail_kb = free_kb;
+        uint32_t buffers_kb = 0;
+        uint32_t cached_kb = 0;
         terminal_writestring("MemTotal:\t");
         int_to_string(total_kb, buf); terminal_writestring(buf); terminal_writestring(" kB\n");
         terminal_writestring("MemFree:\t");
@@ -272,7 +280,7 @@ static void cmd_help(const char* args) {
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("SYSTEM      - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    terminal_writestring("whoami, sysinfo, kernelinfo, colors, lspci, ps, taskmanager, kill, exec\n");
+    terminal_writestring("whoami, sysinfo, kernelinfo, colors, devices/lspci, ps, taskmanager, kill, exec\n");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("RING 0      - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
@@ -280,7 +288,7 @@ static void cmd_help(const char* args) {
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("APPS        - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    terminal_writestring("clear, colors, credits, help, whatis, fortune, cowsay, sl, banner, sharkfetch, doom, browser [url]\n");
+    terminal_writestring("clear, colors, credits, help, neofetch, sharkfetch, whatis, fortune, cowsay, sl, banner, doom, browser [url]\n");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("POWER       - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
@@ -350,6 +358,62 @@ static void cmd_sysinfo(const char* args) {
     terminal_writestring("\033[0;32m");
     terminal_writestring("SharkOS V2 - The Sharkslayer Edition\n");
     terminal_writestring("\033[0;37m");
+}
+
+static void cmd_devices_hex(uint16_t value) {
+    static const char digits[] = "0123456789ABCDEF";
+    for (int i = 3; i >= 0; i--) terminal_putchar(digits[(value >> (i * 4)) & 15]);
+}
+
+static const char* pci_vendor_name(uint16_t vendor) {
+    if (vendor == 0x10EC) return "Realtek";
+    if (vendor == 0x8086) return "Intel";
+    if (vendor == 0x1022) return "AMD";
+    if (vendor == 0x1AF4) return "Virtio";
+    if (vendor == 0x1234) return "QEMU";
+    if (vendor == 0x10DE) return "NVIDIA";
+    if (vendor == 0x15AD) return "VMware";
+    if (vendor == 0x80EE) return "VirtualBox";
+    return "Unknown vendor";
+}
+
+static const char* pci_device_name(uint16_t vendor, uint16_t device) {
+    if (vendor == 0x10EC && device == 0x8168) return "RTL8111/8168/8211/8411 Gigabit Ethernet";
+    if (vendor == 0x10EC && device == 0x8169) return "RTL8169 Gigabit Ethernet";
+    if (vendor == 0x10EC && device == 0x8139) return "RTL8139 Fast Ethernet";
+    if (vendor == 0x8086 && (device == 0x100E || device == 0x100F)) return "82540EM Gigabit Ethernet";
+    if (vendor == 0x1AF4 && device == 0x1000) return "Virtio network device";
+    if (vendor == 0x1234 && device == 0x1111) return "Virtual VGA adapter";
+    if (vendor == 0x1022 && (device == 0x2000 || device == 0x2001)) return "PCnet Ethernet";
+    return "PCI device";
+}
+
+static void cmd_devices(const char* args) {
+    (void)args;
+    terminal_writestring("PCI devices detected:\n");
+    uint32_t count = 0;
+    for (uint32_t bus = 0; bus < 256; bus++) {
+        for (uint32_t slot = 0; slot < 32; slot++) {
+            for (uint32_t func = 0; func < 8; func++) {
+                uint32_t identity = pci_config_read((uint8_t)bus, (uint8_t)slot, (uint8_t)func, 0);
+                if (identity == 0xFFFFFFFFu) { if (!func) break; else continue; }
+                uint16_t vendor = (uint16_t)identity;
+                uint16_t device = (uint16_t)(identity >> 16);
+                terminal_writestring("  ");
+                char number[16];
+                int_to_string(bus, number); terminal_writestring(number); terminal_putchar(':');
+                int_to_string(slot, number); terminal_writestring(number); terminal_putchar('.');
+                int_to_string(func, number); terminal_writestring(number); terminal_writestring("  ");
+                terminal_writestring(pci_vendor_name(vendor)); terminal_writestring(" ");
+                terminal_writestring(pci_device_name(vendor, device)); terminal_writestring("  ");
+                cmd_devices_hex(vendor); terminal_putchar(':'); cmd_devices_hex(device); terminal_writestring("\n");
+                count++;
+                uint32_t header = pci_config_read((uint8_t)bus, (uint8_t)slot, (uint8_t)func, 0x0C);
+                if (!func && !(header & 0x00800000u)) break;
+            }
+        }
+    }
+    if (!count) terminal_writestring("  no PCI devices found\n");
 }
 
 static void cmd_hostname(const char* args) {
@@ -428,7 +492,9 @@ static void cmd_taskmanager(const char* args) {
     terminal_writestring("% (main loop busy share, last second)\n");
 
     uint32_t total_kb = (uint32_t)(total_system_memory / 1024u);
-    uint32_t used_kb = (uint32_t)((free_memory_start - 0x100000u) / 1024u);
+    uint64_t free_bytes = pmm_free_memory_bytes();
+    if (free_bytes > total_system_memory) free_bytes = total_system_memory;
+    uint32_t used_kb = (uint32_t)((total_system_memory - free_bytes) / 1024u);
     terminal_writestring("Memory     : ");
     int_to_string(used_kb, buf); terminal_writestring(buf); terminal_writestring(" KB used / ");
     int_to_string(total_kb, buf); terminal_writestring(buf); terminal_writestring(" KB total\n");
@@ -465,6 +531,172 @@ static void cmd_taskmanager(const char* args) {
     terminal_writestring("\nIn the desktop, 'taskmanager' (or Ctrl+Esc) opens the window.\n");
 }
 
+#ifdef SERVER_IMAGE
+static void server_htop_print_bar(uint32_t percent) {
+    if (percent > 100) percent = 100;
+    uint32_t fill = percent * 40 / 100;
+    terminal_putchar('[');
+    for (uint32_t i = 0; i < 40; i++) terminal_putchar(i < fill ? '#' : '.');
+    terminal_putchar(']');
+}
+
+static void server_htop_draw(uint32_t cpu_percent) {
+    char number[24];
+    uint64_t total_bytes = total_system_memory;
+    uint64_t free_bytes = pmm_free_memory_bytes();
+    if (free_bytes > total_bytes) free_bytes = total_bytes;
+    uint64_t used_bytes = total_bytes - free_bytes;
+    uint32_t memory_percent = total_bytes ? (uint32_t)(used_bytes * 100 / total_bytes) : 0;
+    uint32_t total_mb = (uint32_t)(total_bytes >> 20);
+    uint32_t used_mb = (uint32_t)(used_bytes >> 20);
+    uint32_t free_mb = total_mb > used_mb ? total_mb - used_mb : 0;
+    uint32_t seconds = uptime_ticks / 1000;
+    uint32_t hours = seconds / 3600;
+    uint32_t minutes = (seconds / 60) % 60;
+    uint32_t secs = seconds % 60;
+    uint32_t task_count = 0;
+    terminal_clear();
+    terminal_writestring("SharkOS htop | live monitor | Z local, Q/Z SSH\n");
+    terminal_writestring("CPU  ");
+    server_htop_print_bar(cpu_percent);
+    terminal_writestring(" ");
+    int_to_string(cpu_percent, number);
+    terminal_writestring(number);
+    terminal_writestring("%\nRAM  ");
+    server_htop_print_bar(memory_percent);
+    terminal_writestring(" ");
+    int_to_string(memory_percent, number);
+    terminal_writestring(number);
+    terminal_writestring("%  ");
+    int_to_string(used_mb, number);
+    terminal_writestring(number);
+    terminal_putchar('/');
+    int_to_string(total_mb, number);
+    terminal_writestring(number);
+    terminal_writestring(" MiB used\n     free ");
+    int_to_string(free_mb, number);
+    terminal_writestring(number);
+    terminal_writestring(" MiB\n");
+    terminal_writestring("Uptime ");
+    int_to_string(hours, number);
+    terminal_writestring(number);
+    terminal_writestring(":");
+    if (minutes < 10) terminal_putchar('0');
+    int_to_string(minutes, number);
+    terminal_writestring(number);
+    terminal_putchar(':');
+    if (secs < 10) terminal_putchar('0');
+    int_to_string(secs, number);
+    terminal_writestring(number);
+    terminal_writestring("\n\nSERVICES\n");
+    terminal_writestring("HTTP  ");
+    if (httpd_is_active()) {
+        terminal_writestring("RUNNING  port ");
+        int_to_string(httpd_listen_port(), number);
+        terminal_writestring(number);
+        terminal_writestring("  clients ");
+        int_to_string(net_tcp_server_connection_count(httpd_listen_port()), number);
+        terminal_writestring(number);
+    } else terminal_writestring("STOPPED");
+    terminal_writestring("\nSSH   ");
+    if (ssh_server_is_active()) {
+        terminal_writestring("RUNNING  port ");
+        int_to_string(ssh_server_listen_port(), number);
+        terminal_writestring(number);
+        terminal_writestring("  sessions ");
+        int_to_string(net_tcp_server_connection_count(ssh_server_listen_port()), number);
+        terminal_writestring(number);
+    } else terminal_writestring("STOPPED");
+    terminal_writestring("\nTCP connections ");
+    int_to_string(net_tcp_server_connection_count(0), number);
+    terminal_writestring(number);
+    terminal_writestring(" / 8\n\nTASKS\n");
+    spin_lock(&task_list_lock);
+    for (task_t* task = task_list; task; task = task->next) task_count++;
+    if (!task_count) {
+        terminal_writestring("No separately scheduled user tasks; server services run in the kernel loop.\n");
+    } else {
+        terminal_writestring("PID  NAME             STATE      CPU  SYSCALLS\n");
+        for (task_t* task = task_list; task; task = task->next) {
+            int_to_string((uint32_t)task->id, number);
+            terminal_writestring(number);
+            terminal_writestring("  ");
+            terminal_writestring(task->name);
+            uint32_t name_length = (uint32_t)strlen(task->name);
+            for (uint32_t i = name_length; i < 16; i++) terminal_putchar(' ');
+            const char* state = task->state == TASK_RUNNING ? "RUNNING" : task->state == TASK_READY ? "READY" : task->state == TASK_SLEEPING ? "SLEEPING" : "ZOMBIE";
+            terminal_writestring(state);
+            terminal_writestring("  ");
+            int_to_string(task->cpu_usage, number);
+            terminal_writestring(number);
+            terminal_writestring("%  ");
+            int_to_string(task->syscall_count, number);
+            terminal_writestring(number);
+            terminal_putchar('\n');
+        }
+    }
+    spin_unlock(&task_list_lock);
+}
+
+static volatile uint8_t server_htop_active;
+static uint32_t server_htop_previous_ticks;
+static uint32_t server_htop_previous_idle;
+static uint32_t server_htop_last_draw;
+static uint32_t server_htop_cpu_percent;
+
+int server_htop_is_active(void) {
+    return server_htop_active != 0;
+}
+
+void server_htop_start(void) {
+    server_htop_active = 1;
+    server_htop_previous_ticks = uptime_ticks;
+    server_htop_previous_idle = server_idle_ticks;
+    server_htop_last_draw = uptime_ticks;
+    server_htop_cpu_percent = 0;
+    server_htop_draw(0);
+}
+
+void server_htop_poll(void) {
+    if (!server_htop_active) return;
+    uint32_t now = uptime_ticks;
+    if (now - server_htop_last_draw < 500) return;
+    uint32_t elapsed = now - server_htop_previous_ticks;
+    uint32_t idle = server_idle_ticks - server_htop_previous_idle;
+    if (idle > elapsed) idle = elapsed;
+    server_htop_cpu_percent = elapsed ? (elapsed - idle) * 100 / elapsed : 0;
+    server_htop_previous_ticks = now;
+    server_htop_previous_idle = server_idle_ticks;
+    server_htop_last_draw = now;
+    server_htop_draw(server_htop_cpu_percent);
+}
+
+uint32_t server_htop_render_remote(char* output, uint32_t output_capacity) {
+    if (!output || !output_capacity) return 0;
+    server_output_capture_begin(output, output_capacity);
+    server_htop_draw(server_htop_cpu_percent);
+    return server_output_capture_end();
+}
+
+int server_htop_handle_key(int key) {
+    if (!server_htop_active) return 0;
+    if (key == 'z' || key == 'Z') {
+        server_htop_active = 0;
+        terminal_clear();
+        terminal_writestring("htop closed.\n");
+    }
+    return 1;
+}
+
+static void cmd_htop(const char* args) {
+    (void)args;
+    if (server_output_capture_active()) {
+        server_htop_draw(server_htop_cpu_percent);
+        return;
+    }
+    server_htop_start();
+}
+#else
 static void cmd_htop(const char* args) {
     (void)args;
     spin_lock(&task_list_lock);
@@ -535,6 +767,8 @@ static void cmd_htop(const char* args) {
     spin_unlock(&task_list_lock);
 }
 
+#endif
+
 static void cmd_uptime(const char* args) {
     (void)args;
     uint32_t total_secs = uptime_ticks / TICKS_PER_SEC;
@@ -567,6 +801,7 @@ static void cmd_bokop(const char* args) {
 }
 
 static void cmd_neofetch(const char* args) {
+    (void)args;
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_BLUE, VGA_COLOR_BLACK));
     terminal_writestring("\n");
     terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡠⢄⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\n");
@@ -945,7 +1180,7 @@ static void cmd_netstat(const char* args) {
 
 #include "audio.h"
 static void cmd_audio(const char* args){
-    char buf0[64]; // small helper
+    char buf0[64];  
     if (strlen(args)==0 || strcmp(args,"status")==0){
         terminal_writestring("Audio backend: "); terminal_writestring((char*)audio_backend_name()); terminal_writestring("\n");
         terminal_writestring("Available: "); terminal_writestring(audio_available() ? "yes" : "no"); terminal_writestring("\n");
@@ -1002,7 +1237,7 @@ static void cmd_audio(const char* args){
         return;
     }
     if (strcmp(args,"test")==0){
-        // square 440Hz stereo 48k 0.5s (no FPU needed)
+         
         int16_t* buf=(int16_t*)kmalloc(48000/2*4);
         if(!buf){ terminal_writestring("oom\n"); return; }
         int period=48000/440;
@@ -1130,8 +1365,9 @@ static void cmd_sharkfetch(const char* args) {
 
     fetch_kv(info[7], "Memory");
     uint32_t total_mb = (uint32_t)(total_system_memory >> 20);
-    uintptr_t used = (free_memory_start > 0x100000u)
-                         ? free_memory_start - 0x100000u : 0;
+    uint64_t free_bytes = pmm_free_memory_bytes();
+    if (free_bytes > total_system_memory) free_bytes = total_system_memory;
+    uint64_t used = total_system_memory - free_bytes;
     fetch_num(info[7], (uint32_t)(used >> 20));
     fetch_cat(info[7], " MiB / ");
     fetch_num(info[7], total_mb);
@@ -1211,23 +1447,31 @@ static const cmd_entry_t cmd_table[] = {
     {"clear", cmd_clear},
     {"cls", cmd_clear},
     {"echo", cmd_echo},
+#ifndef SERVER_IMAGE
     {"edit", cmd_edit},
+#endif
     {"whoami", cmd_whoami},
     {"help", cmd_help},
     {"uname", cmd_uname},
     {"sysinfo", cmd_sysinfo},
     {"hostname", cmd_hostname},
+    {"devices", cmd_devices},
+    {"lspci", cmd_devices},
     {"ps", cmd_ps},
     {"htop", cmd_htop},
+#ifndef SERVER_IMAGE
     {"taskmanager", cmd_taskmanager},
     {"taskmgr", cmd_taskmanager},
     {"browser", cmd_browser},
     {"iexplore", cmd_browser},
     {"www", cmd_browser},
+#endif
     {"uptime", cmd_uptime},
     {"neofetch", cmd_neofetch},
+#ifndef SERVER_IMAGE
     {"sharkfetch", cmd_sharkfetch},
     {"sfetch", cmd_sharkfetch},
+#endif
     {"poweroff", cmd_poweroff},
     {"reboot", cmd_reboot},
     {"bokop", cmd_bokop},
@@ -1258,7 +1502,36 @@ static cmd_handler_t find_command(const char* name) {
     return NULL;
 }
 
+#ifdef SERVER_IMAGE
+static int server_command_is_disabled(const char* cmd) {
+    char name[32];
+    uint32_t i = 0;
+    while (cmd[i] && cmd[i] != ' ' && i < sizeof(name) - 1) {
+        name[i] = cmd[i];
+        i++;
+    }
+    name[i] = 0;
+    static const char* disabled[] = {
+        "edit", "browser", "iexplore", "www", "taskmanager", "taskmgr",
+        "sharkfetch", "sfetch", "doom", "flappybird", "pong",
+        "gdash", "geometrydash", "sharkcube", "sharkcraft", "fnaf",
+        "guess", "tictactoe", "sl", "banner", "cowsay", "microsoft",
+        "wallpaper", "theme", "desktop", "settings", "notepad", "window"
+    };
+    for (uint32_t j = 0; j < sizeof(disabled) / sizeof(disabled[0]); j++) {
+        if (strcmp(name, disabled[j]) == 0) return 1;
+    }
+    return 0;
+}
+#endif
+
 void execute_command(char* cmd) {
+#ifdef SERVER_IMAGE
+    if (server_command_is_disabled(cmd)) {
+        terminal_writestring("This visual or game command is not included in the server image.\n");
+        return;
+    }
+#endif
     if (strlen(cmd) == 0) return;
     uint8_t old_color = terminal_color;
     terminal_putchar('\n');
@@ -1392,9 +1665,11 @@ void execute_command(char* cmd) {
 
         char buf[128];
         uint32_t total_mb = (uint32_t)(total_system_memory >> 20);
-        uint32_t total_kb = (uint32_t)total_system_memory;
-        uint32_t free_kb = (uint32_t)(total_system_memory * 3 / 4);
-        uint32_t avail_kb = (uint32_t)(total_system_memory * 7 / 8);
+        uint32_t total_kb = (uint32_t)(total_system_memory / 1024);
+        uint64_t free_bytes = pmm_free_memory_bytes();
+        if (free_bytes > total_system_memory) free_bytes = total_system_memory;
+        uint32_t free_kb = (uint32_t)(free_bytes / 1024);
+        uint32_t avail_kb = free_kb;
         uint32_t up_secs = uptime_ticks / TICKS_PER_SEC;
         uint32_t hours = up_secs / 3600;
         uint32_t mins = (up_secs % 3600) / 60;
@@ -1720,18 +1995,7 @@ void execute_command(char* cmd) {
                     if (!use_force) {
                         terminal_writestring("Protected: use rm force <name> to delete");
                     } else {
-                        int found = 0;
-                        for (i = 0; i < current_dir->num_children; i++) {
-                            if (current_dir->children[i] == target) {
-                                for (int j = i; j < current_dir->num_children - 1; j++) {
-                                    current_dir->children[j] = current_dir->children[j + 1];
-                                }
-                                current_dir->num_children--;
-                                found = 1;
-                                break;
-                            }
-                        }
-                        if (found) terminal_writestring("Removed.");
+                        if (fs_node_remove(target) == 0) terminal_writestring("Removed.");
                         else terminal_writestring("Could not remove.");
                     }
                 }
@@ -1773,9 +2037,11 @@ void execute_command(char* cmd) {
             if (source && source->type == FS_FILE) {
                 struct fs_node* copy = create_node(dst, FS_FILE, current_dir);
                 if (copy) {
-                    strcpy(copy->content, source->content);
-                    copy->content_len = source->content_len;
-                    terminal_writestring("Copied.");
+                    if (fs_node_write(copy, 0, source->content, (uint32_t)source->content_len) == 0) terminal_writestring("Copied.");
+                    else {
+                        fs_node_remove(copy);
+                        terminal_writestring("Copy failed.");
+                    }
                 }
             } else {
                 terminal_writestring("Source not found or is a directory.");
@@ -2290,7 +2556,7 @@ void execute_command(char* cmd) {
         terminal_writestring("  ╚══════════════════════════════════════════════════════════════╝\n");
         terminal_set_color(old_color);
     } else if (strcmp(cmd_name, "priv") == 0) {
-        uint64_t cr0_val, cr3_val;
+        uintptr_t cr0_val, cr3_val;
         asm volatile("mov %%cr0, %0" : "=r"(cr0_val));
         asm volatile("mov %%cr3, %0" : "=r"(cr3_val));
 

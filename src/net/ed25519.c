@@ -116,7 +116,44 @@ static void fe_sub(ed_fe* o,const ed_fe* a,const ed_fe* b){
     fe_carry(o);
 }
 
+#if !defined(__SIZEOF_INT128__)
+typedef struct { uint64_t lo; uint64_t hi; } ed_wide;
+
+static ed_wide ed_wide_add(ed_wide a, ed_wide b) {
+    ed_wide r;
+    r.lo = a.lo + b.lo;
+    r.hi = a.hi + b.hi + (r.lo < a.lo);
+    return r;
+}
+
+static ed_wide ed_wide_mul64(uint64_t a, uint64_t b) {
+    uint64_t a0 = (uint32_t)a;
+    uint64_t a1 = a >> 32;
+    uint64_t b0 = (uint32_t)b;
+    uint64_t b1 = b >> 32;
+    uint64_t p00 = a0 * b0;
+    uint64_t p01 = a0 * b1;
+    uint64_t p10 = a1 * b0;
+    uint64_t middle = (p00 >> 32) + (uint32_t)p01 + (uint32_t)p10;
+    ed_wide r;
+    r.lo = (middle << 32) | (uint32_t)p00;
+    r.hi = a1 * b1 + (p01 >> 32) + (p10 >> 32) + (middle >> 32);
+    return r;
+}
+
+static ed_wide ed_wide_mul19(ed_wide a) {
+    ed_wide r = { 0, 0 };
+    for (int i = 0; i < 19; i++) r = ed_wide_add(r, a);
+    return r;
+}
+
+static uint64_t ed_wide_shr51(ed_wide a) {
+    return (a.lo >> 51) | (a.hi << 13);
+}
+#endif
+
 static void fe_mul(ed_fe* o,const ed_fe* a,const ed_fe* b){
+#if defined(__SIZEOF_INT128__)
     __uint128_t t[5];
     t[0]=(__uint128_t)a->v[0]*b->v[0]+19*((__uint128_t)a->v[1]*b->v[4]+(__uint128_t)a->v[2]*b->v[3]+(__uint128_t)a->v[3]*b->v[2]+(__uint128_t)a->v[4]*b->v[1]);
     t[1]=(__uint128_t)a->v[0]*b->v[1]+(__uint128_t)a->v[1]*b->v[0]+19*((__uint128_t)a->v[2]*b->v[4]+(__uint128_t)a->v[3]*b->v[3]+(__uint128_t)a->v[4]*b->v[2]);
@@ -126,6 +163,17 @@ static void fe_mul(ed_fe* o,const ed_fe* a,const ed_fe* b){
     for(int i=0;i<4;i++){t[i+1]+=t[i]>>51;o->v[i]=(uint64_t)t[i]&FE_MASK;}
     t[0]=(t[4]>>51)*19+o->v[0];o->v[4]=(uint64_t)t[4]&FE_MASK;
     uint64_t c=(uint64_t)(t[0]>>51);o->v[0]=(uint64_t)t[0]&FE_MASK;o->v[1]+=c;
+#else
+    ed_wide t[5];
+    t[0] = ed_wide_add(ed_wide_mul64(a->v[0], b->v[0]), ed_wide_mul19(ed_wide_add(ed_wide_add(ed_wide_mul64(a->v[1], b->v[4]), ed_wide_mul64(a->v[2], b->v[3])), ed_wide_add(ed_wide_mul64(a->v[3], b->v[2]), ed_wide_mul64(a->v[4], b->v[1])))));
+    t[1] = ed_wide_add(ed_wide_add(ed_wide_mul64(a->v[0], b->v[1]), ed_wide_mul64(a->v[1], b->v[0])), ed_wide_mul19(ed_wide_add(ed_wide_add(ed_wide_mul64(a->v[2], b->v[4]), ed_wide_mul64(a->v[3], b->v[3])), ed_wide_mul64(a->v[4], b->v[2]))));
+    t[2] = ed_wide_add(ed_wide_add(ed_wide_add(ed_wide_mul64(a->v[0], b->v[2]), ed_wide_mul64(a->v[1], b->v[1])), ed_wide_mul64(a->v[2], b->v[0])), ed_wide_mul19(ed_wide_add(ed_wide_mul64(a->v[3], b->v[4]), ed_wide_mul64(a->v[4], b->v[3]))));
+    t[3] = ed_wide_add(ed_wide_add(ed_wide_add(ed_wide_mul64(a->v[0], b->v[3]), ed_wide_mul64(a->v[1], b->v[2])), ed_wide_add(ed_wide_mul64(a->v[2], b->v[1]), ed_wide_mul64(a->v[3], b->v[0]))), ed_wide_mul19(ed_wide_mul64(a->v[4], b->v[4])));
+    t[4] = ed_wide_add(ed_wide_add(ed_wide_mul64(a->v[0], b->v[4]), ed_wide_mul64(a->v[1], b->v[3])), ed_wide_add(ed_wide_add(ed_wide_mul64(a->v[2], b->v[2]), ed_wide_mul64(a->v[3], b->v[1])), ed_wide_mul64(a->v[4], b->v[0])));
+    for(int i=0;i<4;i++){t[i+1]=ed_wide_add(t[i+1],(ed_wide){ed_wide_shr51(t[i]),0});o->v[i]=t[i].lo&FE_MASK;}
+    t[0]=ed_wide_add((ed_wide){0,0},(ed_wide){ed_wide_shr51(t[4])*19+o->v[0],0});o->v[4]=t[4].lo&FE_MASK;
+    uint64_t c=ed_wide_shr51(t[0]);o->v[0]=t[0].lo&FE_MASK;o->v[1]+=c;
+#endif
     fe_carry(o);
 }
 

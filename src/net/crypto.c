@@ -433,7 +433,11 @@ int crypto_random_bytes(uint8_t* out, size_t len) {
     asm volatile("cpuid" : "+a"(eax), "=b"(ebx), "+c"(ecx), "=d"(edx));
     if (!(ecx & (1u << 30))) return -1;
     while (len) {
+#ifdef SHARKOS_32BIT
+        uint32_t value = 0;
+#else
         uint64_t value = 0;
+#endif
         uint8_t ready = 0;
         for (int attempt = 0; attempt < 10 && !ready; attempt++) {
             asm volatile("rdrand %0; setc %1" : "=r"(value), "=qm"(ready));

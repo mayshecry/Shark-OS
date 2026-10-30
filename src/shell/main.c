@@ -138,7 +138,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         }
     }
 
-    // 64-bit: allow up to 128GB identity mapping (128*1024^3 = 137438953472)
+     
     if (total_system_memory > 137438953472ULL) {
         total_system_memory = 137438953472ULL;
     }

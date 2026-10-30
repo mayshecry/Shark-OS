@@ -105,7 +105,7 @@ static uint8_t rtl_tx_buf[1800] __attribute__((aligned(16)));
 #define RTL_ISR_RXOVW 0x0010
 #define RTL_ISR_FOVW  0x0040
 
-#define RTL_RCR_VALUE (0x0000000Eu | (1u << 7) | (7u << 8) | (7u << 13))
+#define RTL_RCR_VALUE (0x0000000Fu | (1u << 7) | (7u << 8) | (7u << 13))
 
 #define RTL_TCR_VALUE ((7u << 8) | (3u << 24))
 
@@ -340,7 +340,7 @@ static void pn_init_chip(void) {
     pn_rx_next = 0;
     pn_tx_next = 0;
 
-    pn_ib->mode = 0;
+    pn_ib->mode = 0x8000;
     pn_ib->rlen = (uint8_t)(PN_LOG2_RX << 4);
     pn_ib->tlen = (uint8_t)(PN_LOG2_TX << 4);
     for (int i = 0; i < 6; i++) pn_ib->padr[i] = net_mac[i];
@@ -437,6 +437,7 @@ static void pn_poll(void) {
 #define E1000_CTRL_LRST   (1u << 3)
 
 #define E1000_RCTL_EN     (1u << 1)
+#define E1000_RCTL_UPE    (1u << 3)
 #define E1000_RCTL_BAM    (1u << 15)
 #define E1000_RCTL_SECRC  (1u << 26)
 #define E1000_TCTL_EN     (1u << 1)
@@ -688,7 +689,7 @@ static void e1000_init_chip(void) {
     e1000_w(E1000_RDT, E1000_NRX - 1);
     e1000_rx_head = 0;
 
-    e1000_w(E1000_RCTL, E1000_RCTL_EN | E1000_RCTL_BAM | E1000_RCTL_SECRC);
+    e1000_w(E1000_RCTL, E1000_RCTL_EN | E1000_RCTL_UPE | E1000_RCTL_BAM | E1000_RCTL_SECRC);
 
 
     for (int i = 0; i < E1000_NTX; i++) {
@@ -762,8 +763,137 @@ static int e1000_is_supported(uint16_t did) {
 
 void net_set_rx_callback(net_rx_cb_t cb) { net_rx_cb = cb; }
 
+
+#define R8169_NRX 16
+#define R8169_NTX 4
+#define R8169_BUF 2048
+#define R8169_DESC_OWN 0x80000000u
+#define R8169_DESC_EOR 0x40000000u
+#define R8169_DESC_FS 0x20000000u
+#define R8169_DESC_LS 0x10000000u
+#define R8169_CMD 0x37
+#define R8169_TCR 0x40
+#define R8169_RCR 0x44
+#define R8169_TPPOLL 0x38
+#define R8169_RDSAR 0xE4
+#define R8169_TNPDS 0x20
+#define R8169_IMR 0x3C
+#define R8169_ISR 0x3E
+#define R8169_CMD_RST 0x10
+#define R8169_CMD_RE 0x08
+#define R8169_CMD_TE 0x04
+
+typedef struct { uint32_t status; uint32_t vlan; uint32_t addr_lo; uint32_t addr_hi; } __attribute__((packed)) r8169_desc_t;
+
+static uintptr_t r8169_mmio;
+static uint32_t r8169_io;
+static r8169_desc_t* r8169_rx;
+static r8169_desc_t* r8169_tx;
+static uint8_t* r8169_rxb[R8169_NRX];
+static uint8_t* r8169_txb[R8169_NTX];
+static uint32_t r8169_rx_head;
+static uint32_t r8169_tx_head;
+static bool r8169_present;
+
+static void r8169_w8(uint32_t off, uint8_t value) { if (r8169_mmio) *(volatile uint8_t*)(r8169_mmio + off) = value; else outb((uint16_t)(r8169_io + off), value); }
+static uint8_t r8169_r8(uint32_t off) { return r8169_mmio ? *(volatile uint8_t*)(r8169_mmio + off) : inb((uint16_t)(r8169_io + off)); }
+static void r8169_w16(uint32_t off, uint16_t value) { if (r8169_mmio) *(volatile uint16_t*)(r8169_mmio + off) = value; else outw((uint16_t)(r8169_io + off), value); }
+static void r8169_w32(uint32_t off, uint32_t value) { if (r8169_mmio) *(volatile uint32_t*)(r8169_mmio + off) = value; else outl((uint16_t)(r8169_io + off), value); }
+
+static void r8169_send(const uint8_t* data, uint32_t len) {
+    if (!r8169_present || !data || !len) return;
+    uint32_t idx = r8169_tx_head;
+    volatile r8169_desc_t* d = &r8169_tx[idx];
+    for (int i = 0; i < 20 && (d->status & R8169_DESC_OWN); i++) delay_ms(1);
+    if (d->status & R8169_DESC_OWN) return;
+    if (len > R8169_BUF) len = R8169_BUF;
+    memcpy(r8169_txb[idx], data, len);
+    if (len < 60) { memset(r8169_txb[idx] + len, 0, 60 - len); len = 60; }
+    d->addr_lo = (uint32_t)virt_to_phys(r8169_txb[idx]);
+    d->addr_hi = 0;
+    d->vlan = 0;
+    d->status = R8169_DESC_OWN | R8169_DESC_FS | R8169_DESC_LS | len | (idx == R8169_NTX - 1 ? R8169_DESC_EOR : 0);
+    r8169_tx_head = (idx + 1) & (R8169_NTX - 1);
+    asm volatile("" ::: "memory");
+    r8169_w8(R8169_TPPOLL, 0x40);
+}
+
+static void r8169_poll(void) {
+    if (!r8169_present) return;
+    for (int n = 0; n < R8169_NRX; n++) {
+        uint32_t idx = r8169_rx_head;
+        volatile r8169_desc_t* d = &r8169_rx[idx];
+        if (d->status & R8169_DESC_OWN) break;
+        uint32_t status = d->status;
+        uint32_t len = status & 0x3FFF;
+        if ((status & (R8169_DESC_FS | R8169_DESC_LS)) == (R8169_DESC_FS | R8169_DESC_LS) && len >= 18 && len <= R8169_BUF) if (net_rx_cb) net_rx_cb(r8169_rxb[idx], len - 4);
+        d->status = R8169_DESC_OWN | R8169_BUF | (idx == R8169_NRX - 1 ? R8169_DESC_EOR : 0);
+        r8169_rx_head = (idx + 1) & (R8169_NRX - 1);
+    }
+}
+
+static int r8169_init(uint8_t bus, uint8_t slot, uint8_t func, uint16_t did) {
+    uint32_t bar0 = pci_config_read(bus, slot, func, 0x10);
+    uint32_t bar1 = pci_config_read(bus, slot, func, 0x14);
+    uint32_t command = pci_config_read(bus, slot, func, 0x04);
+    command |= 0x7;
+    pci_config_write(bus, slot, func, 0x04, command);
+    r8169_mmio = 0;
+    r8169_io = 0;
+    if (bar0 & 1) r8169_io = bar0 & 0xFFFFFFFC;
+    else {
+        uint64_t address = bar0 & 0xFFFFFFF0;
+        if ((bar0 & 6) == 4) address |= (uint64_t)bar1 << 32;
+        if (!address || address >= 137438953472ULL) return 0;
+#ifdef SHARKOS_32BIT
+        if (address > 0xFFFFFFFFULL) return 0;
+#endif
+        r8169_mmio = (uintptr_t)address;
+    }
+    r8169_w8(R8169_CMD, R8169_CMD_RST);
+    for (int i = 0; i < 100 && (r8169_r8(R8169_CMD) & R8169_CMD_RST); i++) delay_ms(1);
+    if (r8169_r8(R8169_CMD) & R8169_CMD_RST) return 0;
+    for (int i = 0; i < 6; i++) net_mac[i] = r8169_r8((uint32_t)i);
+    r8169_rx = (r8169_desc_t*)kmalloc(sizeof(r8169_desc_t) * R8169_NRX + 256);
+    r8169_tx = (r8169_desc_t*)kmalloc(sizeof(r8169_desc_t) * R8169_NTX + 256);
+    if (!r8169_rx || !r8169_tx) return 0;
+    r8169_rx = (r8169_desc_t*)(((uintptr_t)r8169_rx + 255) & ~(uintptr_t)255);
+    r8169_tx = (r8169_desc_t*)(((uintptr_t)r8169_tx + 255) & ~(uintptr_t)255);
+    memset(r8169_rx, 0, sizeof(r8169_desc_t) * R8169_NRX);
+    memset(r8169_tx, 0, sizeof(r8169_desc_t) * R8169_NTX);
+    if (virt_to_phys(r8169_rx) > 0xFFFFFFFFu || virt_to_phys(r8169_tx) > 0xFFFFFFFFu) return 0;
+    for (int i = 0; i < R8169_NRX; i++) {
+        r8169_rxb[i] = (uint8_t*)kmalloc(R8169_BUF);
+        if (!r8169_rxb[i] || virt_to_phys(r8169_rxb[i]) > 0xFFFFFFFFu) return 0;
+        r8169_rx[i].addr_lo = (uint32_t)virt_to_phys(r8169_rxb[i]);
+        r8169_rx[i].status = R8169_DESC_OWN | R8169_BUF | (i == R8169_NRX - 1 ? R8169_DESC_EOR : 0);
+    }
+    for (int i = 0; i < R8169_NTX; i++) {
+        r8169_txb[i] = (uint8_t*)kmalloc(R8169_BUF);
+        if (!r8169_txb[i] || virt_to_phys(r8169_txb[i]) > 0xFFFFFFFFu) return 0;
+        r8169_tx[i].addr_lo = (uint32_t)virt_to_phys(r8169_txb[i]);
+    }
+    r8169_rx_head = r8169_tx_head = 0;
+    uint32_t rx_phys = (uint32_t)virt_to_phys(r8169_rx);
+    uint32_t tx_phys = (uint32_t)virt_to_phys(r8169_tx);
+    r8169_w32(R8169_RDSAR, rx_phys);
+    r8169_w32(R8169_RDSAR + 4, 0);
+    r8169_w32(R8169_TNPDS, tx_phys);
+    r8169_w32(R8169_TNPDS + 4, 0);
+    r8169_w16(R8169_IMR, 0);
+    r8169_w16(R8169_ISR, 0xFFFF);
+    r8169_w32(R8169_RCR, 0x0000E70F);
+    r8169_w32(R8169_TCR, 0x03000700);
+    r8169_w8(R8169_CMD, R8169_CMD_RE | R8169_CMD_TE);
+    r8169_present = true;
+    net_has_link = 1;
+    strcpy(net_driver_name, did == 0x8169 ? "Realtek RTL8169" : "Realtek RTL8111/8168/8211/8411");
+    return 1;
+}
+
 void net_send_raw(const uint8_t* data, uint32_t len) {
-    if (rtl_present) rtl_send(data, len);
+    if (r8169_present) r8169_send(data, len);
+    else if (rtl_present) rtl_send(data, len);
     else if (pcnet_present) pn_send(data, len);
     else if (e1000_present) e1000_send(data, len);
 }
@@ -771,14 +901,16 @@ void net_send_raw(const uint8_t* data, uint32_t len) {
 static void dhcp_tick(void);
 
 void net_poll(void) {
-    if (rtl_present) rtl_poll();
+    if (r8169_present) r8169_poll();
+    else if (rtl_present) rtl_poll();
     else if (pcnet_present) pn_poll();
     else if (e1000_present) e1000_poll();
     else return;
+    net_vnic_poll();
     dhcp_tick();
 }
 
-int net_has_nic(void) { return rtl_present || pcnet_present || e1000_present; }
+int net_has_nic(void) { return r8169_present || rtl_present || pcnet_present || e1000_present; }
 
 void net_init(void) {
     for (uint32_t bus = 0; bus < 256; bus++) {
@@ -789,6 +921,9 @@ void net_init(void) {
                 uint16_t vid = d & 0xFFFF, did = (d >> 16) & 0xFFFF;
                 uint32_t hdr = pci_config_read(bus, slot, func, 0x0C);
 
+                if (vid == 0x10EC && (did == 0x8168 || did == 0x8169)) {
+                    if (r8169_init((uint8_t)bus, (uint8_t)slot, (uint8_t)func, did)) return;
+                }
                 if (vid == 0x10EC && did == 0x8139) {
                     uint32_t bar0 = pci_config_read(bus, slot, func, 0x10);
                     rtl_base = bar0 & 0xFFFFFFFC;
@@ -1021,6 +1156,7 @@ static int ip_is_for_us(const uint8_t* dip) {
 
 static void net_on_frame(const uint8_t* frame, uint32_t len) {
     if (len < 14) return;
+    net_vnic_rx_frame(frame, len);
     uint16_t et = (uint16_t)((frame[12] << 8) | frame[13]);
 
     if (et == ETH_ARP) {
@@ -1335,7 +1471,7 @@ static uint8_t tcp_rx_buf[262144];
 static volatile uint32_t tcp_rx_len = 0;
 static uint32_t tcp_rx_rd = 0;
 
-#define TCP_SERVER_CONNECTIONS 4
+#define TCP_SERVER_CONNECTIONS 8
 #define TCP_SERVER_LISTENERS 8
 #define TCP_SERVER_RX_SIZE 16384
 
@@ -1578,10 +1714,10 @@ int net_tcp_listen(uint16_t port) {
     return -1;
 }
 
-int net_tcp_server_accept(void) {
+int net_tcp_server_accept(uint16_t port) {
     for (int i = 0; i < TCP_SERVER_CONNECTIONS; i++) {
         tcp_server_conn_t* c = &tcp_server_connections[i];
-        if (c->state == 2 && !c->accepted) { c->accepted = 1; return i; }
+        if (c->state == 2 && !c->accepted && c->local_port == port) { c->accepted = 1; return i; }
     }
     return -1;
 }
@@ -1637,6 +1773,15 @@ int net_tcp_server_closed(int handle) {
     if (handle < 0 || handle >= TCP_SERVER_CONNECTIONS) return 1;
     tcp_server_conn_t* c = &tcp_server_connections[handle];
     return !c->state || (c->peer_closed && c->rx_rd == c->rx_len);
+}
+
+uint32_t net_tcp_server_connection_count(uint16_t port) {
+    uint32_t count = 0;
+    for (int i = 0; i < TCP_SERVER_CONNECTIONS; i++) {
+        tcp_server_conn_t* c = &tcp_server_connections[i];
+        if (c->state == 2 && (!port || c->local_port == port)) count++;
+    }
+    return count;
 }
 
 void net_tcp_server_close(int handle) {

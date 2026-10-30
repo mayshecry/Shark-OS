@@ -144,10 +144,10 @@ static int rng_range(int n){ if(n<=0) return 0; return (int)(rng_next()% (unsign
 
 static void build_pal(void){
     for(int i=0;i<256;i++) fnaf_palette[i]=0;
-    // Copy authentic texture palette (0..63)
+     
     for(int i=0;i<64;i++) fnaf_palette[i]=fnaf_tex_palette[i];
     fnaf_palette[C_BLACK]=fnaf_palette[0];
-    // UI / overlay colors beyond texture palette (use high indices to avoid clash)
+     
     fnaf_palette[C_WALL]=0x2E2E3A;
     fnaf_palette[C_FLOOR]=0x1A1A1E;
     fnaf_palette[C_DESK]=0x3D2E1E;
@@ -185,7 +185,7 @@ static void build_pal(void){
     for(int i=98;i<256;i++) if(fnaf_palette[i]==0) fnaf_palette[i]=0x101010;
 }
 
-static int office_pan = 40; // 0..80 for 400px wide office viewed at 320
+static int office_pan = 40;  
 
 static inline void fnaf_blit_tex(int tex_id, int dst_x, int dst_y, int src_x0, int src_y0, int src_w, int src_h){
     if(tex_id <0 || tex_id >= FNAF_TEX_COUNT) return;
@@ -193,23 +193,23 @@ static inline void fnaf_blit_tex(int tex_id, int dst_x, int dst_y, int src_x0, i
     const uint8_t *src = fnaf_tex_rle_data + ti->offset;
     int tex_w = ti->w;
     int tex_h = ti->h;
-    // Quick clip: if src region outside texture
+     
     if(src_x0<0) { src_w+=src_x0; dst_x-=src_x0; src_x0=0; }
     if(src_y0<0) { src_h+=src_y0; dst_y-=src_y0; src_y0=0; }
     if(src_x0+src_w > tex_w) src_w = tex_w - src_x0;
     if(src_y0+src_h > tex_h) src_h = tex_h - src_y0;
     if(src_w<=0||src_h<=0) return;
-    // Decode RLE and blit only needed region
-    int pos = 0; // decoded pixel index 0..tex_w*tex_h-1
+     
+    int pos = 0;  
     int cur_run = 0;
     int run_rem = 0;
     uint8_t run_val = 0;
     int src_idx = 0;
     int total = tex_w * tex_h;
-    // Iterate through RLE to generate pixels in order
-    // We need to track y/x via pos
+     
+     
     int rle_p = 0;
-    // Preload first run
+     
     if(ti->rle_size>=2){
         run_rem = src[0];
         run_val = src[1];
@@ -217,15 +217,15 @@ static inline void fnaf_blit_tex(int tex_id, int dst_x, int dst_y, int src_x0, i
     }
     for(int py=0; py<tex_h; py++){
         for(int px=0; px<tex_w; px++){
-            // advance to current pos's value
-            // run_rem already holds remaining of current run
+             
+             
             while(run_rem==0 && rle_p < (int)ti->rle_size){
                 run_rem = src[rle_p];
                 run_val = src[rle_p+1];
                 rle_p+=2;
             }
             if(run_rem==0) break;
-            // check if this pixel is within requested src region
+             
             if(px >= src_x0 && px < src_x0+src_w && py >= src_y0 && py < src_y0+src_h){
                 int dx = dst_x + (px - src_x0);
                 int dy = dst_y + (py - src_y0);
@@ -239,20 +239,20 @@ static inline void fnaf_blit_tex(int tex_id, int dst_x, int dst_y, int src_x0, i
     }
 }
 static inline void fnaf_blit_tex_scaled(int tex_id, int dst_x, int dst_y, int dst_w, int dst_h){
-    // nearest-neighbor scale texture to dst rect (simple decode into temp then scale blit)
-    // For small textures we can decode into stack temp (max 400*120=48000)
-    // Use static buffer to avoid stack overflow
+     
+     
+     
     static uint8_t tmp[57600];
     if(tex_id <0 || tex_id >= FNAF_TEX_COUNT) return;
     const fnaf_tex_info_t *ti = &fnaf_tex_info[tex_id];
-    // quick decode full texture into tmp
+     
     const uint8_t *src = fnaf_tex_rle_data + ti->offset;
     uint32_t out=0;
     for(uint32_t i=0;i<ti->rle_size;i+=2){
         uint8_t cnt=src[i]; uint8_t val=src[i+1];
         for(int k=0;k<cnt;k++) tmp[out++]=val;
     }
-    // scale
+     
     for(int dy=0; dy<dst_h; dy++){
         int sy = (dy * ti->h) / dst_h;
         if(sy<0) sy=0; if(sy>=ti->h) sy=ti->h-1;
@@ -305,7 +305,7 @@ static void blit(void){
     }
 }
 
-// 1:1 FNAF1 cameras - 11 feeds (Kitchen has audio only)
+ 
 #define CAM_1A 0
 #define CAM_1B 1
 #define CAM_1C 2
@@ -331,27 +331,27 @@ static const char* cam_names[11]={
     "RESTROOMS - CAM 7"
 };
 #define CAM_COUNT 11
-// Real FNAF map positions for animatronics
-// Bonnie: 0:1A 1:1B 2:5 3:3 4:2A 5:2B 6:DOOR 7:INSIDE
-// Chica : 0:1A 1:1B 2:7 3:6 4:4A 5:4B 6:DOOR 7:INSIDE
-// Freddy: 0:1A 1:1B 2:7 3:6 4:4A 5:4B 6:DOOR 7:INSIDE (same as Chica but deterministic)
-// Foxy : stage 0-3 at 1C then sprint
+ 
+ 
+ 
+ 
+ 
 
 
 static int base_ai_bonnie, base_ai_chica, base_ai_freddy, base_ai_foxy;
 static void set_ai_for_night(void){
-    // Accurate FNAF1 AI levels per CeriW / technicalFNaF
-    // Night 1..6 (7=custom 1:1 as 20/20/20/20 for bonus)
+     
+     
     int table[7][4]={
-        {0,0,0,0},      // Night 1: 0/0/0/0 -> 0/3/2/2 by 4AM
-        {3,1,0,1},      // Night 2: 0/3/1/1
-        {0,5,1,2},      // Night 3: 1/0/5/2 (Freddy 1)
-        {2,4,1,6},      // Night 4: 1-2/2/4/6 (random 1or2 for Freddy, we pick 1)
-        {5,7,3,5},      // Night 5: 3/5/7/5
-        {10,12,4,16},   // Night 6: 4/10/12/16 (Freddy 4, Foxy 16 on night6 per doc)
-        {20,20,20,20}   // Night 7 custom night max
+        {0,0,0,0},       
+        {3,1,0,1},       
+        {0,5,1,2},       
+        {2,4,1,6},       
+        {5,7,3,5},       
+        {10,12,4,16},    
+        {20,20,20,20}    
     };
-    // Special: Night4 Freddy random 1 or 2 -> use 1 (or pick randomly at start)
+     
     int n=fnaf_night-1;
     if(n<0) n=0; if(n>6) n=6;
     base_ai_bonnie=table[n][0];
@@ -359,7 +359,7 @@ static void set_ai_for_night(void){
     base_ai_freddy=table[n][2];
     base_ai_foxy=table[n][3];
     if(fnaf_night==4){
-        // 50% chance 2 as in real game
+         
         if(rng_range(2)==0) base_ai_freddy=1; else base_ai_freddy=2;
     }
     ai_bonnie=base_ai_bonnie;
@@ -368,7 +368,7 @@ static void set_ai_for_night(void){
     ai_foxy=base_ai_foxy;
 }
 static void update_ai_boosts(void){
-    // 2AM Bonnie +1, 3AM Bonnie/Chica/Foxy +1, 4AM Bonnie/Chica/Foxy +1 (Freddy never boosts)
+     
     int target_b = base_ai_bonnie;
     int target_c = base_ai_chica;
     int target_f = base_ai_foxy;
@@ -381,19 +381,19 @@ static void update_ai_boosts(void){
     ai_bonnie = target_b;
     ai_chica = target_c;
     ai_foxy = target_f;
-    // Freddy stays base
+     
     ai_freddy = base_ai_freddy;
 }
 
-// 1:1 state
+ 
 static int bonnie_inside=0, chica_inside=0, freddy_inside=0;
 static uint32_t bonnie_door_time=0, chica_door_time=0;
 static int left_door_jammed=0, right_door_jammed=0;
 static int left_light_jammed=0, right_light_jammed=0;
 static uint32_t office_entry_time=0;
 static uint32_t last_bonnie_tick=0, last_chica_tick=0, last_freddy_tick=0, last_foxy_tick2=0;
-static int freddy_countdown=0; // frames (60fps equivalent ticks) until move, 0 means ready
-static int foxy_stall=0; // ticks remaining where Foxy cannot move after cam down
+static int freddy_countdown=0;  
+static int foxy_stall=0;  
 static int power_out_phase=0;
 static uint32_t power_out_phase_start=0;
 static int foxy_attack_pending=0;
@@ -405,7 +405,7 @@ static void reset_positions(void){
     foxy_stage=0; foxy_timer=0; foxy_sprint=0; foxy_sprint_timer=0; foxy_stall=0; foxy_attack_pending=0;
     freddy_countdown=0;
     left_door=0; right_door=0; left_light=0; right_light=0; camera_up=0; current_cam=0;
-    power=9990; // 99.9% as in real (99%)
+    power=9990;  
     left_door_block_timer=0; right_door_block_timer=0;
     fnaf_hour=0; hour_progress=0; power_out=0; power_out_phase=0;
     office_entry_time=0;
@@ -429,24 +429,24 @@ static void trigger_jumpscare(int type){
 }
 
 static void draw_office_walls(void){
-    // Authentic office texture with panning (400x120 -> 320 viewport, pan 0..80)
-    // Update pan based on mouse? kept in fnaf_handle_mouse via office_pan static
+     
+     
     fnaf_blit_tex(TEX_OFFICE, 0, 16, office_pan, 0, 320, 120);
-    // Darken hallways when light off (overlay translucent? just darken door rect)
+     
     if(!left_light || power_out){
-        // dim left doorway area with semi-dark overlay using checker
+         
         for(int y=38;y<116;y++) for(int x=28;x<73;x++) if(((x+y)&1)==0) fnaf_screen[y][x] = (fnaf_screen[y][x] & 0x3F) ? fnaf_screen[y][x] : fnaf_screen[y][x];
     }
     if(!right_light || power_out){
         for(int y=38;y<116;y++) for(int x=248;x<293;x++) if(((x+y)&1)==0) {}
     }
-    // Overlay authentic hall views when light on
+     
     if(left_light && !power_out && !left_door){
-        // West hall lit view (use TEX_WEST_HALL scaled into doorway)
+         
         fnaf_blit_tex_scaled(TEX_WEST_HALL, 28, 38, 45, 74);
-        // If Bonnie at door, overlay hint via brighten? actual jumpscare handled separately, but add silhouette
+         
         if(bonnie_pos==4 || bonnie_pos==5){
-            // add eyes effect
+             
             fill_rect(38,60,6,4,C_WHITE);
             fill_rect(52,60,6,4,C_WHITE);
         }
@@ -458,7 +458,7 @@ static void draw_office_walls(void){
             fill_rect(276,62,6,4,C_WHITE);
         }
     }
-    // Doors closed overlay (metal shutter - procedural but tinted)
+     
     if(left_door){
         fill_rect(28,38,45,84,C_DOOR);
         for(int y=38;y<120;y+=6) draw_hline(28,y,45,C_DGREY);
@@ -471,7 +471,7 @@ static void draw_office_walls(void){
         fill_rect(280,40,6,6,C_RED);
         draw_rect_outline(248,38,45,84,C_BLACK);
     }
-    // Buttons (keep UI)
+     
     uint8_t btn_col = left_door? C_RED: C_DGREY;
     fill_rect(8,88,12,16,btn_col);
     draw_rect_outline(8,88,12,16,C_BLACK);
@@ -545,37 +545,37 @@ static void draw_animatronic_at_door(void){
 }
 
 static void draw_camera_feed(void){
-    // Full-screen authentic camera (320x200) - office hidden
+     
     fill_rect(0,0,320,200,C_BLACK);
     int cam_x=4, cam_y=4, cam_w=312, cam_h=160;
-    // white border will be drawn by HUD, but draw faint inner
+     
 
     int tex = TEX_STAGE;
-    // 1:1 mapping: 0=1A 1=1B 2=1C 3=2A 4=2B 5=3 6=4A 7=4B 8=5 9=6 10=7
+     
     switch(current_cam){
         case CAM_1A: tex = TEX_STAGE; break;
         case CAM_1B: tex = TEX_DINING; break;
         case CAM_1C: tex = TEX_PIRATE; break;
-        case CAM_2A: // West Hall
+        case CAM_2A:  
             if(foxy_sprint) tex = TEX_WEST_CHICA;
             else if(bonnie_pos==4) tex = TEX_WEST_CHICA;
             else tex = TEX_WEST_HALL;
             break;
         case CAM_2B: tex = TEX_WEST_CHICA; break;
-        case CAM_3: tex = TEX_BACKSTAGE; break; // Supply Closet reuses Backstage dark
-        case CAM_4A: // East Hall
+        case CAM_3: tex = TEX_BACKSTAGE; break;  
+        case CAM_4A:  
             if(chica_pos==4 || freddy_pos==4) tex = TEX_EAST_HALL_CHICA;
             else if(rng_range(100) < 2) tex = TEX_HALL_ITS_ME;
             else tex = TEX_EAST_HALL;
             break;
         case CAM_4B: tex = TEX_EAST_HALL_CHICA; break;
         case CAM_5: tex = TEX_BACKSTAGE; break;
-        case CAM_6: // Kitchen - audio only, black with text
-            tex = TEX_DINING; break; // placeholder, will overlay kitchen text
-        case CAM_7: tex = TEX_DINING; break; // Restrooms
+        case CAM_6:  
+            tex = TEX_DINING; break;  
+        case CAM_7: tex = TEX_DINING; break;  
         default: tex = TEX_STAGE; break;
     }
-    // Kitchen CAM 6 has no video - audio only (pots/pans)
+     
     if(current_cam==CAM_6){
         fnaf_blit_tex_scaled(tex, cam_x+2, cam_y+2, cam_w-4, cam_h-4);
         fill_rect(cam_x+2,cam_y+2,cam_w-4,cam_h-4,C_BLACK);
@@ -592,19 +592,19 @@ static void draw_camera_feed(void){
         if(foxy_stage==1) draw_text(cam_x+cam_w/2-20,cam_y+80,"PEEKING",C_YELLOW);
         else if(foxy_stage==2) draw_text(cam_x+cam_w/2-16,cam_y+80,"STANDS",C_YELLOW);
         else if(foxy_stage==3) draw_text(cam_x+cam_w/2-24,cam_y+80,"!! RUN !!",C_RED);
-        // add static lines
+         
         for(int y=cam_y+2; y<cam_y+cam_h-2; y+=6) draw_hline(cam_x+2, y, cam_w-4, C_DGREY);
     } else {
-        // blit authentic texture scaled to camera viewport
+         
         fnaf_blit_tex_scaled(tex, cam_x+2, cam_y+2, cam_w-4, cam_h-4);
-        // subtle scanlines for CRT effect
+         
         for(int y=cam_y+2; y<cam_y+cam_h-2; y+=4) draw_hline(cam_x+2, y, cam_w-4, C_DGREY);
-        // light flicker when animatronic in hall
+         
         if((bonnie_pos==4 && current_cam==4) || (chica_pos==6 && current_cam==6)){
             if(rng_range(50)==0) fill_rect(cam_x+2,cam_y+2,cam_w-4,cam_h-4,C_STATIC1);
         }
     }
-    // static speckles
+     
     for(int y=0;y<6;y++){
         if(rng_range(12)==0){
             int x = cam_x+2 + rng_range(cam_w-4);
@@ -613,19 +613,19 @@ static void draw_camera_feed(void){
             set_px(x+1, yy, C_STATIC2);
         }
     }
-    // REC dot is drawn in HUD, not here
-    // Location name already drawn in HUD centered, remove duplicate bottom label
+     
+     
 }
 
 static void draw_camera_map(void){
-    // Authentic wireframe map bottom right, transparent over feed
-    // Draw white outlines for each room (as in original reference)
+     
+     
     int mx=180, my=120, mw=130, mh=58;
-    // semi-transparent dark backing for map
+     
     fill_rect(mx,my,mw,mh,C_BLACK);
     draw_rect_outline(mx,my,mw,mh,C_WHITE);
 
-    // Map layout approx matching FNAF1 building
+     
     int posx[11]={46,46,12,12,8,18,68,68,18,68,42};
     int posy[11]={4,12,12,20,26,20,20,26,8,16,12};
     for(int i=0;i<CAM_COUNT;i++){
@@ -633,7 +633,7 @@ static void draw_camera_map(void){
         uint8_t col = (i==current_cam)? C_YELLOW: C_GREY;
         fill_rect(px,py,5,5,col);
         if(i==CAM_1C && foxy_stage>0) fill_rect(px,py,5,5,C_RED);
-        // Bonnie positions to camera mapping
+         
         if(bonnie_pos==0 && i==CAM_1A) fill_rect(px+1,py+1,3,3,C_BONNIE);
         if(bonnie_pos==1 && i==CAM_1B) fill_rect(px+1,py+1,3,3,C_BONNIE);
         if(bonnie_pos==2 && i==CAM_5) fill_rect(px+1,py+1,3,3,C_BONNIE);
@@ -661,12 +661,12 @@ static void draw_power_usage(int x,int y){
     if(p_int<0) p_int=0; if(p_int>99) p_int=99;
     char num[8]; int_to_str(p_int,num);
     char line[24]="Power left: ";
-    int n=0; for(int k=0;line[k];k++) {} // placeholder
-    // draw "Power left: XX%"
+    int n=0; for(int k=0;line[k];k++) {}  
+     
     draw_text(x,y,"Power left:",C_WHITE);
     draw_text(x+96,y,num,C_WHITE);
     draw_text(x+96+ (p_int>=10?16:8),y,"%",C_WHITE);
-    // Usage: green bars 1-5
+     
     draw_text(x,y+10,"Usage:",C_WHITE);
     int usage = 1 + left_door + right_door + left_light + right_light + camera_up;
     if(power_out) usage=1;
@@ -692,36 +692,36 @@ static void draw_time_top_right(void){
     }
 }
 static void draw_topbar(void){
-    // No longer used as separate bar - HUD is overlayed
+     
 }
 static void draw_controls(void){
-    // Auth controls handled inside office/camera HUD
+     
 }
 static void draw_office_hud(void){
     draw_power_usage(10, 180);
     draw_time_top_right();
-    // Subtle vignette on office
-    // Door buttons already drawn in draw_office_walls
+     
+     
 }
 static void draw_camera_hud(void){
-    // Authentic FNAF HUD: white outer border, REC top left, time top right
+     
     draw_rect_outline(4,4,312,192,C_WHITE);
-    // Inner feed border already
-    // Red REC dot top left (solid, blinks)
+     
+     
     if((uptime_ticks/600)%2==0){
         fill_rect(14,10,12,12,C_RED);
         draw_rect_outline(14,10,12,12,C_BLACK);
         draw_text(30,12,"REC",C_WHITE);
     }
-    // Location name centered slightly above map (like real: middle of feed)
+     
     const char* loc_names[11]={"Show Stage","Dining Area","Pirate Cove","West Hall","W. Hall Corner","Supply Closet","East Hall","E. Hall Corner","Backstage","Kitchen","Restrooms"};
     const char* loc = loc_names[current_cam];
     int l=0; while(loc[l]) l++;
-    // Slight offset from center to avoid scanlines
+     
     draw_text(160 - l*4, 92, loc, C_WHITE);
     draw_power_usage(10, 180);
     draw_time_top_right();
-    // Scanlines overlay subtle
+     
     for(int y=4;y<196;y+=6) draw_hline(5,y,310,C_DGREY);
 }
 
@@ -766,11 +766,11 @@ static void draw_jumpscare(void){
     uint32_t elapsed = uptime_ticks - jumpscare_start;
     if(elapsed<1400){
         int tex = TEX_FREDDY_JUMP;
-        if(jumpscare_type==1) tex = TEX_CHICA_JUMP; // Bonnie uses Chica office jump as placeholder (both in doorway)
+        if(jumpscare_type==1) tex = TEX_CHICA_JUMP;  
         else if(jumpscare_type==2) tex = TEX_CHICA_JUMP;
         else if(jumpscare_type==3) tex = TEX_FREDDY_JUMP;
-        else if(jumpscare_type==4) tex = TEX_FREDDY_JUMP; // Foxy uses Freddy hall run
-        // flicker between texture and black
+        else if(jumpscare_type==4) tex = TEX_FREDDY_JUMP;  
+         
         if((elapsed/70)%2==0){
             fnaf_blit_tex_scaled(tex, 0, 0, 320, 200);
         } else {
@@ -815,39 +815,39 @@ static void update_power(void){
             power_out_phase=0;
             power_out_phase_start=uptime_ticks;
             left_door=0; right_door=0; left_light=0; right_light=0; camera_up=0;
-            // doors forced open, lights dead
+             
             left_door_jammed=1; right_door_jammed=1; left_light_jammed=1; right_light_jammed=1;
         }
         return;
     }
-    // Real drain: every 100ms: (usage + nightly)/10
-    // usage = count of (left door, right door, cam, left light, right light) capped 4, min 1 when none
+     
+     
     if(uptime_ticks - last_power_tick >= 100){
         last_power_tick = uptime_ticks;
         int active = left_door + right_door + left_light + right_light + camera_up;
         if(active>4) active=4;
-        if(active==0) active=1; // idle still drains 1
-        // nightly debuff: 0.1 / divisor, divisor per night: 1:9.6 2:6 3:5 4:4 5+:3
+        if(active==0) active=1;  
+         
         int divisor;
-        if(fnaf_night==1) divisor=96; // 9.6*10 to keep integer math
+        if(fnaf_night==1) divisor=96;  
         else if(fnaf_night==2) divisor=60;
         else if(fnaf_night==3) divisor=50;
         else if(fnaf_night==4) divisor=40;
         else divisor=30;
-        // power is 0..10000 (99.9% = 9990)
-        // per 100ms drain = (active*100 + (100/divisor))/10  -> to keep integer
-        // Simpler: active*10 + (10/divisor*10) ??? Let's compute float then convert: nightly per 100ms = (0.1/divisor)/10*10000 ??? 
-        // Research formula: total % per sec = (active*0.1 + 0.1/divisor) ; per 0.1s = that/10
-        // So drain (in 0.01% units where 10000=100%) per 100ms = (active*10 + 10/divisor) 
-        // active 1 => 10, nightly night1 10/96≈0 -> but need 0.1/9.6=0.0104% per 0.1s => 1.04 units (since 10000=100%)
-        // Use fixed: nightly_units = 100/divisor  (since 0.1/divisor*10000/10 =100/divisor)
-        int nightly_units = 100 / (divisor/10); // divisor 96 => 9.6 => 100/9.6≈10
-        // Actually compute nightly_units = 1000/divisor
-        nightly_units = 1000 / divisor; // 1000/96≈10, 1000/60≈16, 1000/30≈33
+         
+         
+         
+         
+         
+         
+         
+        int nightly_units = 100 / (divisor/10);  
+         
+        nightly_units = 1000 / divisor;  
         int drain = active*10 + nightly_units;
-        // drain is in 0.01% per 100ms? Let's test: active1 night1 =>10+10=20 => 0.2% per sec? Expected 0.2104% per sec -> per 100ms 0.021% => 2.1 units, we have 20 units 0.2% per 100ms => 2% per sec too high 10x
-        // Need scale: drain should be ~2 units per 100ms for idle. So divide by 10
-        drain = (active*10 + nightly_units + 5)/10; // ~2 for idle
+         
+         
+        drain = (active*10 + nightly_units + 5)/10;  
         if(drain<1) drain=1;
         power -= drain;
         if(power<0) power=0;
@@ -857,17 +857,17 @@ static void update_power(void){
 static void update_hours(void){
     if(fnaf_state!=ST_PLAYING) return;
     if(power_out){
-        // 1:1 power-out Freddy phases: 20% every 5s up to 20s to appear with music at left door, then 20% every 5s up to 20s song, then 20% every 2s jumpscare
+         
         uint32_t elapsed = uptime_ticks - power_out_phase_start;
         if(power_out_phase==0){
-            // waiting for Freddy to appear at left door (music)
+             
             if(elapsed >= 5000){
                 power_out_phase_start = uptime_ticks;
-                int roll = rng_range(5); // 0..4 => 20% is 0
+                int roll = rng_range(5);  
                 if(roll==0 || elapsed >= 20000){
                     power_out_phase=1;
                     freddy_inside=0;
-                    // lights flicker handled in render
+                     
                 }
             }
         } else if(power_out_phase==1){
@@ -886,9 +886,9 @@ static void update_hours(void){
                     trigger_jumpscare(3);
                 }
             }
-            // also win check still
+             
             if(uptime_ticks - last_hour_tick >= 89000){
-                // still clock advances even in power out - can win
+                 
                 last_hour_tick = uptime_ticks;
                 fnaf_hour++;
                 if(fnaf_hour>=6){ fnaf_state=ST_WIN; win_time=uptime_ticks; }
@@ -896,7 +896,7 @@ static void update_hours(void){
         }
         return;
     }
-    // Clock: 12AM lasts 90s, 1AM-6AM each 89s => total 535s
+     
     uint32_t need = (fnaf_hour==0) ? 90000 : 89000;
     if(uptime_ticks - last_hour_tick >= need){
         last_hour_tick = uptime_ticks;
@@ -909,96 +909,96 @@ static void update_hours(void){
     }
 }
 
-// --- 1:1 movement paths ---
+ 
 static int bonnie_move_1to1(void){
-    // Bonnie chooses random anywhere on left side (not necessarily adjacent)
-    // Possible left side rooms for Bonnie: 1A(0),1B(1),5(8),3(5),2A(3),2B(4)
-    // But implement exact random table from technicalFNaF:
-    // From each pos, random choice:
-    if(bonnie_pos==0){ // 1A always to 1B
+     
+     
+     
+     
+    if(bonnie_pos==0){  
         return 1;
-    } else if(bonnie_pos==1){ // 1B -> 5 or 3 or 2A (random 1..3)
+    } else if(bonnie_pos==1){  
         int r=rng_range(3);
-        if(r==0) return 2; // 5
-        if(r==1) return 3; // 3
-        return 4; // 2A
-    } else if(bonnie_pos==2){ // 5 Backstage -> 1B or 2A
+        if(r==0) return 2;  
+        if(r==1) return 3;  
+        return 4;  
+    } else if(bonnie_pos==2){  
         return rng_range(2)==0 ? 1 : 4;
-    } else if(bonnie_pos==3){ // 3 Supply Closet -> 1B or 2A
+    } else if(bonnie_pos==3){  
         return rng_range(2)==0 ? 1 : 4;
-    } else if(bonnie_pos==4){ // 2A West Hall -> 3 or 2B (or to door)
+    } else if(bonnie_pos==4){  
         int r=rng_range(3);
         if(r==0) return 3;
         if(r==1) return 5;
-        return 6; // door
-    } else if(bonnie_pos==5){ // 2B West Corner -> to door
+        return 6;  
+    } else if(bonnie_pos==5){  
         return 6;
-    } else if(bonnie_pos==6){ // Door -> will attempt entry handled elsewhere
+    } else if(bonnie_pos==6){  
         return 6;
     }
     return bonnie_pos;
 }
 static int chica_move_1to1(void){
-    // Chica adjacent random on right side
-    if(chica_pos==0){ // 1A -> 1B
+     
+    if(chica_pos==0){  
         return 1;
-    } else if(chica_pos==1){ // 1B -> 7 or 6
+    } else if(chica_pos==1){  
         return rng_range(2)==0 ? 2 : 3;
-    } else if(chica_pos==2){ // 7 Restrooms -> 6 or 4A
+    } else if(chica_pos==2){  
         return rng_range(2)==0 ? 3 : 4;
-    } else if(chica_pos==3){ // 6 Kitchen -> 7 or 4A
+    } else if(chica_pos==3){  
         return rng_range(2)==0 ? 2 : 4;
-    } else if(chica_pos==4){ // 4A East Hall -> 1B or 5(4B)
+    } else if(chica_pos==4){  
         return rng_range(2)==0 ? 1 : 5;
-    } else if(chica_pos==5){ // 4B East Corner -> to door
+    } else if(chica_pos==5){  
         return 6;
-    } else if(chica_pos==6){ // Door
+    } else if(chica_pos==6){  
         return 6;
     }
     return chica_pos;
 }
 static int freddy_move_1to1(void){
-    // Deterministic forward only
-    if(freddy_pos==0) return 1; //1A->1B
-    if(freddy_pos==1) return 2; //1B->7
-    if(freddy_pos==2) return 3; //7->6
-    if(freddy_pos==3) return 4; //6->4A
-    if(freddy_pos==4) return 5; //4A->4B
-    if(freddy_pos==5) return 6; //4B->door
+     
+    if(freddy_pos==0) return 1;  
+    if(freddy_pos==1) return 2;  
+    if(freddy_pos==2) return 3;  
+    if(freddy_pos==3) return 4;  
+    if(freddy_pos==4) return 5;  
+    if(freddy_pos==5) return 6;  
     return freddy_pos;
 }
 
 static void ai_move_logic(void){
     if(fnaf_state!=ST_PLAYING) return;
     if(power_out) return;
-    // Bonnie every 4.97s
+     
     if(uptime_ticks - last_bonnie_tick >= 4970){
         last_bonnie_tick = uptime_ticks;
         int roll = rng_range(20)+1;
         if(roll <= ai_bonnie){
             if(bonnie_inside){
-                // already inside office -> will be handled in check_jumpscares
+                 
             } else if(bonnie_pos==6){
-                // at left door, next success attempts to enter
+                 
                 if(left_door){
-                    // blocked, go back to dining (1B)
+                     
                     bonnie_pos = 1;
                 } else {
-                    // enter office
+                     
                     bonnie_inside=1;
                     left_door_jammed=1; left_light_jammed=1;
                     office_entry_time=uptime_ticks;
                     bonnie_door_time=uptime_ticks;
                 }
             } else {
-                // normal move
+                 
                 int np = bonnie_move_1to1();
-                // cannot leave stage if Freddy blocked? In real, Freddy blocked unless Bonnie/Chica leave, handled in freddy logic
+                 
                 bonnie_pos = np;
             }
         }
     }
-    // Chica every 4.98s
+     
     if(uptime_ticks - last_chica_tick >= 4980){
         last_chica_tick = uptime_ticks;
         int roll = rng_range(20)+1;
@@ -1018,66 +1018,66 @@ static void ai_move_logic(void){
             }
         }
     }
-    // Freddy every 3.02s with camera stall and countdown
+     
     if(uptime_ticks - last_freddy_tick >= 3020){
         last_freddy_tick = uptime_ticks;
-        // Camera stall: if cameras up and not at 4B (pos5), fail
-        // If at 4B (pos5), only viewing 4B stalls, else viewing any cam not 4B allows entry
+         
+         
         int cam_stalls = 0;
         if(camera_up){
-            if(freddy_pos==5){ // 4B
-                if(current_cam==7) cam_stalls=1; // viewing 4B
+            if(freddy_pos==5){  
+                if(current_cam==7) cam_stalls=1;  
             } else {
-                cam_stalls=1; // any camera stalls when not at 4B
+                cam_stalls=1;  
             }
         }
         if(cam_stalls){
-            // fail, but also if freddy already counting down? countdown continues
+             
         } else {
             int roll = rng_range(20)+1;
             if(roll <= ai_freddy){
-                // success starts countdown (1000 -100*AI) at 60fps => convert to ms: frames/60*1000
+                 
                 int frames = 1000 - 100*ai_freddy;
                 if(frames<0) frames=0;
                 int delay_ms = (frames * 1000) / 60;
                 if(freddy_countdown==0){
                     freddy_countdown = delay_ms;
-                    // start timer - we will count down in foxy_update? Use separate tick
-                    // Store countdown start
-                    last_freddy_tick = uptime_ticks; // will handle countdown in separate logic
+                     
+                     
+                    last_freddy_tick = uptime_ticks;  
                 }
             }
         }
-        // Also handle Freddy blocked by Bonnie/Chica on stage: cannot leave 1A if they are still at 1A
-        // Real: Freddy cannot leave stage while Bonnie and/or Chica are still there
-        // Implement: if freddy_pos==0 and (bonnie_pos==0 || chica_pos==0) then cancel move
+         
+         
+         
     }
-    // Freddy countdown handling (separate fast tick 16ms)
+     
     if(freddy_countdown>0){
-        // decrement by ~16ms per tick? Use uptime diff
-        // Approximate: reduce by elapsed since last check (we are at 3s intervals, need finer)
-        // Instead handle in per-tick: if countdown>0 and cameras down, count down
-        // For simplicity, check if cameras down and not stalled
+         
+         
+         
+         
         int can_count = !camera_up;
-        if(freddy_pos==5) can_count = (current_cam!=7); // at 4B, viewing 4B blocks even countdown
+        if(freddy_pos==5) can_count = (current_cam!=7);  
         if(can_count){
             freddy_countdown -= 16;
             if(freddy_countdown<=0){
                 freddy_countdown=0;
-                // perform move
+                 
                 if(freddy_inside){
                 } else if(freddy_pos==6){
                     if(right_door){
-                        freddy_pos=4; // back to 4A if blocked
+                        freddy_pos=4;  
                     } else {
                         freddy_inside=1;
                         right_door_jammed=1;
                         office_entry_time=uptime_ticks;
                     }
                 } else {
-                    // check stage block
+                     
                     if(freddy_pos==0 && (bonnie_pos==0 || chica_pos==0)){
-                        // blocked
+                         
                     } else {
                         freddy_pos = freddy_move_1to1();
                     }
@@ -1090,7 +1090,7 @@ static void ai_move_logic(void){
 static void foxy_update(void){
     if(fnaf_state!=ST_PLAYING) return;
     if(power_out) return;
-    // Foxy 5.01s opportunities, but while cameras up always fail
+     
     if(foxy_sprint){
         if(uptime_ticks - foxy_sprint_timer > 1200){
             if(left_door){
@@ -1103,29 +1103,29 @@ static void foxy_update(void){
         }
         return;
     }
-    // Handle stall timer after camera down
+     
     if(foxy_stall>0){
         foxy_stall -= (int)(uptime_ticks - last_foxy_tick2);
         last_foxy_tick2 = uptime_ticks;
         if(foxy_stall<=0) foxy_stall=0;
-        else return; // cannot move while stalling
+        else return;  
     }
     if(uptime_ticks - last_foxy_tick < 5010) return;
     last_foxy_tick = uptime_ticks;
     last_foxy_tick2 = uptime_ticks;
-    // If any camera is up, fail always and also reset stall? Real: while cameras up fail, and after cameras down random 50..1050 ticks (0.83-16.67s) stall
+     
     if(camera_up){
-        // fail, and do not advance
+         
         return;
     }
-    // If foxy not at 3 yet, check if we just came from cameras up -> set stall
-    // Real: when monitor lowered, random 50-1050 ticks at 60fps => 833ms to 17500ms
-    // We implement: if previous was camera_up, set random stall
-    // For simplicity, after each camera close, set stall if not already
-    // But our check is after 5s, so we need to detect transition: use camera_up previous? Keep simple: after cameras down, 1 in N chance to stall
-    // Instead: on camera close, set foxy_stall = 50 + rng%1000 frames => convert to ms
-    // We'll set stall when we detect camera was just closed: we need state
-    // Alternative: mimic real by randomizing stall each time cameras go down: handled in fnaf_handle_key/mouse where camera_up toggles
+     
+     
+     
+     
+     
+     
+     
+     
     int roll = rng_range(20)+1;
     if(roll <= ai_foxy){
         foxy_stage++;
@@ -1136,9 +1136,9 @@ static void foxy_update(void){
         }
     }
 }
-// Called when cameras are closed to set stall
+ 
 static void foxy_set_stall(void){
-    int frames = 50 + rng_range(1000); // 50..1050
+    int frames = 50 + rng_range(1000);  
     foxy_stall = (frames * 1000) / 60;
 }
 
@@ -1154,16 +1154,16 @@ static void check_jumpscares2(void){
     if(fnaf_state!=ST_PLAYING) return;
     if(power_out) return;
     uint32_t now=uptime_ticks;
-    // Bonnie/Chica in office: jams door, waits for camera down, then jumpscare next camera down OR 30s auto
+     
     if(bonnie_inside){
         if(camera_up){
-            // if in camera, will jumpscare after coming down
-            // check 30s auto even with camera up
+             
+             
             if(now - office_entry_time > 30000){
                 trigger_jumpscare(1);
             }
         } else {
-            // camera down and Bonnie inside -> jumpscare after small delay (real: instant next frame)
+             
             if(now - office_entry_time > 300){
                 trigger_jumpscare(1);
             }
@@ -1179,7 +1179,7 @@ static void check_jumpscares2(void){
         return;
     }
     if(freddy_inside){
-        // Freddy only jumpscares when cameras down, 25% per second
+         
         if(!camera_up){
             if(now - freddy_door_time > 1000){
                 freddy_door_time = now;
@@ -1188,8 +1188,8 @@ static void check_jumpscares2(void){
         }
         return;
     }
-    // Foxy sprint already handled in foxy_update (needs left door)
-    // Check if Freddy at door (pos6) and should enter (handled in ai logic), but if inside door jam case for Foxy
+     
+     
 }
 static void render(void){
     if(fnaf_state==ST_MENU){
@@ -1234,7 +1234,7 @@ static void render(void){
         draw_office_walls();
         draw_animatronic_at_door();
         if(left_light || right_light){
-            // light beam overlay on doorway already handled in draw_office_walls
+             
             if(rng_range(60)==0) flash=4;
             if(flash>0){ flash--; fill_rect(0,0,320,200,C_STATIC1); }
         }
@@ -1352,9 +1352,9 @@ void fnaf_handle_key(int key){
                 if(current_cam>=CAM_COUNT) current_cam=CAM_COUNT-1;
             }
         } else if(key=='0'){
-            if(camera_up) current_cam = 9; // Kitchen
+            if(camera_up) current_cam = 9;  
         } else if(key=='-' || key=='_'){
-            if(camera_up) current_cam = 10; // Restrooms
+            if(camera_up) current_cam = 10;  
         } else if(key=='\t'){
             if(camera_up){
                 current_cam = (current_cam+1)%CAM_COUNT;
@@ -1367,7 +1367,7 @@ void fnaf_handle_key(int key){
 }
 
 void fnaf_handle_mouse(int mx, int my, int buttons){
-    // Office panning based on mouse X within window (authentic 1600px pan effect)
+     
     {
         int lx = mx - window_x;
         if(lx>=0 && lx<window_w && fnaf_state==ST_PLAYING && !camera_up){

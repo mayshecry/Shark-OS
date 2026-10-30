@@ -3,9 +3,11 @@
 #include "tls.h"
 #include "ssh.h"
 #include "httpd.h"
+#include "server_cli.h"
+#include "sftp.h"
 
-#define SSH_CLIENTS 4
-#define SSH_MAX_PACKET 8192
+#define SSH_CLIENTS 8
+#define SSH_MAX_PACKET 65536
 #define SSH_STREAM_SIZE 16384
 #define SSH_TEXT_SIZE 512
 #define SSH_VERSION "SSH-2.0-SharkOS_0.1"
@@ -75,11 +77,16 @@ typedef struct {
     uint32_t channel_max_packet;
     uint8_t channel_open;
     uint8_t channel_shell;
+    uint8_t channel_sftp;
     uint8_t channel_pty;
+    uint8_t channel_htop;
+    uint32_t channel_htop_last_draw;
+    sftp_session_t sftp;
     uint8_t channel_eof;
     uint8_t auth_failures;
     uint8_t discard_next;
     uint8_t suppress_lf;
+    struct fs_node* working_directory;
     char line[SSH_TEXT_SIZE];
     uint32_t line_len;
 } ssh_session_t;
@@ -93,6 +100,7 @@ static uint8_t ssh_host_ready;
 static uint8_t ssh_password_ready;
 static uint8_t ssh_active;
 static uint16_t ssh_port;
+static char ssh_htop_output[4096];
 
 static void ssh_writer_init(ssh_writer_t* w,uint8_t* p,uint32_t cap){w->p=p;w->len=0;w->cap=cap;w->bad=0;}
 static void ssh_put_bytes(ssh_writer_t* w,const uint8_t* p,uint32_t n){if(w->bad||n>w->cap-w->len){w->bad=1;return;}if(n)memcpy(w->p+w->len,p,n);w->len+=n;}
@@ -205,17 +213,31 @@ static int ssh_send_text(ssh_session_t* s,const char* text){uint32_t len=(uint32
 
 static void ssh_text_append(char* out,uint32_t cap,uint32_t* used,const char* text){while(*text&&*used+1<cap)out[(*used)++]=*text++;out[*used]=0;}
 static void ssh_text_num(char* out,uint32_t cap,uint32_t* used,uint32_t value){char n[16];int_to_string(value,n);ssh_text_append(out,cap,used,n);}
+static int ssh_send_bytes(ssh_session_t* s,const uint8_t* data,uint32_t len){uint32_t done=0;while(done<len){int n=ssh_send_channel_data(s,data+done,len-done);if(n<=0)return -1;done+=(uint32_t)n;}return 0;}
+
+static int ssh_sftp_send(void* context,const uint8_t* data,uint32_t length){return ssh_send_bytes((ssh_session_t*)context,data,length);}
+
+
+static int ssh_send_prompt(ssh_session_t* s){
+    char path[256];
+    char prompt[300];
+    server_format_path(s->working_directory?s->working_directory:root,path,sizeof(path));
+    uint32_t used=0;
+    const char* prefix="root@shark:";
+    while(*prefix&&used+1<sizeof(prompt))prompt[used++]=*prefix++;
+    for(uint32_t i=0;path[i]&&used+1<sizeof(prompt);i++)prompt[used++]=path[i];
+    const char* suffix="# ";
+    while(*suffix&&used+1<sizeof(prompt))prompt[used++]=*suffix++;
+    prompt[used]=0;
+    return ssh_send_text(s,prompt);
+}
+
 static void ssh_shell_command(ssh_session_t* s,const char* line){
-    char out[2048];uint32_t used=0;out[0]=0;
-    if(strcmp(line,"help")==0||strcmp(line,"?")==0){ssh_text_append(out,sizeof(out),&used,"help  ip  uptime  httpd status  ls  cat <file>  exit\r\n");}
-    else if(strcmp(line,"ip")==0||strcmp(line,"ifconfig")==0){ssh_text_append(out,sizeof(out),&used,"ip: ");for(int i=0;i<4;i++){ssh_text_num(out,sizeof(out),&used,net_ip[i]);if(i<3)ssh_text_append(out,sizeof(out),&used,".");}ssh_text_append(out,sizeof(out),&used,"\r\n");}
-    else if(strcmp(line,"uptime")==0){ssh_text_num(out,sizeof(out),&used,uptime_ticks/1000);ssh_text_append(out,sizeof(out),&used," seconds\r\n");}
-    else if(strcmp(line,"httpd status")==0){if(httpd_is_active()){ssh_text_append(out,sizeof(out),&used,"HTTP listening on port ");ssh_text_num(out,sizeof(out),&used,httpd_listen_port());ssh_text_append(out,sizeof(out),&used,"\r\n");}else ssh_text_append(out,sizeof(out),&used,"HTTP stopped\r\n");}
-    else if(strcmp(line,"ls")==0){struct fs_node* web=fs_resolve_path("/User/www");if(web&&web->type==FS_DIRECTORY){for(int i=0;i<web->num_children;i++){ssh_text_append(out,sizeof(out),&used,web->children[i]->name);if(web->children[i]->type==FS_DIRECTORY)ssh_text_append(out,sizeof(out),&used,"/");ssh_text_append(out,sizeof(out),&used,"\r\n");}}}
-    else if(line[0]=='c'&&line[1]=='a'&&line[2]=='t'&&line[3]==' '){struct fs_node* web=fs_resolve_path("/User/www");struct fs_node* f=web?find_node(web,line+4):NULL;if(f&&f->type==FS_FILE){for(int i=0;i<f->content_len&&used+2<sizeof(out);i++)out[used++]=f->content[i];if(!used||out[used-1]!='\n')ssh_text_append(out,sizeof(out),&used,"\r\n");}else ssh_text_append(out,sizeof(out),&used,"file not found\r\n");}
-    else if(strcmp(line,"exit")==0){ssh_text_append(out,sizeof(out),&used,"logout\r\n");ssh_send_text(s,out);s->channel_eof=1;ssh_send_exit_status(s,0);uint8_t p[16];ssh_writer_t w;ssh_writer_init(&w,p,sizeof(p));ssh_put_u8(&w,96);ssh_put_u32(&w,s->channel_client_id);ssh_send_packet(s,p,w.len);ssh_send_channel_status(s,97);s->state=8;return;}
-    else ssh_text_append(out,sizeof(out),&used,"command not available\r\n");
-    ssh_send_text(s,out);
+    if(strcmp(line,"htop")==0&&s->channel_shell){s->channel_htop=1;s->channel_htop_last_draw=uptime_ticks;uint32_t n=server_htop_render_remote(ssh_htop_output,sizeof(ssh_htop_output));if(n)ssh_send_bytes(s,(const uint8_t*)ssh_htop_output,n);return;}
+    if(strcmp(line,"exit")==0){ssh_send_text(s,"logout\r\n");s->channel_eof=1;ssh_send_exit_status(s,0);uint8_t p[16];ssh_writer_t w;ssh_writer_init(&w,p,sizeof(p));ssh_put_u8(&w,96);ssh_put_u32(&w,s->channel_client_id);ssh_send_packet(s,p,w.len);ssh_send_channel_status(s,97);s->state=8;return;}
+    char output[16384];
+    uint32_t length=server_execute_remote(line,output,sizeof(output),&s->working_directory);
+    if(length)ssh_send_bytes(s,(const uint8_t*)output,length);
 }
 
 static int ssh_shell_exec(ssh_session_t* s,const uint8_t* cmd,uint32_t len){char line[SSH_TEXT_SIZE];if(len>=sizeof(line))return -1;memcpy(line,cmd,len);line[len]=0;ssh_shell_command(s,line);if(s->state==8)return 0;ssh_send_exit_status(s,0);uint8_t eof[5];ssh_writer_t w;ssh_writer_init(&w,eof,sizeof(eof));ssh_put_u8(&w,96);ssh_put_u32(&w,s->channel_client_id);ssh_send_packet(s,eof,w.len);ssh_send_channel_status(s,97);s->state=8;return 0;}
@@ -224,8 +246,9 @@ static void ssh_process_shell_data(ssh_session_t* s,const uint8_t* data,uint32_t
     for(uint32_t i=0;i<len;i++){
         char c=(char)data[i];
         if(s->suppress_lf&&c=='\n'){s->suppress_lf=0;continue;}s->suppress_lf=0;
+        if(s->channel_htop){if(c=='q'||c=='Q'||c=='z'||c=='Z'){s->channel_htop=0;ssh_send_text(s,"\033[2J\033[Hhtop closed.\r\n");ssh_send_prompt(s);}continue;}
         if(c=='\r'||c=='\n'){
-            s->suppress_lf=(c=='\r');if(s->channel_pty)ssh_send_text(s,"\r\n");s->line[s->line_len]=0;ssh_shell_command(s,s->line);s->line_len=0;s->line[0]=0;if(!s->channel_eof)ssh_send_text(s,"sharkos$ ");continue;
+            s->suppress_lf=(c=='\r');if(s->channel_pty)ssh_send_text(s,"\r\n");s->line[s->line_len]=0;ssh_shell_command(s,s->line);s->line_len=0;s->line[0]=0;if(!s->channel_eof&&!s->channel_htop)ssh_send_prompt(s);continue;
         }
         if(c==8||c==127){if(s->line_len){s->line[--s->line_len]=0;if(s->channel_pty)ssh_send_text(s,"\b \b");}continue;}
         if((uint8_t)c<32||s->line_len+1>=sizeof(s->line))continue;
@@ -265,13 +288,14 @@ static int ssh_handle_packet(ssh_session_t* s){
     if(s->state==10){
         if(type==98){uint32_t recipient,n;const uint8_t* req;recipient=ssh_get_u32(&r);req=ssh_get_string(&r,&n);uint8_t want=ssh_get_u8(&r);if(r.bad||recipient!=0)return -1;
             if(ssh_string_is(req,n,"pty-req")){uint32_t termn;ssh_get_string(&r,&termn);ssh_get_u32(&r);ssh_get_u32(&r);ssh_get_u32(&r);ssh_get_u32(&r);uint32_t modes;ssh_get_string(&r,&modes);s->channel_pty=1;if(want)ssh_send_channel_status(s,99);return 0;}
-            if(ssh_string_is(req,n,"shell")){s->channel_shell=1;if(want)ssh_send_channel_status(s,99);ssh_send_text(s,"SharkOS remote shell\r\nsharkos$ ");return 0;}
+            if(ssh_string_is(req,n,"subsystem")){uint32_t subsystem_len;const uint8_t* subsystem=ssh_get_string(&r,&subsystem_len);if(r.bad||r.pos!=r.len||!ssh_string_is(subsystem,subsystem_len,"sftp")||!server_webroot_node()){if(want)ssh_send_channel_status(s,100);return 0;}s->channel_sftp=1;sftp_session_init(&s->sftp,server_webroot_node());if(want)ssh_send_channel_status(s,99);return 0;}
+            if(ssh_string_is(req,n,"shell")){s->channel_shell=1;if(want)ssh_send_channel_status(s,99);ssh_send_text(s,"SharkOS remote shell\r\n");ssh_send_prompt(s);return 0;}
             if(ssh_string_is(req,n,"exec")){uint32_t cmdn;const uint8_t* cmd=ssh_get_string(&r,&cmdn);if(want)ssh_send_channel_status(s,99);return ssh_shell_exec(s,cmd,cmdn);}
             if(ssh_string_is(req,n,"window-change"))return 0;
             if(want)ssh_send_channel_status(s,100);
             return 0;
         }
-        if(type==94){uint32_t recipient,n;recipient=ssh_get_u32(&r);const uint8_t* data=ssh_get_string(&r,&n);if(r.bad||r.pos!=r.len||recipient!=0)return -1;if(s->channel_shell)ssh_process_shell_data(s,data,n);uint8_t p[9];ssh_writer_t w;ssh_writer_init(&w,p,sizeof(p));ssh_put_u8(&w,93);ssh_put_u32(&w,s->channel_client_id);ssh_put_u32(&w,n);ssh_send_packet(s,p,w.len);return 0;}
+        if(type==94){uint32_t recipient,n;recipient=ssh_get_u32(&r);const uint8_t* data=ssh_get_string(&r,&n);if(r.bad||r.pos!=r.len||recipient!=0)return -1;if(s->channel_sftp){if(sftp_session_feed(&s->sftp,data,n,ssh_sftp_send,s)!=0)return -1;}else if(s->channel_shell)ssh_process_shell_data(s,data,n);uint8_t p[9];ssh_writer_t w;ssh_writer_init(&w,p,sizeof(p));ssh_put_u8(&w,93);ssh_put_u32(&w,s->channel_client_id);ssh_put_u32(&w,n);ssh_send_packet(s,p,w.len);return 0;}
         if(type==93){ssh_get_u32(&r);uint32_t amount=ssh_get_u32(&r);s->channel_window+=amount;return 0;}
         if(type==96){ssh_send_channel_status(s,97);s->state=8;return 0;}
         if(type==97){s->state=8;return 0;}
@@ -285,7 +309,7 @@ static void ssh_close_session(ssh_session_t* s){if(s->active)net_tcp_server_clos
 static int ssh_start_session(ssh_session_t* s,int handle){memset(s,0,sizeof(*s));s->handle=handle;s->active=1;s->state=0;const char* banner=SSH_VERSION "\r\n";return ssh_send_raw(s,(const uint8_t*)banner,(uint32_t)strlen(banner));}
 
 int ssh_server_init(void){memset(ssh_host_seed,0,sizeof(ssh_host_seed));memset(ssh_host_public,0,sizeof(ssh_host_public));ssh_host_ready=0;if(crypto_random_bytes(ssh_host_seed,sizeof(ssh_host_seed))!=0)return -1;if(ed25519_public_from_seed(ssh_host_seed,ssh_host_public)!=0){memset(ssh_host_seed,0,sizeof(ssh_host_seed));return -1;}ssh_host_ready=1;return 0;}
-int ssh_server_set_password(const char* username,const char* password){if(ssh_active||!username||!password)return -1;uint32_t un=(uint32_t)strlen(username),pn=(uint32_t)strlen(password);if(!un||un>=sizeof(ssh_username)||pn<8||pn>=sizeof(ssh_password))return -1;memset(ssh_username,0,sizeof(ssh_username));memset(ssh_password,0,sizeof(ssh_password));memcpy(ssh_username,username,un);memcpy(ssh_password,password,pn);ssh_password_ready=1;return 0;}
+int ssh_server_set_password(const char* username,const char* password){if(ssh_active||!username||!password)return -1;uint32_t un=(uint32_t)strlen(username),pn=(uint32_t)strlen(password);if(!un||un>=sizeof(ssh_username)||pn<7||pn>=sizeof(ssh_password))return -1;memset(ssh_username,0,sizeof(ssh_username));memset(ssh_password,0,sizeof(ssh_password));memcpy(ssh_username,username,un);memcpy(ssh_password,password,pn);ssh_password_ready=1;return 0;}
 int ssh_server_start(uint16_t port){if(ssh_active||!ssh_host_ready||!ssh_password_ready||!port||!net_has_nic())return -1;if(net_tcp_listen(port)!=0)return -1;ssh_port=port;ssh_active=1;return 0;}
 void ssh_server_stop(void){if(!ssh_active)return;net_tcp_server_stop(ssh_port);for(int i=0;i<SSH_CLIENTS;i++)if(ssh_sessions[i].active)ssh_close_session(&ssh_sessions[i]);ssh_active=0;ssh_port=0;}
 int ssh_server_is_active(void){return ssh_active;}
@@ -295,7 +319,7 @@ uint16_t ssh_server_listen_port(void){return ssh_port;}
 
 void ssh_server_poll(void){
     if(!ssh_active)return;
-    for(;;){int handle=net_tcp_server_accept();if(handle<0)break;int stored=0;for(int i=0;i<SSH_CLIENTS;i++)if(!ssh_sessions[i].active){if(ssh_start_session(&ssh_sessions[i],handle)==0)stored=1;break;}if(!stored)net_tcp_server_close(handle);}
+    for(;;){int handle=net_tcp_server_accept(ssh_port);if(handle<0)break;int stored=0;for(int i=0;i<SSH_CLIENTS;i++)if(!ssh_sessions[i].active){if(ssh_start_session(&ssh_sessions[i],handle)==0)stored=1;break;}if(!stored)net_tcp_server_close(handle);}
     for(int i=0;i<SSH_CLIENTS;i++){
         ssh_session_t* s=&ssh_sessions[i];if(!s->active)continue;
         int got=ssh_stream_fill(s);if(got<0){ssh_close_session(s);continue;}
@@ -310,5 +334,10 @@ void ssh_server_poll(void){
             if(s->state==8||s->state==9){ssh_close_session(s);break;}
         }
         if(failed&&s->active)ssh_close_session(s);
+        if(s->active&&s->channel_htop&&uptime_ticks-s->channel_htop_last_draw>=1000){
+            s->channel_htop_last_draw=uptime_ticks;
+            uint32_t length=server_htop_render_remote(ssh_htop_output,sizeof(ssh_htop_output));
+            if(length&&ssh_send_bytes(s,(const uint8_t*)ssh_htop_output,length)!=0)ssh_close_session(s);
+        }
     }
 }

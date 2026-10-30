@@ -1,19 +1,28 @@
 #include "kernel.h"
 #include "net.h"
+#include "httpd.h"
+#include "ssh.h"
 
-#define HTTPD_CLIENTS 4
+#define HTTPD_CLIENTS 8
 #define HTTPD_REQUEST_SIZE 4096
 
 typedef struct {
     int handle;
     uint8_t active;
+    uint8_t server;
     uint32_t used;
     char request[HTTPD_REQUEST_SIZE];
 } httpd_client_t;
 
+typedef struct {
+    uint16_t port;
+    uint8_t configured;
+    uint8_t active;
+    char root[128];
+} httpd_server_t;
+
 static httpd_client_t httpd_clients[HTTPD_CLIENTS];
-static uint16_t httpd_port;
-static uint8_t httpd_active;
+static httpd_server_t httpd_servers[HTTPD_SERVER_LIMIT];
 
 static void httpd_append(char* out, uint32_t cap, uint32_t* used, const char* text) {
     while (*text && *used + 1 < cap) out[(*used)++] = *text++;
@@ -63,6 +72,7 @@ static void httpd_send_response(httpd_client_t* client, int status, const char* 
 }
 
 static int httpd_finish_request(httpd_client_t* client) {
+    httpd_server_t* server = &httpd_servers[client->server];
     char method[8];
     char target[256];
     char path[512];
@@ -117,7 +127,8 @@ static int httpd_finish_request(httpd_client_t* client) {
     }
     uint32_t path_used = 0;
     path[0] = 0;
-    httpd_append(path, sizeof(path), &path_used, "/User/www");
+    httpd_append(path, sizeof(path), &path_used, server->root);
+    if (path_used && path[path_used - 1] == '/' && target[0] == '/') path_used--;
     httpd_append(path, sizeof(path), &path_used, target);
     uint32_t plen = strlen(path);
     if (plen && path[plen - 1] == '/') httpd_append(path, sizeof(path), &path_used, "index.html");
@@ -133,52 +144,96 @@ static int httpd_finish_request(httpd_client_t* client) {
     return 1;
 }
 
-int httpd_start(uint16_t port) {
-    if (httpd_active) return -1;
-    if (!port || !net_has_nic()) return -1;
-    if (net_tcp_listen(port) != 0) return -1;
-    httpd_port = port;
-    httpd_active = 1;
-    for (int i = 0; i < HTTPD_CLIENTS; i++) httpd_clients[i].active = 0;
+int httpd_configure(uint32_t slot, uint16_t port, const char* root, int start) {
+    if (slot >= HTTPD_SERVER_LIMIT || !port || !root || !root[0] || strlen(root) >= sizeof(httpd_servers[slot].root)) return -1;
+    char root_copy[128];
+    strcpy(root_copy, root);
+    struct fs_node* directory = fs_resolve_path(root_copy);
+    if (!directory || directory->type != FS_DIRECTORY) return -1;
+    if (ssh_server_is_active() && ssh_server_listen_port() == port) return -1;
+    for (uint32_t i = 0; i < HTTPD_SERVER_LIMIT; i++) {
+        if (i != slot && httpd_servers[i].configured && httpd_servers[i].port == port) return -1;
+    }
+    if (httpd_servers[slot].active) httpd_stop_server(slot);
+    httpd_servers[slot].port = port;
+    strcpy(httpd_servers[slot].root, root_copy);
+    httpd_servers[slot].configured = 1;
+    if (start) {
+        if (!net_has_nic() || net_tcp_listen(port) != 0) { httpd_servers[slot].active = 0; return -1; }
+        httpd_servers[slot].active = 1;
+    }
     return 0;
 }
 
-void httpd_stop(void) {
-    if (!httpd_active) return;
-    net_tcp_server_stop(httpd_port);
-    for (int i = 0; i < HTTPD_CLIENTS; i++) {
-        if (httpd_clients[i].active) net_tcp_server_close(httpd_clients[i].handle);
-        httpd_clients[i].active = 0;
+int httpd_start(uint16_t port) {
+    if (!port || !net_has_nic()) return -1;
+    for (uint32_t i = 0; i < HTTPD_SERVER_LIMIT; i++) {
+        if (httpd_servers[i].configured && httpd_servers[i].port == port) return httpd_configure(i, port, httpd_servers[i].root, 1);
     }
-    httpd_active = 0;
-    httpd_port = 0;
+    for (uint32_t i = 0; i < HTTPD_SERVER_LIMIT; i++) {
+        if (!httpd_servers[i].configured) return httpd_configure(i, port, "/User/www", 1);
+    }
+    return -1;
+}
+
+void httpd_stop_server(uint32_t slot) {
+    if (slot >= HTTPD_SERVER_LIMIT || !httpd_servers[slot].active) return;
+    uint16_t port = httpd_servers[slot].port;
+    net_tcp_server_stop(port);
+    for (int i = 0; i < HTTPD_CLIENTS; i++) {
+        if (httpd_clients[i].active && httpd_clients[i].server == slot) {
+            net_tcp_server_close(httpd_clients[i].handle);
+            httpd_clients[i].active = 0;
+        }
+    }
+    httpd_servers[slot].active = 0;
+}
+
+int httpd_remove(uint32_t slot) {
+    if (slot >= HTTPD_SERVER_LIMIT || !httpd_servers[slot].configured) return -1;
+    httpd_stop_server(slot);
+    memset(&httpd_servers[slot], 0, sizeof(httpd_servers[slot]));
+    return 0;
+}
+
+int httpd_server_active(uint32_t slot) { return slot < HTTPD_SERVER_LIMIT && httpd_servers[slot].active; }
+uint16_t httpd_server_port(uint32_t slot) { return slot < HTTPD_SERVER_LIMIT && httpd_servers[slot].configured ? httpd_servers[slot].port : 0; }
+const char* httpd_server_root(uint32_t slot) { return slot < HTTPD_SERVER_LIMIT && httpd_servers[slot].configured ? httpd_servers[slot].root : ""; }
+
+void httpd_stop(void) {
+    for (uint32_t i = 0; i < HTTPD_SERVER_LIMIT; i++) httpd_stop_server(i);
 }
 
 int httpd_is_active(void) {
-    return httpd_active;
+    for (uint32_t i = 0; i < HTTPD_SERVER_LIMIT; i++) if (httpd_servers[i].active) return 1;
+    return 0;
 }
 
 uint16_t httpd_listen_port(void) {
-    return httpd_port;
+    for (uint32_t i = 0; i < HTTPD_SERVER_LIMIT; i++) if (httpd_servers[i].active) return httpd_servers[i].port;
+    return 0;
 }
 
 void httpd_poll(void) {
-    if (!httpd_active) return;
-    for (;;) {
-        int handle = net_tcp_server_accept();
-        if (handle < 0) break;
-        int stored = 0;
-        for (int i = 0; i < HTTPD_CLIENTS; i++) {
-            if (!httpd_clients[i].active) {
-                httpd_clients[i].handle = handle;
-                httpd_clients[i].used = 0;
-                httpd_clients[i].request[0] = 0;
-                httpd_clients[i].active = 1;
-                stored = 1;
-                break;
+    for (uint32_t server = 0; server < HTTPD_SERVER_LIMIT; server++) {
+        if (!httpd_servers[server].active) continue;
+        for (;;) {
+            int handle = net_tcp_server_accept(httpd_servers[server].port);
+            if (handle < 0) break;
+            int stored = 0;
+            for (int i = 0; i < HTTPD_CLIENTS; i++) {
+                if (!httpd_clients[i].active) {
+                    httpd_clients[i].handle = handle;
+                    httpd_clients[i].server = (uint8_t)server;
+                    httpd_clients[i].used = 0;
+                    httpd_clients[i].request[0] = 0;
+                    httpd_clients[i].active = 1;
+                    stored = 1;
+                    break;
+                }
             }
+            if (!stored) net_tcp_server_close(handle);
         }
-        if (!stored) net_tcp_server_close(handle);
     }
     uint8_t temp[512];
     for (int i = 0; i < HTTPD_CLIENTS; i++) {
