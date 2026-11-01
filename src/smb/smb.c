@@ -769,13 +769,13 @@ void smb_run(void) {
             }
 
             if (game_state == 1) {
-                if (c == 0x4D) {
+                if (c == 0x13 || c == 0x4D) {
                     player.vx_fx = to_fx(3);
                     player.facing = 1;
-                } else if (c == 0x4B) {
+                } else if (c == 0x12 || c == 0x4B) {
                     player.vx_fx = to_fx(-3);
                     player.facing = -1;
-                } else if (c == 0x48) {
+                } else if (c == 0x10 || c == 0x48) {
                     if (player.on_ground && player.can_jump) {
                         player.vy_fx = to_fx(-10);
                         player.on_ground = 0;
@@ -817,9 +817,9 @@ void smb_handle_key(int key) {
     if (key == 27) { running = 0; game_state = 4; return; }
 
     if (game_state == 1) {
-        if (key == 0x4D) { player.vx_fx = to_fx(3); player.facing = 1; }
-        else if (key == 0x4B) { player.vx_fx = to_fx(-3); player.facing = -1; }
-        else if (key == 0x48 && player.on_ground && player.can_jump) {
+        if (key == 0x13 || key == 0x4D) { player.vx_fx = to_fx(3); player.facing = 1; }
+        else if (key == 0x12 || key == 0x4B) { player.vx_fx = to_fx(-3); player.facing = -1; }
+        else if ((key == 0x10 || key == 0x48) && player.on_ground && player.can_jump) {
             player.vy_fx = to_fx(-10);
             player.on_ground = 0;
             player.can_jump = 0;
@@ -859,9 +859,9 @@ void smb_tick(void) {
         }
 
         if (game_state == 1) {
-            if (c == 0x4D) { player.vx_fx = to_fx(3); player.facing = 1; }
-            else if (c == 0x4B) { player.vx_fx = to_fx(-3); player.facing = -1; }
-            else if (c == 0x48) {
+            if (c == 0x13 || c == 0x4D) { player.vx_fx = to_fx(3); player.facing = 1; }
+            else if (c == 0x12 || c == 0x4B) { player.vx_fx = to_fx(-3); player.facing = -1; }
+            else if ((c == 0x10 || c == 0x48)) {
                 if (player.on_ground && player.can_jump) {
                     player.vy_fx = to_fx(-10);
                     player.on_ground = 0;
