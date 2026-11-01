@@ -27,7 +27,7 @@
 #define BR_MAX_IMAGES     32
 #define BR_MAX_VARS       1024                                               
 #define BR_MAX_SHEETS     12                                                 
-#define BR_IMG_MAX_BYTES  (160 * 1024)                                       
+#define BR_IMG_MAX_BYTES  (256 * 1024)
 #define BR_IMG_ARENA_PIXELS (640 * 1024)                                           
 #define BR_IMG_SCRATCH_BYTES (640 * 1024)                                        
 
@@ -290,6 +290,7 @@ int br_svg_render(const char* src, int len, int want_w, int want_h, uint32_t cur
                   uint32_t* out, size_t max_pixels, int* out_w, int* out_h);
 
 void br_js_reset(void);
+void br_js_close_network(void);
 void br_js_run_document(br_node_t* doc);
 void br_js_run_source(const char* src, int len, const char* origin);
 void br_js_dispatch_click(br_node_t* n);
@@ -302,6 +303,7 @@ void br_js_console(const char* msg);
 void br_js_dom_changed(void);
 
 void br_navigate(const char* url, int push_history);
+void br_submit_post(const char* url, const char* body);
 void br_resolve_url(const char* base, const char* rel, char* out, int max);
 void br_status(const char* s);
 void br_request_repaint(void);
