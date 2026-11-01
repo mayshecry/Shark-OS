@@ -3,9 +3,20 @@
 #include "plugin_manager.h"
 #include "doom.h"
 #include "net.h"
+#include "firewall.h"
 #include "desktop.h"
 #include "theme.h"
+#include "ata.h"
 #include <stdint.h>
+#ifdef SERVER_IMAGE
+#include "server_console.h"
+#include "server_cli.h"
+#include "httpd.h"
+#include "ssh.h"
+#endif
+
+static void shark_neofetch_show(void);
+static char* shell_next_token(char** cursor);
 
 static int simple_atoi(const char* s) {
     int result = 0;
@@ -94,34 +105,56 @@ typedef struct {
 static void cmd_ls(const char* args) {
     int long_format = 0;
     int show_all = 0;
-    if (strcmp(args, "-l") == 0) long_format = 1;
-    if (strcmp(args, "-a") == 0) show_all = 1;
-    if (strcmp(args, "-la") == 0 || strcmp(args, "-al") == 0) { long_format = 1; show_all = 1; }
+    char path[160] = ".";
+    if (strlen(args) >= 160) {
+        terminal_writestring("ls: path too long\n");
+        return;
+    }
+    char copy[160];
+    strcpy(copy, args);
+    char* cursor = copy;
+    char* token;
+    while ((token = shell_next_token(&cursor)) != NULL) {
+        if (strcmp(token, "-l") == 0) long_format = 1;
+        else if (strcmp(token, "-a") == 0) show_all = 1;
+        else if (strcmp(token, "-la") == 0 || strcmp(token, "-al") == 0) { long_format = 1; show_all = 1; }
+        else if (strcmp(path, ".") == 0) strcpy(path, token);
+        else {
+            terminal_writestring("usage: ls [-la] [directory]\n");
+            return;
+        }
+    }
+    struct fs_node* directory = fs_resolve_path(path);
+    if (!directory || directory->type != FS_DIRECTORY) {
+        terminal_writestring("ls: directory not found\n");
+        return;
+    }
     if (long_format) {
         terminal_writestring("total ");
         char buf[16];
-        int_to_string(current_dir->num_children, buf);
+        int_to_string(directory->num_children, buf);
         terminal_writestring(buf);
         terminal_writestring("\n");
     }
-    for (int i = 0; i < current_dir->num_children; i++) {
-        if (!show_all && current_dir->children[i]->name[0] == '.') continue;
+    for (int i = 0; i < directory->num_children; i++) {
+        struct fs_node* entry = directory->children[i];
+        if (!show_all && entry->name[0] == '.') continue;
         if (long_format) {
-            terminal_writestring(current_dir->children[i]->type == FS_DIRECTORY ? "d" : "-");
-            terminal_writestring("rw-r--r--  ");
-            terminal_writestring("1 ");
+            terminal_writestring(entry->type == FS_DIRECTORY ? "d" : "-");
+            terminal_writestring("rw-r--r--  1 ");
             terminal_writestring(current_user);
             terminal_writestring("  ");
             char sizebuf[16];
-            int_to_string(current_dir->children[i]->content_len, sizebuf);
+            int_to_string((uint32_t)entry->content_len, sizebuf);
             terminal_writestring(sizebuf);
-            terminal_writestring(" ");
+            terminal_putchar(' ');
         }
-        terminal_writestring(current_dir->children[i]->name);
-        if (current_dir->children[i]->type == FS_DIRECTORY) terminal_writestring("/");
+        terminal_writestring(entry->name);
+        if (entry->type == FS_DIRECTORY) terminal_putchar('/');
         terminal_writestring("  ");
         if (i % 4 == 0) yield();
     }
+    terminal_writestring("\n");
 }
 
 static void cmd_cd(const char* args) {
@@ -130,9 +163,9 @@ static void cmd_cd(const char* args) {
     } else if (strcmp(args, "/") == 0 || strcmp(args, "root") == 0) {
         current_dir = root;
     } else {
-        struct fs_node* target = find_node(current_dir, args);
+        struct fs_node* target = fs_resolve_path(args);
         if (target && target->type == FS_DIRECTORY) current_dir = target;
-        else terminal_writestring("Directory not found.");
+        else terminal_writestring("Directory not found.\n");
     }
 }
 
@@ -178,11 +211,13 @@ static void cmd_cat(const char* args) {
         terminal_writestring("flags\t\t: fpu vme de pse tsc msr pae mce cx8 apic\n");
     } else if (strcasecmp(args, "meminfo") == 0 || (strchr(args, '/') && strstr(args, "meminfo"))) {
         char buf[64];
-        uint32_t total_kb = (uint32_t)total_system_memory;
-        uint32_t free_kb = (uint32_t)(total_system_memory * 3 / 4);
-        uint32_t avail_kb = (uint32_t)(total_system_memory * 7 / 8);
-        uint32_t buffers_kb = (uint32_t)(total_system_memory / 16);
-        uint32_t cached_kb = (uint32_t)(total_system_memory / 8);
+        uint32_t total_kb = (uint32_t)(total_system_memory / 1024);
+        uint64_t free_bytes = pmm_free_memory_bytes();
+        if (free_bytes > total_system_memory) free_bytes = total_system_memory;
+        uint32_t free_kb = (uint32_t)(free_bytes / 1024);
+        uint32_t avail_kb = free_kb;
+        uint32_t buffers_kb = 0;
+        uint32_t cached_kb = 0;
         terminal_writestring("MemTotal:\t");
         int_to_string(total_kb, buf); terminal_writestring(buf); terminal_writestring(" kB\n");
         terminal_writestring("MemFree:\t");
@@ -196,7 +231,7 @@ static void cmd_cat(const char* args) {
         terminal_writestring("SwapTotal:\t0 kB\n");
         terminal_writestring("SwapFree:\t0 kB\n");
     } else {
-        struct fs_node* target = find_node(current_dir, args);
+        struct fs_node* target = fs_resolve_path(args);
         if (target && target->type == FS_FILE) {
             int yc = 0;
             for (int idx = 0; idx < target->content_len; idx++) {
@@ -222,18 +257,395 @@ static void cmd_echo(const char* args) {
     terminal_writestring("\n");
 }
 
+static char* shell_next_token(char** cursor) {
+    while (**cursor == ' ' || **cursor == '\t') (*cursor)++;
+    if (!**cursor) return NULL;
+    char* token = *cursor;
+    while (**cursor && **cursor != ' ' && **cursor != '\t') (*cursor)++;
+    if (**cursor) *(*cursor)++ = 0;
+    return token;
+}
+
+static int shell_split_parent(const char* path, char* parent_path, uint32_t parent_capacity, char* name) {
+    if (!path || !*path || strlen(path) >= 160) return -1;
+    char normalized[160];
+    strcpy(normalized, path);
+    uint32_t length = (uint32_t)strlen(normalized);
+    while (length > 1 && normalized[length - 1] == '/') normalized[--length] = 0;
+    char* slash = NULL;
+    for (uint32_t i = 0; i < length; i++) if (normalized[i] == '/') slash = normalized + i;
+    const char* base = slash ? slash + 1 : normalized;
+    uint32_t base_length = (uint32_t)strlen(base);
+    if (!base_length || base_length >= 32 || strcmp(base, ".") == 0 || strcmp(base, "..") == 0) return -1;
+    strcpy(name, base);
+    if (!slash) {
+        if (parent_capacity < 2) return -1;
+        strcpy(parent_path, ".");
+        return 0;
+    }
+    if (slash == normalized) {
+        if (parent_capacity < 2) return -1;
+        strcpy(parent_path, "/");
+        return 0;
+    }
+    uint32_t parent_length = (uint32_t)(slash - normalized);
+    if (parent_length + 1 > parent_capacity) return -1;
+    memcpy(parent_path, normalized, parent_length);
+    parent_path[parent_length] = 0;
+    return 0;
+}
+
+static int shell_is_ancestor(struct fs_node* possible_parent, struct fs_node* node) {
+    for (struct fs_node* cursor = node; cursor; cursor = cursor->parent) if (cursor == possible_parent) return 1;
+    return 0;
+}
+
+static struct fs_node* shell_parent_for_path(const char* path, char* name) {
+    char parent_path[160];
+    if (shell_split_parent(path, parent_path, sizeof(parent_path), name) != 0) return NULL;
+    struct fs_node* parent = fs_resolve_path(parent_path);
+    return parent && parent->type == FS_DIRECTORY ? parent : NULL;
+}
+
+static void cmd_mkdir(const char* args) {
+    char path[160];
+    if (strlen(args) >= sizeof(path)) {
+        terminal_writestring("mkdir: path too long\n");
+        return;
+    }
+    strcpy(path, args);
+    char* cursor = path;
+    char* name_arg = shell_next_token(&cursor);
+    if (!name_arg || shell_next_token(&cursor)) {
+        terminal_writestring("usage: mkdir <directory>\n");
+        return;
+    }
+    if (fs_resolve_path(name_arg)) {
+        terminal_writestring("mkdir: path already exists\n");
+        return;
+    }
+    char name[32];
+    struct fs_node* parent = shell_parent_for_path(name_arg, name);
+    if (!parent || !create_node(name, FS_DIRECTORY, parent)) terminal_writestring("mkdir: unable to create directory\n");
+}
+
+static void cmd_touch(const char* args) {
+    char path[160];
+    if (strlen(args) >= sizeof(path)) {
+        terminal_writestring("touch: path too long\n");
+        return;
+    }
+    strcpy(path, args);
+    char* cursor = path;
+    char* name_arg = shell_next_token(&cursor);
+    if (!name_arg || shell_next_token(&cursor)) {
+        terminal_writestring("usage: touch <file>\n");
+        return;
+    }
+    struct fs_node* existing = fs_resolve_path(name_arg);
+    if (existing) {
+        if (existing->type != FS_FILE) terminal_writestring("touch: path is a directory\n");
+        return;
+    }
+    char name[32];
+    struct fs_node* parent = shell_parent_for_path(name_arg, name);
+    if (!parent || !create_node(name, FS_FILE, parent)) terminal_writestring("touch: unable to create file\n");
+}
+
+static void cmd_rm(const char* args) {
+    char path[160];
+    if (strlen(args) >= sizeof(path)) {
+        terminal_writestring("rm: path too long\n");
+        return;
+    }
+    strcpy(path, args);
+    char* cursor = path;
+    char* name_arg = shell_next_token(&cursor);
+    if (name_arg && strcmp(name_arg, "force") == 0) name_arg = shell_next_token(&cursor);
+    if (!name_arg || shell_next_token(&cursor)) {
+        terminal_writestring("usage: rm [force] <file-or-empty-directory>\n");
+        return;
+    }
+    struct fs_node* target = fs_resolve_path(name_arg);
+    if (!target || target == root || shell_is_ancestor(target, current_dir)) {
+        terminal_writestring("rm: path not found or currently in use\n");
+        return;
+    }
+    if (fs_node_remove(target) != 0) terminal_writestring("rm: directory is not empty or removal failed\n");
+}
+
+static void cmd_rmdir(const char* args) {
+    char copy[160];
+    if (strlen(args) >= sizeof(copy)) {
+        terminal_writestring("rmdir: path too long\n");
+        return;
+    }
+    strcpy(copy, args);
+    char* cursor = copy;
+    char* path = shell_next_token(&cursor);
+    if (!path || shell_next_token(&cursor)) {
+        terminal_writestring("usage: rmdir <empty-directory>\n");
+        return;
+    }
+    struct fs_node* target = fs_resolve_path(path);
+    if (!target || target == root || target->type != FS_DIRECTORY || shell_is_ancestor(target, current_dir)) {
+        terminal_writestring("rmdir: directory not found or currently in use\n");
+        return;
+    }
+    if (fs_node_remove(target) != 0) terminal_writestring("rmdir: directory is not empty\n");
+}
+
+static void cmd_cp(const char* args) {
+    char copy[320];
+    if (strlen(args) >= sizeof(copy)) {
+        terminal_writestring("cp: path too long\n");
+        return;
+    }
+    strcpy(copy, args);
+    char* cursor = copy;
+    char* source_path = shell_next_token(&cursor);
+    char* destination_path = shell_next_token(&cursor);
+    if (!source_path || !destination_path || shell_next_token(&cursor)) {
+        terminal_writestring("usage: cp <source-file> <destination>\n");
+        return;
+    }
+    struct fs_node* source = fs_resolve_path(source_path);
+    if (!source || source->type != FS_FILE) {
+        terminal_writestring("cp: source file not found\n");
+        return;
+    }
+    struct fs_node* destination = fs_resolve_path(destination_path);
+    char name[32];
+    struct fs_node* parent;
+    if (destination && destination->type == FS_DIRECTORY) {
+        parent = destination;
+        strcpy(name, source->name);
+        destination = find_node(parent, name);
+    } else if (!destination) {
+        parent = shell_parent_for_path(destination_path, name);
+        if (!parent) {
+            terminal_writestring("cp: destination directory not found\n");
+            return;
+        }
+    } else {
+        parent = destination->parent;
+        strcpy(name, destination->name);
+    }
+    if (destination == source) return;
+    if (destination && destination->type != FS_FILE) {
+        terminal_writestring("cp: destination is not a file\n");
+        return;
+    }
+    if (!destination) destination = create_node(name, FS_FILE, parent);
+    if (!destination || fs_node_truncate(destination, 0) != 0 ||
+        fs_node_write(destination, 0, fs_node_data(source), (uint32_t)source->content_len) != 0) terminal_writestring("cp: copy failed\n");
+}
+
+static void cmd_mv(const char* args) {
+    char copy[320];
+    if (strlen(args) >= sizeof(copy)) {
+        terminal_writestring("mv: path too long\n");
+        return;
+    }
+    strcpy(copy, args);
+    char* cursor = copy;
+    char* source_path = shell_next_token(&cursor);
+    char* destination_path = shell_next_token(&cursor);
+    if (!source_path || !destination_path || shell_next_token(&cursor)) {
+        terminal_writestring("usage: mv <source> <destination>\n");
+        return;
+    }
+    struct fs_node* source = fs_resolve_path(source_path);
+    if (!source || source == root || shell_is_ancestor(source, current_dir)) {
+        terminal_writestring("mv: source not found or currently in use\n");
+        return;
+    }
+    struct fs_node* destination = fs_resolve_path(destination_path);
+    char name[32];
+    struct fs_node* parent;
+    if (destination && destination->type == FS_DIRECTORY) {
+        parent = destination;
+        strcpy(name, source->name);
+    } else if (!destination) {
+        parent = shell_parent_for_path(destination_path, name);
+        if (!parent) {
+            terminal_writestring("mv: destination directory not found\n");
+            return;
+        }
+    } else {
+        terminal_writestring("mv: destination already exists\n");
+        return;
+    }
+    if (parent == source || shell_is_ancestor(source, parent)) {
+        terminal_writestring("mv: cannot move a directory into itself\n");
+        return;
+    }
+    struct fs_node* collision = find_node(parent, name);
+    if (collision && collision != source) {
+        terminal_writestring("mv: destination already exists\n");
+        return;
+    }
+    if (source->parent == parent && strcmp(source->name, name) == 0) return;
+    if (source->parent != parent && parent->num_children >= MAX_CHILDREN) {
+        terminal_writestring("mv: destination directory is full\n");
+        return;
+    }
+    struct fs_node* old_parent = source->parent;
+    uint32_t index = 0;
+    while (index < (uint32_t)old_parent->num_children && old_parent->children[index] != source) index++;
+    if (index >= (uint32_t)old_parent->num_children) {
+        terminal_writestring("mv: source is detached\n");
+        return;
+    }
+    if (old_parent != parent) {
+        while (index + 1 < (uint32_t)old_parent->num_children) {
+            old_parent->children[index] = old_parent->children[index + 1];
+            index++;
+        }
+        old_parent->num_children--;
+        parent->children[parent->num_children++] = source;
+        source->parent = parent;
+    }
+    strcpy(source->name, name);
+    fs_cache_clear();
+}
+
+static void shell_print_file_range(const char* data, uint32_t start, uint32_t end) {
+    for (uint32_t i = start; i < end; i++) terminal_putchar(data[i]);
+}
+
+static void cmd_head_tail(const char* args, int tail) {
+    char copy[192];
+    if (strlen(args) >= sizeof(copy)) {
+        terminal_writestring("file path too long\n");
+        return;
+    }
+    strcpy(copy, args);
+    char* cursor = copy;
+    char* first = shell_next_token(&cursor);
+    uint32_t count = 10;
+    char* path = first;
+    if (first && strcmp(first, "-n") == 0) {
+        char* number = shell_next_token(&cursor);
+        if (!number || !*number) {
+            terminal_writestring("usage: head|tail [-n count] <file>\n");
+            return;
+        }
+        count = 0;
+        while (*number >= '0' && *number <= '9') count = count * 10 + (uint32_t)(*number++ - '0');
+        if (*number) {
+            terminal_writestring("line count must be a nonnegative integer\n");
+            return;
+        }
+        path = shell_next_token(&cursor);
+    } else if (first && first[0] == '-' && first[1]) {
+        char* number = first + 1;
+        count = 0;
+        while (*number >= '0' && *number <= '9') count = count * 10 + (uint32_t)(*number++ - '0');
+        if (*number) {
+            terminal_writestring("usage: head|tail [-n count] <file>\n");
+            return;
+        }
+        path = shell_next_token(&cursor);
+    } else if (first) {
+        char* number = shell_next_token(&cursor);
+        if (number) {
+            count = 0;
+            while (*number >= '0' && *number <= '9') count = count * 10 + (uint32_t)(*number++ - '0');
+            if (*number) {
+                terminal_writestring("line count must be a nonnegative integer\n");
+                return;
+            }
+        }
+    }
+    if (!path || shell_next_token(&cursor)) {
+        terminal_writestring("usage: head|tail [-n count] <file>\n");
+        return;
+    }
+    struct fs_node* file = fs_resolve_path(path);
+    if (!file || file->type != FS_FILE) {
+        terminal_writestring("file not found\n");
+        return;
+    }
+    const char* data = fs_node_data(file);
+    uint32_t length = (uint32_t)file->content_len;
+    uint32_t total_lines = 0;
+    for (uint32_t i = 0; i < length; i++) if (data[i] == '\n') total_lines++;
+    if (length && data[length - 1] != '\n') total_lines++;
+    if (tail) {
+        if (!count) return;
+        uint32_t skip = total_lines > count ? total_lines - count : 0;
+        uint32_t start = 0;
+        while (start < length && skip) if (data[start++] == '\n') skip--;
+        shell_print_file_range(data, start, length);
+    } else {
+        uint32_t wanted = total_lines < count ? total_lines : count;
+        uint32_t end = 0;
+        while (end < length && wanted) if (data[end++] == '\n') wanted--;
+        if (wanted) end = length;
+        shell_print_file_range(data, 0, end);
+    }
+}
+
+static void cmd_wc(const char* args) {
+    char copy[192];
+    if (strlen(args) >= sizeof(copy)) {
+        terminal_writestring("wc: path too long\n");
+        return;
+    }
+    strcpy(copy, args);
+    char* cursor = copy;
+    char* path = shell_next_token(&cursor);
+    if (!path || shell_next_token(&cursor)) {
+        terminal_writestring("usage: wc <file>\n");
+        return;
+    }
+    struct fs_node* file = fs_resolve_path(path);
+    if (!file || file->type != FS_FILE) {
+        terminal_writestring("wc: file not found\n");
+        return;
+    }
+    const char* data = fs_node_data(file);
+    uint32_t bytes = (uint32_t)file->content_len;
+    uint32_t lines = 0, words = 0;
+    int in_word = 0;
+    for (uint32_t i = 0; i < bytes; i++) {
+        char c = data[i];
+        if (c == '\n') lines++;
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') in_word = 0;
+        else if (!in_word) { words++; in_word = 1; }
+    }
+    char number[16];
+    int_to_string(lines, number); terminal_writestring(number); terminal_putchar(' ');
+    int_to_string(words, number); terminal_writestring(number); terminal_putchar(' ');
+    int_to_string(bytes, number); terminal_writestring(number); terminal_putchar(' ');
+    terminal_writestring(path); terminal_writestring("\n");
+}
+
+static void cmd_head(const char* args) {
+    cmd_head_tail(args, 0);
+}
+
+static void cmd_tail(const char* args) {
+    cmd_head_tail(args, 1);
+}
+
 static void cmd_edit(const char* args) {
     if (strlen(args) == 0) {
         terminal_writestring("Usage: edit <filename>");
         return;
     }
     if (current_kernel_mode == KERNEL_MODE_DESKTOP) {
-
-        terminal_writestring("edit: not available inside the desktop Terminal - use Notepad.\n");
+        if (!fs_resolve_path(args) && strchr(args, '/')) {
+            terminal_writestring("edit: path not found. Use a filename in the current directory or an existing path.\n");
+            return;
+        }
+        notepad_open_file(args);
+        terminal_writestring("Opened in Shark IDE. Use Ctrl+S to save.\n");
         return;
     }
-    editor_target_file = find_node(current_dir, args);
-    if (!editor_target_file) {
+    editor_target_file = fs_resolve_path(args);
+    if (!editor_target_file && !strchr(args, '/')) {
         terminal_writestring("File not found. Creating new file...\n");
         editor_target_file = create_node(args, FS_FILE, current_dir);
     }
@@ -258,16 +670,26 @@ static void cmd_whoami(const char* args) {
 
 static void cmd_help(const char* args) {
     (void)args;
+#ifdef SERVER_IMAGE
+    terminal_writestring("SharkOS Server commands\n");
+    terminal_writestring("Files: ls [-la] [dir], cd <dir>, pwd, cat <file>, nano <file>, tree, find, grep, stat\n");
+    terminal_writestring("File operations: touch, mkdir, rm [force], rmdir, mv <src> <dst>, cp <src> <dst>, head, tail, wc\n");
+    terminal_writestring("System: whoami, uname, sysinfo, neofetch, uptime, devices, ps, htop, reboot, poweroff\n");
+    terminal_writestring("Network: ifconfig, dhcp, ping, dns, netstat, curl, wget\n");
+    terminal_writestring("Services: container, fw docs, httpd, sshd\n");
+    terminal_writestring("GUI apps and ATA/FAT16 mounting are not included in this Server image.\n");
+    return;
+#else
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_MAGENTA, VGA_COLOR_BLACK));
     terminal_writestring("\nSharkOS Help\n------------------------------\n\n");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("FILESYSTEM  - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    terminal_writestring("ls, cd, cat, touch, edit, mkdir, rm, mv, cp, pwd, tree\n");
+    terminal_writestring("ls, cd, cat, touch, edit, mkdir, rm, mv, cp, pwd, tree, mount, umount\n");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("SYSTEM      - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    terminal_writestring("whoami, sysinfo, kernelinfo, colors, lspci, ps, taskmanager, kill, exec\n");
+    terminal_writestring("whoami, sysinfo, kernelinfo, colors, devices/lspci, ps, taskmanager, kill, exec\n");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("RING 0      - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
@@ -275,7 +697,7 @@ static void cmd_help(const char* args) {
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("APPS        - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    terminal_writestring("clear, colors, credits, help, whatis, fortune, cowsay, sl, banner, sharkfetch, doom, browser [url]\n");
+    terminal_writestring("clear, colors, credits, help, neofetch, sharkfetch, whatis, fortune, cowsay, sl, banner, doom, browser [url]\n");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("POWER       - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
@@ -289,6 +711,7 @@ static void cmd_help(const char* args) {
     terminal_set_color(vga_entry_color(VGA_COLOR_DARK_GREY, VGA_COLOR_BLACK));
     terminal_writestring("Categories: Filesystem, System, Ring 0, Apps, Power, Keys\n\n");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+#endif
 }
 
 static void cmd_uname(const char* args) {
@@ -345,6 +768,167 @@ static void cmd_sysinfo(const char* args) {
     terminal_writestring("\033[0;32m");
     terminal_writestring("SharkOS V2 - The Sharkslayer Edition\n");
     terminal_writestring("\033[0;37m");
+}
+
+static void cmd_devices_hex(uint16_t value) {
+    static const char digits[] = "0123456789ABCDEF";
+    for (int i = 3; i >= 0; i--) terminal_putchar(digits[(value >> (i * 4)) & 15]);
+}
+
+static void cmd_devices_hex8(uint8_t value) {
+    static const char digits[] = "0123456789ABCDEF";
+    terminal_putchar(digits[value >> 4]);
+    terminal_putchar(digits[value & 15]);
+}
+
+static const char* pci_vendor_name(uint16_t vendor) {
+    if (vendor == 0x10EC) return "Realtek";
+    if (vendor == 0x8086) return "Intel";
+    if (vendor == 0x1022) return "AMD";
+    if (vendor == 0x1AF4) return "Virtio";
+    if (vendor == 0x1234) return "QEMU";
+    if (vendor == 0x10DE) return "NVIDIA";
+    if (vendor == 0x15AD) return "VMware";
+    if (vendor == 0x80EE) return "VirtualBox";
+    return "Unknown vendor";
+}
+
+static const char* pci_device_name(uint16_t vendor, uint16_t device) {
+    if (vendor == 0x10EC && device == 0x8168) return "RTL8111/8168/8211/8411 Gigabit Ethernet";
+    if (vendor == 0x10EC && device == 0x8169) return "RTL8169 Gigabit Ethernet";
+    if (vendor == 0x10EC && device == 0x8139) return "RTL8139 Fast Ethernet";
+    if (vendor == 0x8086 && (device == 0x100E || device == 0x100F)) return "82540EM Gigabit Ethernet";
+    if (vendor == 0x1AF4 && device == 0x1000) return "Virtio network device";
+    if (vendor == 0x1234 && device == 0x1111) return "Virtual VGA adapter";
+    if (vendor == 0x1022 && (device == 0x2000 || device == 0x2001)) return "PCnet Ethernet";
+    return "PCI device";
+}
+
+static const char* pci_class_name(uint8_t class_code) {
+    switch (class_code) {
+        case 0x00: return "Unclassified";
+        case 0x01: return "Mass storage";
+        case 0x02: return "Network controller";
+        case 0x03: return "Display controller";
+        case 0x04: return "Multimedia controller";
+        case 0x05: return "Memory controller";
+        case 0x06: return "Bridge";
+        case 0x07: return "Communication controller";
+        case 0x08: return "System peripheral";
+        case 0x09: return "Input controller";
+        case 0x0A: return "Docking station";
+        case 0x0B: return "Processor";
+        case 0x0C: return "Serial bus controller";
+        case 0x0D: return "Wireless controller";
+        case 0x0E: return "Intelligent controller";
+        case 0x0F: return "Satellite controller";
+        case 0x10: return "Encryption controller";
+        case 0x11: return "Signal processing controller";
+        case 0x12: return "Processing accelerator";
+        case 0x13: return "Instrumentation controller";
+        default: return "Other PCI class";
+    }
+}
+
+static void cmd_devices(const char* args) {
+    (void)args;
+    char number[24];
+    terminal_writestring("Detected hardware and system devices\n\nSYSTEM\n");
+    terminal_writestring("CPU: ");
+    char cpu_model[49];
+    get_cpu_model(cpu_model);
+    terminal_writestring(cpu_model);
+    terminal_writestring("\nMemory: ");
+    int_to_string((uint32_t)(total_system_memory >> 20), number);
+    terminal_writestring(number);
+    terminal_writestring(" MiB\nDisplay: ");
+    int_to_string((uint32_t)screen_width, number);
+    terminal_writestring(number);
+    terminal_putchar('x');
+    int_to_string((uint32_t)screen_height, number);
+    terminal_writestring(number);
+    terminal_writestring(" console\nKeyboard: PS/2 controller\nSerial: COM1\nTimer: PIT/IRQ0\nInterrupt controller: dual 8259 PIC\n");
+    terminal_writestring("Storage: ");
+    int drive_count = ata_drive_count();
+    int_to_string((uint32_t)drive_count, number);
+    terminal_writestring(number);
+    terminal_writestring(drive_count == 1 ? " ATA drive\n" : " ATA drives\n");
+    terminal_writestring("Network: ");
+    if (net_has_nic()) {
+        terminal_writestring(net_driver_name);
+        terminal_writestring(" MAC ");
+        for (uint32_t i = 0; i < 6; i++) {
+            static const char digits[] = "0123456789abcdef";
+            terminal_putchar(digits[net_mac[i] >> 4]);
+            terminal_putchar(digits[net_mac[i] & 15]);
+            if (i < 5) terminal_putchar(':');
+        }
+        terminal_putchar('\n');
+    } else terminal_writestring("not detected\n");
+    terminal_writestring("\nPCI DEVICES\nBDF       Vendor:Device  Class                  Device name and resources\n");
+    uint32_t count = 0;
+    for (uint32_t bus = 0; bus < 256; bus++) {
+        for (uint32_t slot = 0; slot < 32; slot++) {
+            for (uint32_t func = 0; func < 8; func++) {
+                uint32_t identity = pci_config_read((uint8_t)bus, (uint8_t)slot, (uint8_t)func, 0);
+                if (identity == 0xFFFFFFFFu) {
+                    if (!func) break;
+                    continue;
+                }
+                uint16_t vendor = (uint16_t)identity;
+                uint16_t device = (uint16_t)(identity >> 16);
+                uint32_t class_register = pci_config_read((uint8_t)bus, (uint8_t)slot, (uint8_t)func, 0x08);
+                uint8_t revision = (uint8_t)class_register;
+                uint8_t interface = (uint8_t)(class_register >> 8);
+                uint8_t subclass = (uint8_t)(class_register >> 16);
+                uint8_t class_code = (uint8_t)(class_register >> 24);
+                uint32_t irq = pci_config_read((uint8_t)bus, (uint8_t)slot, (uint8_t)func, 0x3C) & 0xFF;
+                terminal_putchar(' ');
+                cmd_devices_hex8((uint8_t)bus);
+                terminal_putchar(':');
+                cmd_devices_hex8((uint8_t)slot);
+                terminal_putchar('.');
+                int_to_string(func, number); terminal_writestring(number);
+                terminal_writestring("   ");
+                cmd_devices_hex(vendor); terminal_putchar(':'); cmd_devices_hex(device);
+                terminal_writestring("  ");
+                terminal_writestring(pci_class_name(class_code));
+                terminal_writestring(" (");
+                cmd_devices_hex8(subclass);
+                terminal_putchar('/');
+                cmd_devices_hex8(interface);
+                terminal_writestring(")  ");
+                terminal_writestring(pci_vendor_name(vendor));
+                terminal_writestring(" ");
+                terminal_writestring(pci_device_name(vendor, device));
+                terminal_writestring(" rev ");
+                int_to_string(revision, number); terminal_writestring(number);
+                terminal_writestring(" irq ");
+                int_to_string(irq, number); terminal_writestring(number);
+                terminal_putchar('\n');
+                for (uint8_t bar_index = 0; bar_index < 6; bar_index++) {
+                    uint8_t offset = (uint8_t)(0x10 + bar_index * 4);
+                    uint32_t bar = pci_config_read((uint8_t)bus, (uint8_t)slot, (uint8_t)func, offset);
+                    if (!bar) continue;
+                    terminal_writestring("    BAR");
+                    int_to_string(bar_index, number); terminal_writestring(number);
+                    terminal_writestring((bar & 1u) ? " I/O " : " MMIO ");
+                    cmd_devices_hex((uint16_t)(bar >> 16));
+                    cmd_devices_hex((uint16_t)bar);
+                    terminal_putchar('\n');
+                    if (!(bar & 1u) && ((bar >> 1) & 3u) == 2u) bar_index++;
+                }
+                count++;
+                uint32_t header = pci_config_read((uint8_t)bus, (uint8_t)slot, (uint8_t)func, 0x0C);
+                if (!func && !(header & 0x00800000u)) break;
+            }
+        }
+    }
+    terminal_writestring("PCI device count: ");
+    int_to_string(count, number);
+    terminal_writestring(number);
+    terminal_writestring("\n");
+    if (!count) terminal_writestring("No PCI functions were detected.\n");
 }
 
 static void cmd_hostname(const char* args) {
@@ -423,7 +1007,9 @@ static void cmd_taskmanager(const char* args) {
     terminal_writestring("% (main loop busy share, last second)\n");
 
     uint32_t total_kb = (uint32_t)(total_system_memory / 1024u);
-    uint32_t used_kb = (uint32_t)((free_memory_start - 0x100000u) / 1024u);
+    uint64_t free_bytes = pmm_free_memory_bytes();
+    if (free_bytes > total_system_memory) free_bytes = total_system_memory;
+    uint32_t used_kb = (uint32_t)((total_system_memory - free_bytes) / 1024u);
     terminal_writestring("Memory     : ");
     int_to_string(used_kb, buf); terminal_writestring(buf); terminal_writestring(" KB used / ");
     int_to_string(total_kb, buf); terminal_writestring(buf); terminal_writestring(" KB total\n");
@@ -460,6 +1046,172 @@ static void cmd_taskmanager(const char* args) {
     terminal_writestring("\nIn the desktop, 'taskmanager' (or Ctrl+Esc) opens the window.\n");
 }
 
+#ifdef SERVER_IMAGE
+static void server_htop_print_bar(uint32_t percent) {
+    if (percent > 100) percent = 100;
+    uint32_t fill = percent * 40 / 100;
+    terminal_putchar('[');
+    for (uint32_t i = 0; i < 40; i++) terminal_putchar(i < fill ? '#' : '.');
+    terminal_putchar(']');
+}
+
+static void server_htop_draw(uint32_t cpu_percent) {
+    char number[24];
+    uint64_t total_bytes = total_system_memory;
+    uint64_t free_bytes = pmm_free_memory_bytes();
+    if (free_bytes > total_bytes) free_bytes = total_bytes;
+    uint64_t used_bytes = total_bytes - free_bytes;
+    uint32_t memory_percent = total_bytes ? (uint32_t)(used_bytes * 100 / total_bytes) : 0;
+    uint32_t total_mb = (uint32_t)(total_bytes >> 20);
+    uint32_t used_mb = (uint32_t)(used_bytes >> 20);
+    uint32_t free_mb = total_mb > used_mb ? total_mb - used_mb : 0;
+    uint32_t seconds = uptime_ticks / 1000;
+    uint32_t hours = seconds / 3600;
+    uint32_t minutes = (seconds / 60) % 60;
+    uint32_t secs = seconds % 60;
+    uint32_t task_count = 0;
+    terminal_clear();
+    terminal_writestring("SharkOS htop | live monitor | Z local, Q/Z SSH\n");
+    terminal_writestring("CPU  ");
+    server_htop_print_bar(cpu_percent);
+    terminal_writestring(" ");
+    int_to_string(cpu_percent, number);
+    terminal_writestring(number);
+    terminal_writestring("%\nRAM  ");
+    server_htop_print_bar(memory_percent);
+    terminal_writestring(" ");
+    int_to_string(memory_percent, number);
+    terminal_writestring(number);
+    terminal_writestring("%  ");
+    int_to_string(used_mb, number);
+    terminal_writestring(number);
+    terminal_putchar('/');
+    int_to_string(total_mb, number);
+    terminal_writestring(number);
+    terminal_writestring(" MiB used\n     free ");
+    int_to_string(free_mb, number);
+    terminal_writestring(number);
+    terminal_writestring(" MiB\n");
+    terminal_writestring("Uptime ");
+    int_to_string(hours, number);
+    terminal_writestring(number);
+    terminal_writestring(":");
+    if (minutes < 10) terminal_putchar('0');
+    int_to_string(minutes, number);
+    terminal_writestring(number);
+    terminal_putchar(':');
+    if (secs < 10) terminal_putchar('0');
+    int_to_string(secs, number);
+    terminal_writestring(number);
+    terminal_writestring("\n\nSERVICES\n");
+    terminal_writestring("HTTP  ");
+    if (httpd_is_active()) {
+        terminal_writestring("RUNNING  port ");
+        int_to_string(httpd_listen_port(), number);
+        terminal_writestring(number);
+        terminal_writestring("  clients ");
+        int_to_string(net_tcp_server_connection_count(httpd_listen_port()), number);
+        terminal_writestring(number);
+    } else terminal_writestring("STOPPED");
+    terminal_writestring("\nSSH   ");
+    if (ssh_server_is_active()) {
+        terminal_writestring("RUNNING  port ");
+        int_to_string(ssh_server_listen_port(), number);
+        terminal_writestring(number);
+        terminal_writestring("  sessions ");
+        int_to_string(net_tcp_server_connection_count(ssh_server_listen_port()), number);
+        terminal_writestring(number);
+    } else terminal_writestring("STOPPED");
+    terminal_writestring("\nTCP connections ");
+    int_to_string(net_tcp_server_connection_count(0), number);
+    terminal_writestring(number);
+    terminal_writestring(" / 8\n\nTASKS\n");
+    spin_lock(&task_list_lock);
+    for (task_t* task = task_list; task; task = task->next) task_count++;
+    if (!task_count) {
+        terminal_writestring("No separately scheduled user tasks; server services run in the kernel loop.\n");
+    } else {
+        terminal_writestring("PID  NAME             STATE      CPU  SYSCALLS\n");
+        for (task_t* task = task_list; task; task = task->next) {
+            int_to_string((uint32_t)task->id, number);
+            terminal_writestring(number);
+            terminal_writestring("  ");
+            terminal_writestring(task->name);
+            uint32_t name_length = (uint32_t)strlen(task->name);
+            for (uint32_t i = name_length; i < 16; i++) terminal_putchar(' ');
+            const char* state = task->state == TASK_RUNNING ? "RUNNING" : task->state == TASK_READY ? "READY" : task->state == TASK_SLEEPING ? "SLEEPING" : "ZOMBIE";
+            terminal_writestring(state);
+            terminal_writestring("  ");
+            int_to_string(task->cpu_usage, number);
+            terminal_writestring(number);
+            terminal_writestring("%  ");
+            int_to_string(task->syscall_count, number);
+            terminal_writestring(number);
+            terminal_putchar('\n');
+        }
+    }
+    spin_unlock(&task_list_lock);
+}
+
+static volatile uint8_t server_htop_active;
+static uint32_t server_htop_previous_ticks;
+static uint32_t server_htop_previous_idle;
+static uint32_t server_htop_last_draw;
+static uint32_t server_htop_cpu_percent;
+
+int server_htop_is_active(void) {
+    return server_htop_active != 0;
+}
+
+void server_htop_start(void) {
+    server_htop_active = 1;
+    server_htop_previous_ticks = uptime_ticks;
+    server_htop_previous_idle = server_idle_ticks;
+    server_htop_last_draw = uptime_ticks;
+    server_htop_cpu_percent = 0;
+    server_htop_draw(0);
+}
+
+void server_htop_poll(void) {
+    if (!server_htop_active) return;
+    uint32_t now = uptime_ticks;
+    if (now - server_htop_last_draw < 500) return;
+    uint32_t elapsed = now - server_htop_previous_ticks;
+    uint32_t idle = server_idle_ticks - server_htop_previous_idle;
+    if (idle > elapsed) idle = elapsed;
+    server_htop_cpu_percent = elapsed ? (elapsed - idle) * 100 / elapsed : 0;
+    server_htop_previous_ticks = now;
+    server_htop_previous_idle = server_idle_ticks;
+    server_htop_last_draw = now;
+    server_htop_draw(server_htop_cpu_percent);
+}
+
+uint32_t server_htop_render_remote(char* output, uint32_t output_capacity) {
+    if (!output || !output_capacity) return 0;
+    server_output_capture_begin(output, output_capacity);
+    server_htop_draw(server_htop_cpu_percent);
+    return server_output_capture_end();
+}
+
+int server_htop_handle_key(int key) {
+    if (!server_htop_active) return 0;
+    if (key == 'q' || key == 'Q' || key == 'z' || key == 'Z' || key == 3 || key == 27) {
+        server_htop_active = 0;
+        terminal_clear();
+        terminal_writestring("htop closed.\n");
+    }
+    return 1;
+}
+
+static void cmd_htop(const char* args) {
+    (void)args;
+    if (server_output_capture_active()) {
+        server_htop_draw(server_htop_cpu_percent);
+        return;
+    }
+    server_htop_start();
+}
+#else
 static void cmd_htop(const char* args) {
     (void)args;
     spin_lock(&task_list_lock);
@@ -530,6 +1282,8 @@ static void cmd_htop(const char* args) {
     spin_unlock(&task_list_lock);
 }
 
+#endif
+
 static void cmd_uptime(const char* args) {
     (void)args;
     uint32_t total_secs = uptime_ticks / TICKS_PER_SEC;
@@ -562,59 +1316,8 @@ static void cmd_bokop(const char* args) {
 }
 
 static void cmd_neofetch(const char* args) {
-    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_BLUE, VGA_COLOR_BLACK));
-    terminal_writestring("\n");
-    terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡠⢄⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\n");
-    terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⢣⠀⠀⠉⣳⠤⠒⢊⠉⠉⠉⠉⡍⡉⠉⡐⠒⡲⢦⠀⠀\n");
-    terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣇⠔⠋⠀⠀⠀⡸⡄⠀⠀⠀⠠⣦⣇⡲⣪⣠⠋⠀⠀\n");
-    terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⠀⢀⡔⠁⠀⠀⠀⠀⠰⣃⣷⢆⠠⠒⢈⣵⣯⣿⠷⠃⠀⠀⠀\n");
-    terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⣠⠊⠀⠀⠀⠀⡀⡠⠀⠀⣹⠁⠀⠀⢀⣀⠴⠊⠀⠀⠀⠀⠀\n");
-    terminal_writestring("       ⠀⠀⠀⠀⠀⠀⡰⠁⢀⠠⢄⣂⠥⢼⠀⠀⣠⠧⠒⠲⡊⢿⡆⠀⠀⠀⠀⠀⠀⠀\n");
-    terminal_writestring("       ⠀⠀⣠⠴⠒⡲⣡⡴⠗⠋⠁⠀⠀⢸⠀⡴⠁⠀⠀⠀⠙⡼⠃⠀⠀⠀⠀⠀⠀⠀\n");
-    terminal_writestring("       ⠀⠀⠉⠉⠒⡟⠉⡆⠀⠀⠀⠀⠀⠘⠼⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\n");
-    terminal_writestring("       ⠀⠀⠀⠀⠀⠸⣴⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\n");
-    terminal_writestring("\n");
-    terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
-
-    char buf[64];
-    uint32_t total_mb = (uint32_t)(total_system_memory >> 20);
-    uint32_t up_secs = uptime_ticks / TICKS_PER_SEC;
-    uint32_t hours = up_secs / 3600;
-    uint32_t mins = (up_secs % 3600) / 60;
-    uint32_t secs = up_secs % 60;
-
-    terminal_writestring("\033[0;36m");
-    terminal_writestring("  OS: \033[0;37mSharkOS v2.1 Suzuna (Sharkslayer)\n");
-    terminal_writestring("\033[0;36m");
-    terminal_writestring("  Host: \033[0;37mSharkOS PC\n");
-    terminal_writestring("\033[0;36m");
-    terminal_writestring("  Kernel: \033[0;37mNemo-Kernel v4.0.0 (standalone, not UNIX/Linux)\n");
-    terminal_writestring("\033[0;36m");
-    terminal_writestring("  Shell: \033[0;37mnemo-shell\n");
-    terminal_writestring("\033[0;36m");
-    terminal_writestring("  Resolution: \033[0;37m");
-    int_to_string(screen_width, buf); terminal_writestring(buf);
-    terminal_writestring("x");
-    int_to_string(screen_height, buf); terminal_writestring(buf);
-    terminal_writestring("\n");
-    terminal_writestring("\033[0;36m");
-    terminal_writestring("  CPU: \033[0;37m");
-    char cpu_model[49];
-    get_cpu_model(cpu_model);
-    terminal_writestring(cpu_model);
-    terminal_writestring("\n");
-    terminal_writestring("\033[0;36m");
-    terminal_writestring("  Memory: \033[0;37m");
-    int_to_string(total_mb, buf); terminal_writestring(buf);
-    terminal_writestring(" MB\n");
-    terminal_writestring("\033[0;36m");
-    terminal_writestring("  Uptime: \033[0;37m");
-    int_to_string(hours, buf); terminal_writestring(buf); terminal_writestring("h ");
-    int_to_string(mins, buf); terminal_writestring(buf); terminal_writestring("m ");
-    int_to_string(secs, buf); terminal_writestring(buf); terminal_writestring("s\n");
-    terminal_writestring("\033[0;36m");
-    terminal_writestring("  Theme: \033[0;37mSharkOS Blue\n");
-    terminal_writestring("\033[0;37m");
+    (void)args;
+    shark_neofetch_show();
 }
 
 static void cmd_ifconfig(const char* args) {
@@ -639,6 +1342,288 @@ static void cmd_wget(const char* args) {
     }
     net_cmd_wget(args);
 }
+
+static void curl_copy(char* out, const char* in, size_t cap) {
+    if (!cap) return;
+    size_t i = 0;
+    while (in[i] && i + 1 < cap) { out[i] = in[i]; i++; }
+    out[i] = 0;
+}
+
+static void curl_cat(char* out, const char* in, size_t cap) {
+    size_t i = strlen(out);
+    if (i >= cap) return;
+    size_t j = 0;
+    while (in[j] && i + 1 < cap) out[i++] = in[j++];
+    out[i] = 0;
+}
+
+static const char* curl_next_arg(const char* p, char* out, int cap) {
+    while (*p == ' ' || *p == '\t') p++;
+    int o = 0;
+    char quote = 0;
+    if (*p == '\'' || *p == '"') quote = *p++;
+    while (*p) {
+        if (quote) {
+            if (*p == quote) { p++; break; }
+        } else if (*p == ' ' || *p == '\t') break;
+        if (o < cap - 1) out[o++] = *p;
+        p++;
+    }
+    out[o] = 0;
+    return p;
+}
+
+static void curl_resolve_redirect(const char* base, const char* loc, char* out, int cap) {
+    if (strstr(loc, "://")) { curl_copy(out, loc, (size_t)cap); return; }
+    const char* scheme_end = strstr(base, "://");
+    if (!scheme_end) { curl_copy(out, loc, (size_t)cap); return; }
+    int origin_len = (int)(scheme_end - base) + 3;
+    const char* path = base + origin_len;
+    while (*path && *path != '/') path++;
+    int host_len = (int)(path - base);
+    if (loc[0] == '/') {
+        int n = host_len;
+        if (n >= cap) n = cap - 1;
+        memcpy(out, base, n);
+        out[n] = 0;
+        curl_cat(out, loc, (size_t)cap);
+        return;
+    }
+    int n = (int)strlen(base);
+    while (n > host_len && base[n - 1] != '/') n--;
+    if (n > cap - 1) n = cap - 1;
+    memcpy(out, base, n);
+    out[n] = 0;
+    curl_cat(out, loc, (size_t)cap);
+}
+
+static void cmd_curl(const char* args) {
+    static uint8_t response[64 * 1024];
+    char url[512] = "";
+    char output[96] = "";
+    char method[16] = "GET";
+    char data[1024] = "";
+    char headers[768] = "";
+    int follow = 0;
+    int verbose = 0;
+    int head_only = 0;
+    const char* p = args;
+    char arg[512];
+    while (*(p = curl_next_arg(p, arg, sizeof(arg)))) {
+        if (!strcmp(arg, "-L") || !strcmp(arg, "--location")) follow = 1;
+        else if (!strcmp(arg, "-v") || !strcmp(arg, "--verbose")) verbose = 1;
+        else if (!strcmp(arg, "-I") || !strcmp(arg, "--head")) { head_only = 1; strcpy(method, "HEAD"); }
+        else if (!strcmp(arg, "-o") || !strcmp(arg, "--output")) {
+            p = curl_next_arg(p, output, sizeof(output));
+            if (!output[0]) break;
+        } else if (!strcmp(arg, "-X") || !strcmp(arg, "--request")) {
+            p = curl_next_arg(p, method, sizeof(method));
+            if (!method[0]) break;
+        } else if (!strcmp(arg, "-d") || !strcmp(arg, "--data") || !strcmp(arg, "--data-raw")) {
+            p = curl_next_arg(p, data, sizeof(data));
+            if (!data[0]) break;
+        } else if (!strcmp(arg, "-H") || !strcmp(arg, "--header")) {
+            p = curl_next_arg(p, arg, sizeof(arg));
+            if (arg[0] && strlen(headers) + strlen(arg) + 3 < sizeof(headers)) {
+                curl_cat(headers, arg, sizeof(headers));
+                curl_cat(headers, "\r\n", sizeof(headers));
+            }
+        } else if (arg[0] == '-') {
+            terminal_writestring("curl: unsupported option ");
+            terminal_writestring(arg);
+            terminal_writestring("\n");
+            return;
+        } else {
+            curl_copy(url, arg, sizeof(url));
+        }
+        while (*p == ' ' || *p == '\t') p++;
+    }
+    if (!url[0] || *p) {
+        terminal_writestring("Usage: curl [-L] [-v] [-I] [-o file] [-X method] [-H header] [-d data] <http[s]://url>\n");
+        return;
+    }
+    if (data[0] && !strcmp(method, "GET")) strcpy(method, "POST");
+    if (data[0] && !strstr(headers, "Content-Type:")) curl_cat(headers, "Content-Type: application/x-www-form-urlencoded\r\n", sizeof(headers));
+
+    int count = -1;
+    int redirects = 0;
+    char current_url[512];
+    curl_copy(current_url, url, sizeof(current_url));
+    for (;;) {
+        if (verbose) {
+            terminal_writestring("> "); terminal_writestring(method); terminal_putchar(' ');
+            terminal_writestring(current_url); terminal_writestring("\n");
+        }
+        count = net_http_request(method, current_url, headers, (const uint8_t*)data,
+                                 (uint32_t)strlen(data), response, sizeof(response));
+        if (count < 0) {
+            terminal_writestring("curl: request failed\n");
+            return;
+        }
+        if (verbose) {
+            terminal_writestring("< HTTP ");
+            char status[16]; int_to_string((uint32_t)net_http_last_status, status);
+            terminal_writestring(status); terminal_writestring(" ");
+            terminal_writestring(net_http_last_content_type);
+            terminal_writestring("\n");
+        }
+        if (!follow || net_http_last_status < 300 || net_http_last_status >= 400 ||
+            !net_http_last_location[0] || redirects >= 5) break;
+        char next[512];
+        curl_resolve_redirect(current_url, net_http_last_location, next, sizeof(next));
+        if (!strcmp(next, current_url)) break;
+        curl_copy(current_url, next, sizeof(current_url));
+        if (net_http_last_status == 303 || ((net_http_last_status == 301 || net_http_last_status == 302) && strcmp(method, "GET") && strcmp(method, "HEAD"))) {
+            strcpy(method, "GET"); data[0] = 0;
+        }
+        redirects++;
+    }
+    if (head_only && verbose && net_http_last_content_type[0]) {
+        terminal_writestring("Content-Type: "); terminal_writestring(net_http_last_content_type); terminal_writestring("\n");
+    }
+    if (output[0]) {
+        struct fs_node* file = fs_resolve_path(output);
+        if (!file && !strchr(output, '/') && !strchr(output, '\\')) file = create_node(output, FS_FILE, current_dir);
+        if (!file || file->type != FS_FILE) {
+            terminal_writestring("curl: cannot open output path\n");
+            return;
+        }
+        if (count > MAX_FILE_CONTENT_SIZE - 1) {
+            terminal_writestring("curl: response exceeds SharkOS file size limit\n");
+            return;
+        }
+        memcpy(file->content, response, (size_t)count);
+        file->content[count] = 0;
+        file->content_len = count;
+        if (!fs_node_sync(file)) {
+            terminal_writestring("curl: download received but file could not be written to its filesystem\n");
+            return;
+        }
+        terminal_writestring("Saved ");
+        char sizebuf[16]; int_to_string((uint32_t)count, sizebuf);
+        terminal_writestring(sizebuf); terminal_writestring(" bytes to ");
+        terminal_writestring(output); terminal_writestring("\n");
+        return;
+    }
+    if (net_http_last_status < 200 || net_http_last_status >= 300) {
+        terminal_writestring("curl: HTTP status ");
+        char status[16]; int_to_string((uint32_t)net_http_last_status, status);
+        terminal_writestring(status); terminal_writestring("\n");
+    }
+    for (int i = 0; i < count; i++) {
+        if (response[i] == 0) terminal_putchar(' ');
+        else terminal_putchar((char)response[i]);
+    }
+    if (!count || response[count - 1] != '\n') terminal_putchar('\n');
+}
+
+static void cmd_websocket(const char* args) {
+    char url[512];
+    char message[1024];
+    const char* p = curl_next_arg(args, url, sizeof(url));
+    p = curl_next_arg(p, message, sizeof(message));
+    if (!url[0]) {
+        terminal_writestring("Usage: websocket <ws:// or wss:// URL> [text]\n");
+        return;
+    }
+    if (net_websocket_open(url) < 0) {
+        terminal_writestring("websocket: connection or upgrade handshake failed\n");
+        return;
+    }
+    terminal_writestring("websocket: connected\n");
+    if (message[0] && net_websocket_send((const uint8_t*)message, (uint32_t)strlen(message)) < 0) {
+        terminal_writestring("websocket: send failed\n");
+        net_websocket_close();
+        return;
+    }
+    if (message[0]) {
+        static uint8_t response[64 * 1024];
+        int n = net_websocket_recv(response, sizeof(response), 5000);
+        if (n < 0) terminal_writestring("websocket: receive timed out or failed\n");
+        else if (n > 0) {
+            for (int i = 0; i < n; i++) terminal_putchar(response[i] ? (char)response[i] : ' ');
+            terminal_putchar('\n');
+        }
+    }
+    net_websocket_close();
+}
+
+static void cmd_mount(const char* args) {
+    if (!args[0]) {
+        terminal_writestring("Detected ATA drives: ");
+        char number[16];
+        int_to_string((uint32_t)ata_drive_count(), number);
+        terminal_writestring(number);
+        terminal_writestring("\nUsage: mount <drive-index> [directory]\n");
+        for (int i = 0; i < ata_drive_count(); i++) {
+            const ata_drive_t* d = ata_drive_get(i);
+            terminal_writestring("  ");
+            int_to_string((uint32_t)i, number);
+            terminal_writestring(number);
+            terminal_writestring(": ");
+            terminal_writestring(d->model);
+            terminal_writestring("\n");
+        }
+        return;
+    }
+    int drive = 0;
+    const char* p = args;
+    if (*p < '0' || *p > '9') {
+        terminal_writestring("Usage: mount <drive-index> [directory]\n");
+        return;
+    }
+    while (*p >= '0' && *p <= '9') drive = drive * 10 + (*p++ - '0');
+    while (*p == ' ') p++;
+    struct fs_node* target = NULL;
+    if (*p) {
+        target = fs_resolve_path(p);
+    } else {
+        struct fs_node* mnt = fs_resolve_path("/mnt");
+        if (!mnt) mnt = create_node("mnt", FS_DIRECTORY, root);
+        char name[16] = "disk";
+        int_to_string((uint32_t)drive, name + 4);
+        target = find_node(mnt, name);
+        if (!target && mnt) target = create_node(name, FS_DIRECTORY, mnt);
+    }
+    if (!target || target->type != FS_DIRECTORY) {
+        terminal_writestring("mount: mount point must be an existing directory\n");
+        return;
+    }
+    int result = fat16_mount(drive, target);
+    if (result < 0) {
+        terminal_writestring("mount: FAT16 mount failed; use a FAT16 volume and a free mount point\n");
+        return;
+    }
+    terminal_writestring("Mounted FAT16 drive ");
+    char number[16];
+    int_to_string((uint32_t)drive, number);
+    terminal_writestring(number);
+    terminal_writestring(" at ");
+    terminal_writestring(target->name);
+    terminal_writestring("\n");
+}
+
+static void cmd_umount(const char* args) {
+    struct fs_node* target = fs_resolve_path(args);
+    if (!target || !fat16_unmount(target)) {
+        terminal_writestring("umount: path is not a mounted filesystem\n");
+        return;
+    }
+    terminal_writestring("Filesystem unmounted\n");
+}
+
+static void cmd_gcc(const char* args) {
+    if (strcmp(args, "--version") == 0 || strcmp(args, "-v") == 0) {
+        terminal_writestring("GNU GCC build compiler: ");
+        terminal_writestring(__VERSION__);
+        terminal_writestring("\nTarget: x86_64, freestanding kernel C\n");
+        return;
+    }
+    terminal_writestring("GCC is integrated into the SharkOS kernel build toolchain, not bundled as a kernel-hosted process.\n");
+    terminal_writestring("On the Linux build host run: tools/sharkcc source.c output.o\n");
+}
+
 static void cmd_dns(const char* args) {
     if (strlen(args) == 0) {
         terminal_writestring("Usage: dns <hostname>\n");
@@ -658,7 +1643,7 @@ static void cmd_netstat(const char* args) {
 
 #include "audio.h"
 static void cmd_audio(const char* args){
-    char buf0[64]; // small helper
+    char buf0[64];  
     if (strlen(args)==0 || strcmp(args,"status")==0){
         terminal_writestring("Audio backend: "); terminal_writestring((char*)audio_backend_name()); terminal_writestring("\n");
         terminal_writestring("Available: "); terminal_writestring(audio_available() ? "yes" : "no"); terminal_writestring("\n");
@@ -715,7 +1700,7 @@ static void cmd_audio(const char* args){
         return;
     }
     if (strcmp(args,"test")==0){
-        // square 440Hz stereo 48k 0.5s (no FPU needed)
+         
         int16_t* buf=(int16_t*)kmalloc(48000/2*4);
         if(!buf){ terminal_writestring("oom\n"); return; }
         int period=48000/440;
@@ -730,39 +1715,23 @@ static void cmd_audio(const char* args){
     terminal_writestring("Usage: audio [status|beep|tone <f> <ms>|stop|vol <0-255>|wav <path>|test]\n");
 }
 
-static const char* shark_art[] = {
-
-    "...................DDD................",
-    ".................DDDBBBDD.............",
-    "...............DDDBBBBBBBDD...........",
-    "..............DBBBBBBBBBBBBD..........",
-    ".............DBBBBBBBBBBBBBBD.........",
-    "....DDD.....DBBBBBBBBBBBBBBBBD.......",
-    "...DBBBDD..DBBBBBBBBBBBBBBBBBBD.......",
-    "..DBBBBBBDBBBBBBBBBBWWWWBBBBBBD.......",
-    ".DBBBBBBBBBBBBBBBBWWWWWWWWBBBD........",
-    ".DBBBBBBBBBBBBBBWWWWWWWWWWBBD.........",
-    "..DBBBBBBBBBBBBWWWWWWWWWWBBD..........",
-    "...DDBBBBBBBBBBWWWWWWWWWBBD............",
-    "....DDBBBBBBBBBBWWWWWWWBBD.............",
-    ".....DDBBBBBBBBBBBBBBBBD...............",
-    "......DDBBBBBBBBBBBBBDD................",
-    ".......DDDBBBBBBBBDDD..................",
-    ".........DDBBBBBDD.....................",
-    "...........DDDD........................",
+static const char* neofetch_art[] = {
+    "                             :-:::",
+    "                             =@@**+=-:",
+    "                              :#+:-=+*+-",
+    "                             : -@-   :=**-",
+    "  ::::::                       -@- :    -#*-:",
+    "  -*@%*+++=-:               :-+#=:       :-+*+=::",
+    "   :-+#=:-=+**=:::::::---=++*+=:            :-++**+==-::",
+    "      -**-  :-++++++++++==-::        =-=--      ::--=+++++:",
+    "        =@=   -+==--::     ::        -++=*:          :-+@+:",
+    "         +@ :+@=-==++*+::-+*-:=-:::::-----   ::--==+**+=:",
+    "         +%-#*:       :-#@%-+#=:-++**++++=- :%*+==--:",
+    "        :@@#-          :::=**:     :::::-*%:#*:",
+    "        =*-:                             *@%+:",
+    "                                        :+=:",
 };
-#define SHARK_ART_ROWS 18
-
-static const char* shark_ansi_for(char c) {
-    switch (c) {
-        case 'D': return "\x1b[94m";                     
-        case 'B': return "\x1b[96m";                     
-        case 'W': return "\x1b[97m";                     
-        case 'E': return "\x1b[34m";                     
-        case 'M': return "\x1b[91m";                     
-        default:  return NULL;
-    }
-}
+#define NEOFETCH_ART_ROWS 14
 
 static void fetch_cat(char* dst, const char* src) {
     while (*dst) dst++;
@@ -775,145 +1744,139 @@ static void fetch_num(char* dst, uint32_t v) {
     fetch_cat(dst, b);
 }
 
-static void shark_fetch_row(const char* art, const char* info) {
-    char buf[200];
-    int p = 0;
-    int i = 0;
-    while (art[i] && p < 150) {
-        char c = art[i];
-        int run = 0;
-        while (art[i + run] && art[i + run] == c) run++;
-        if (c == '.') {
-            for (int k = 0; k < run && p < 150; k++) buf[p++] = ' ';
-        } else {
-            const char* code = shark_ansi_for(c);
-            if (code) while (*code && p < 150) buf[p++] = *code++;
-            for (int k = 0; k < run && p < 148; k++) {
-                buf[p++] = '#';
-                buf[p++] = '#';
-            }
-        }
-        i += run;
-    }
-    fetch_cat(buf, "\x1b[0m");
-    if (info && *info) {
-        while (p < 48) buf[p++] = ' ';                            
-        while (*info && p < 190) buf[p++] = *info++;
-    }
-    buf[p++] = '\n';
-    buf[p] = '\0';
-    terminal_writestring(buf);
-}
-
 static void fetch_kv(char* dst, const char* key) {
     fetch_cat(dst, "\x1b[96m");
     fetch_cat(dst, key);
     fetch_cat(dst, ":\x1b[97m ");
 }
 
-static void cmd_sharkfetch(const char* args) {
-    (void)args;
-    static char info[SHARK_ART_ROWS][128];
+static int neofetch_line_width(const char* line, int compact) {
+    int width = 0;
+    int in_space = 0;
+    for (int i = 0; line[i]; i++) {
+        if (compact && line[i] == ' ') {
+            if (!in_space) width++;
+            in_space = 1;
+        } else {
+            width++;
+            in_space = 0;
+        }
+    }
+    return width;
+}
 
-    for (int r = 0; r < SHARK_ART_ROWS; r++) info[r][0] = '\0';
+static void neofetch_write_art_line(const char* line, int compact) {
+    if (!compact) {
+        terminal_writestring(line);
+        return;
+    }
+    int in_space = 0;
+    for (int i = 0; line[i]; i++) {
+        if (line[i] == ' ') {
+            if (!in_space) terminal_putchar(' ');
+            in_space = 1;
+        } else {
+            terminal_putchar(line[i]);
+            in_space = 0;
+        }
+    }
+}
 
-                                                                         
-    strcpy(info[0], "\x1b[92mshark\x1b[97m@\x1b[92msharkos");
-    strcpy(info[1], "\x1b[90m------------------------");
-
+static void shark_neofetch_show(void) {
+    char info[10][160];
+    for (uint32_t i = 0; i < 10; i++) info[i][0] = 0;
+    fetch_cat(info[0], "\x1b[1;96mroot@sharkos\x1b[0m");
+    fetch_cat(info[1], "\x1b[94m----------------\x1b[0m");
     fetch_kv(info[2], "OS");
-    fetch_cat(info[2], "SharkOS v2.1 (Suzuna) x86_64");
-
+#ifdef SERVER_IMAGE
+    fetch_cat(info[2], "SharkOS Server");
+#else
+    fetch_cat(info[2], "SharkOS");
+#endif
     fetch_kv(info[3], "Kernel");
-    fetch_cat(info[3], "Nemo-Kernel v0.0.7 (standalone, not UNIX/Linux)");
-
-    fetch_kv(info[4], "Uptime");
-    uint32_t up = uptime_ticks / TICKS_PER_SEC;
-    fetch_num(info[4], up / 3600); fetch_cat(info[4], "h ");
-    fetch_num(info[4], (up / 60) % 60); fetch_cat(info[4], "m ");
-    fetch_num(info[4], up % 60); fetch_cat(info[4], "s");
-
-    fetch_kv(info[5], "Shell");
-    fetch_cat(info[5], "nemo-shell");
-
+    fetch_cat(info[3], "Nemo Kernel, freestanding");
+    fetch_kv(info[4], "Shell");
+#ifdef SERVER_IMAGE
+    fetch_cat(info[4], "SharkOS Server console");
+#else
+    fetch_cat(info[4], "nemo-shell");
+#endif
+    fetch_kv(info[5], "Uptime");
+    uint32_t uptime = uptime_ticks / TICKS_PER_SEC;
+    fetch_num(info[5], uptime / 3600);
+    fetch_cat(info[5], "h ");
+    fetch_num(info[5], (uptime / 60) % 60);
+    fetch_cat(info[5], "m ");
+    fetch_num(info[5], uptime % 60);
+    fetch_cat(info[5], "s");
     fetch_kv(info[6], "CPU");
     char cpu[49];
     get_cpu_model(cpu);
     fetch_cat(info[6], cpu);
-
     fetch_kv(info[7], "Memory");
-    uint32_t total_mb = (uint32_t)(total_system_memory >> 20);
-    uintptr_t used = (free_memory_start > 0x100000u)
-                         ? free_memory_start - 0x100000u : 0;
-    fetch_num(info[7], (uint32_t)(used >> 20));
-    fetch_cat(info[7], " MiB / ");
-    fetch_num(info[7], total_mb);
+    uint64_t free_bytes = pmm_free_memory_bytes();
+    if (free_bytes > total_system_memory) free_bytes = total_system_memory;
+    fetch_num(info[7], (uint32_t)((total_system_memory - free_bytes) >> 20));
+    fetch_cat(info[7], " / ");
+    fetch_num(info[7], (uint32_t)(total_system_memory >> 20));
     fetch_cat(info[7], " MiB");
-
-    fetch_kv(info[8], "Disk");
-    fetch_cat(info[8], "shmfs ");
-    fetch_num(info[8], (uint32_t)pool_index);
-    fetch_cat(info[8], "/");
-    fetch_num(info[8], MAX_NODES);
-    fetch_cat(info[8], " nodes (in-memory)");
-
-    fetch_kv(info[9], "Tasks");
-    int tasks = 1;
-    for (task_t* t = task_list; t; t = t->next) tasks++;
-    fetch_num(info[9], (uint32_t)tasks);
-    fetch_cat(info[9], " running");
-
-    fetch_kv(info[10], "Display");
-    fetch_num(info[10], (uint32_t)screen_width);
-    fetch_cat(info[10], "x");
-    fetch_num(info[10], (uint32_t)screen_height);
-    fetch_cat(info[10], " @ 32bpp");
-
-    fetch_kv(info[11], "Theme");
-    fetch_cat(info[11], theme_get_name(theme_get_id()));
-
-    fetch_kv(info[12], "Wallpaper");
-    fetch_cat(info[12], desktop_wallpaper_name(desktop.wallpaper_id));
-    fetch_cat(info[12], " (");
-    fetch_cat(info[12], desktop.wallpaper_fit == 1 ? "fit"
-              : desktop.wallpaper_fit == 2 ? "stretch" : "fill");
-    fetch_cat(info[12], ")");
-
-    fetch_kv(info[13], "Network");
-    int has_nic = net_driver_name[0] && net_driver_name[0] != 'n';
-    if (has_nic) {
-        fetch_cat(info[13], net_driver_name);
-        fetch_cat(info[13], " ");
-        fetch_num(info[13], net_ip[0]); fetch_cat(info[13], ".");
-        fetch_num(info[13], net_ip[1]); fetch_cat(info[13], ".");
-        fetch_num(info[13], net_ip[2]); fetch_cat(info[13], ".");
-        fetch_num(info[13], net_ip[3]);
-        if (!net_has_link) fetch_cat(info[13], " (no link)");
-    } else {
-        fetch_cat(info[13], "no adapter");
+    fetch_kv(info[8], "Network");
+    if (!net_has_nic()) fetch_cat(info[8], "no adapter");
+    else {
+        fetch_cat(info[8], net_driver_name);
+        fetch_cat(info[8], " ");
+        if (net_configured) {
+            for (uint32_t i = 0; i < 4; i++) {
+                fetch_num(info[8], net_ip[i]);
+                if (i < 3) fetch_cat(info[8], ".");
+            }
+        } else fetch_cat(info[8], "DHCP pending");
     }
+    fetch_kv(info[9], "Firewall");
+    fetch_num(info[9], firewall_rule_count());
+    fetch_cat(info[9], firewall_rule_count() == 1 ? " rule, default " : " rules, default ");
+    fetch_cat(info[9], firewall_get_default() == FIREWALL_ACTION_ALLOW ? "allow" : "deny");
 
-    fetch_kv(info[14], "Font");
-    fetch_cat(info[14], "DejaVu Sans Mono 8x16");
-
-                                                                        
-    int cols = terminal_in_desktop_window ? desktop_terminal_cols
-                                          : (int)term_cols;
-    terminal_writestring("\n");
-    for (int r = 0; r < SHARK_ART_ROWS; r++) {
-        shark_fetch_row(shark_art[r], (cols >= 96) ? info[r] : NULL);
+#ifdef SERVER_IMAGE
+    int columns = desktop_terminal_cols;
+#else
+    int columns = terminal_in_desktop_window ? desktop_terminal_cols : (int)term_cols;
+#endif
+    int compact = columns > 0 && columns < 60;
+    int art_width = 0;
+    for (uint32_t i = 0; i < NEOFETCH_ART_ROWS; i++) {
+        int length = neofetch_line_width(neofetch_art[i], compact);
+        if (length > art_width) art_width = length;
     }
-    terminal_writestring(
-        " \x1b[90m###\x1b[91m ###\x1b[92m ###\x1b[93m ###"
-        "\x1b[94m ###\x1b[95m ###\x1b[96m ###\x1b[97m ###\x1b[0m\n\n");
-    if (cols < 96) {
-        for (int r = 0; r < SHARK_ART_ROWS; r++) {
-            if(info[r][0]){ terminal_writestring(info[r]); terminal_writestring("\n"); }
+    int info_column = art_width + 4;
+    int side_by_side = columns >= info_column + 56;
+    for (uint32_t row = 0; row < NEOFETCH_ART_ROWS; row++) {
+        terminal_writestring("\x1b[94m");
+        neofetch_write_art_line(neofetch_art[row], compact);
+        terminal_writestring("\x1b[0m");
+        if (side_by_side) {
+            int padding = info_column - neofetch_line_width(neofetch_art[row], compact);
+            while (padding-- > 0) terminal_putchar(' ');
+            if (row < 10) terminal_writestring(info[row]);
         }
-        terminal_writestring("\n");
+        terminal_putchar('\n');
     }
-    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    if (!side_by_side) {
+        terminal_putchar('\n');
+        for (uint32_t row = 0; row < 10; row++) {
+            terminal_writestring(info[row]);
+            terminal_putchar('\n');
+        }
+    }
+    terminal_writestring("\x1b[0m");
 }
+
+#ifndef SERVER_IMAGE
+static void cmd_sharkfetch(const char* args) {
+    (void)args;
+    shark_neofetch_show();
+}
+#endif
 
 static const cmd_entry_t cmd_table[] = {
     {"ls", cmd_ls},
@@ -921,26 +1884,43 @@ static const cmd_entry_t cmd_table[] = {
     {"cd", cmd_cd},
     {"pwd", cmd_pwd},
     {"cat", cmd_cat},
+    {"mkdir", cmd_mkdir},
+    {"touch", cmd_touch},
+    {"rm", cmd_rm},
+    {"rmdir", cmd_rmdir},
+    {"cp", cmd_cp},
+    {"mv", cmd_mv},
+    {"head", cmd_head},
+    {"tail", cmd_tail},
+    {"wc", cmd_wc},
     {"clear", cmd_clear},
     {"cls", cmd_clear},
     {"echo", cmd_echo},
+#ifndef SERVER_IMAGE
     {"edit", cmd_edit},
+#endif
     {"whoami", cmd_whoami},
     {"help", cmd_help},
     {"uname", cmd_uname},
     {"sysinfo", cmd_sysinfo},
     {"hostname", cmd_hostname},
+    {"devices", cmd_devices},
+    {"lspci", cmd_devices},
     {"ps", cmd_ps},
     {"htop", cmd_htop},
+#ifndef SERVER_IMAGE
     {"taskmanager", cmd_taskmanager},
     {"taskmgr", cmd_taskmanager},
     {"browser", cmd_browser},
     {"iexplore", cmd_browser},
     {"www", cmd_browser},
+#endif
     {"uptime", cmd_uptime},
     {"neofetch", cmd_neofetch},
+#ifndef SERVER_IMAGE
     {"sharkfetch", cmd_sharkfetch},
     {"sfetch", cmd_sharkfetch},
+#endif
     {"poweroff", cmd_poweroff},
     {"reboot", cmd_reboot},
     {"bokop", cmd_bokop},
@@ -948,6 +1928,11 @@ static const cmd_entry_t cmd_table[] = {
     {"dhcp", cmd_dhcp},
     {"ping", cmd_ping},
     {"wget", cmd_wget},
+    {"curl", cmd_curl},
+    {"websocket", cmd_websocket},
+    {"gcc", cmd_gcc},
+    {"mount", cmd_mount},
+    {"umount", cmd_umount},
     {"dns", cmd_dns},
     {"netstat", cmd_netstat},
     {"audio", cmd_audio},
@@ -966,7 +1951,36 @@ static cmd_handler_t find_command(const char* name) {
     return NULL;
 }
 
+#ifdef SERVER_IMAGE
+static int server_command_is_disabled(const char* cmd) {
+    char name[32];
+    uint32_t i = 0;
+    while (cmd[i] && cmd[i] != ' ' && i < sizeof(name) - 1) {
+        name[i] = cmd[i];
+        i++;
+    }
+    name[i] = 0;
+    static const char* disabled[] = {
+        "edit", "browser", "iexplore", "www", "taskmanager", "taskmgr",
+        "sharkfetch", "sfetch", "doom", "flappybird", "pong",
+        "gdash", "geometrydash", "sharkcube", "sharkcraft", "fnaf",
+        "guess", "tictactoe", "sl", "banner", "cowsay", "microsoft",
+        "wallpaper", "theme", "desktop", "settings", "notepad", "window"
+    };
+    for (uint32_t j = 0; j < sizeof(disabled) / sizeof(disabled[0]); j++) {
+        if (strcmp(name, disabled[j]) == 0) return 1;
+    }
+    return 0;
+}
+#endif
+
 void execute_command(char* cmd) {
+#ifdef SERVER_IMAGE
+    if (server_command_is_disabled(cmd)) {
+        terminal_writestring("This visual or game command is not included in the server image.\n");
+        return;
+    }
+#endif
     if (strlen(cmd) == 0) return;
     uint8_t old_color = terminal_color;
     terminal_putchar('\n');
@@ -1031,7 +2045,7 @@ void execute_command(char* cmd) {
             if (s == 0 || d == 0) {
                 terminal_writestring("Usage: grep <pattern> <file>");
             } else {
-                struct fs_node* target = find_node(current_dir, filename);
+                struct fs_node* target = fs_resolve_path(filename);
                 if (target && target->type == FS_FILE) {
                     int found = 0;
                     char line[128];
@@ -1063,7 +2077,7 @@ void execute_command(char* cmd) {
         if (strlen(args) == 0) {
             terminal_writestring("Usage: stat <file>");
         } else {
-            struct fs_node* target = find_node(current_dir, args);
+            struct fs_node* target = fs_resolve_path(args);
             if (target) {
                 terminal_writestring("File: ");
                 terminal_writestring(target->name);
@@ -1084,82 +2098,7 @@ void execute_command(char* cmd) {
             }
         }
     } else if (strcmp(cmd_name, "neofetch") == 0) {
-        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_BLUE, VGA_COLOR_BLACK));
-        terminal_writestring("\n");
-        terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡠⢄⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\n");
-        terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⢣⠀⠀⠉⣳⠤⠒⢊⠉⠉⠉⠉⡍⡉⠉⡐⠒⡲⢦⠀⠀\n");
-        terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣇⠔⠋⠀⠀⠀⡸⡄⠀⠀⠀⠠⣦⣇⡲⣪⣠⠋⠀⠀\n");
-        terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⠀⢀⡔⠁⠀⠀⠀⠀⠰⣃⣷⢆⠠⠒⢈⣵⣯⣿⠷⠃⠀⠀⠀\n");
-        terminal_writestring("       ⠀⠀⠀⠀⠀⠀⠀⣠⠊⠀⠀⠀⠀⡀⡠⠀⠀⣹⠁⠀⠀⢀⣀⠴⠊⠀⠀⠀⠀⠀\n");
-        terminal_writestring("       ⠀⠀⠀⠀⠀⠀⡰⠁⢀⠠⢄⣂⠥⢼⠀⠀⣠⠧⠒⠲⡊⢿⡆⠀⠀⠀⠀⠀⠀⠀\n");
-        terminal_writestring("       ⠀⠀⣠⠴⠒⡲⣡⡴⠗⠋⠁⠀⠀⢸⠀⡴⠁⠀⠀⠀⠙⡼⠃⠀⠀⠀⠀⠀⠀⠀\n");
-        terminal_writestring("       ⠀⠀⠉⠉⠒⡟⠉⡆⠀⠀⠀⠀⠀⠘⠼⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\n");
-        terminal_writestring("       ⠀⠀⠀⠀⠀⠸⣴⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\n");
-        terminal_writestring("\n");
-        terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
-
-        char buf[128];
-        uint32_t total_mb = (uint32_t)(total_system_memory >> 20);
-        uint32_t total_kb = (uint32_t)total_system_memory;
-        uint32_t free_kb = (uint32_t)(total_system_memory * 3 / 4);
-        uint32_t avail_kb = (uint32_t)(total_system_memory * 7 / 8);
-        uint32_t up_secs = uptime_ticks / TICKS_PER_SEC;
-        uint32_t hours = up_secs / 3600;
-        uint32_t mins = (up_secs % 3600) / 60;
-        uint32_t secs = up_secs % 60;
-        int task_count = 0;
-        task_t* t;
-        for (t = task_list; t; t = t->next) task_count++;
-
-        char cpu_model[49];
-        get_cpu_model(cpu_model);
-
-        terminal_writestring("\033[0;36m");
-        terminal_writestring("  OS: \033[0;37mSharkOS V2 - The Sharkslayer Edition\n");
-        terminal_writestring("\033[0;36m");
-        terminal_writestring("  Host: \033[0;37mSharkOS PC\n");
-        terminal_writestring("\033[0;36m");
-        terminal_writestring("  Kernel: \033[0;37mSharkOS V2.2\n");
-        terminal_writestring("\033[0;36m");
-        terminal_writestring("  Shell: \033[0;37mnemo-shell\n");
-        terminal_writestring("\033[0;36m");
-        terminal_writestring("  Resolution: \033[0;37m");
-        int_to_string(screen_width, buf); terminal_writestring(buf);
-        terminal_writestring("x");
-        int_to_string(screen_height, buf); terminal_writestring(buf);
-        terminal_writestring("\n");
-        terminal_writestring("\033[0;36m");
-        terminal_writestring("  CPU: \033[0;37m");
-        terminal_writestring(cpu_model);
-        terminal_writestring("\n");
-        terminal_writestring("\033[0;36m");
-        terminal_writestring("  CPU Speed: \033[0;37m2394.466 MHz\n");
-        terminal_writestring("\033[0;36m");
-        terminal_writestring("  Cache: \033[0;37m6144 KB\n");
-        terminal_writestring("\033[0;36m");
-        terminal_writestring("  Memory: \033[0;37m");
-        int_to_string(total_mb, buf); terminal_writestring(buf);
-        terminal_writestring(" MB\n");
-        terminal_writestring("\033[0;36m");
-        terminal_writestring("  Memory Free: \033[0;37m");
-        int_to_string((uint32_t)(free_kb >> 10), buf); terminal_writestring(buf);
-        terminal_writestring(" MB\n");
-        terminal_writestring("\033[0;36m");
-        terminal_writestring("  Memory Avail: \033[0;37m");
-        int_to_string((uint32_t)(avail_kb >> 10), buf); terminal_writestring(buf);
-        terminal_writestring(" MB\n");
-        terminal_writestring("\033[0;36m");
-        terminal_writestring("  Uptime: \033[0;37m");
-        int_to_string(hours, buf); terminal_writestring(buf); terminal_writestring("h ");
-        int_to_string(mins, buf); terminal_writestring(buf); terminal_writestring("m ");
-        int_to_string(secs, buf); terminal_writestring(buf); terminal_writestring("s\n");
-        terminal_writestring("\033[0;36m");
-        terminal_writestring("  Tasks: \033[0;37m");
-        int_to_string(task_count, buf); terminal_writestring(buf);
-        terminal_writestring("\n");
-        terminal_writestring("\033[0;36m");
-        terminal_writestring("  Theme: \033[0;37mSharkOS Blue\n");
-        terminal_writestring("\033[0;37m");
+        cmd_neofetch("");
     } else if (strcmp(cmd_name, "fortune") == 0) {
         const char* fortunes[] = {
             "🦈 The shark is always hungry.",
@@ -1186,7 +2125,7 @@ void execute_command(char* cmd) {
             terminal_writestring(args);
             terminal_writestring(" >\n ");
             for (i = 0; i < (int)strlen(args) + 2; i++) terminal_writestring("-");
-            terminal_writestring("\n        \\   ^__^\n         \\  (oo)\\_______\n            (__)\\       )\\/\\\n                ||----w |\n                ||     ||\n");
+            terminal_writestring("\n        \\   ^__^\n         \\  (oo)\\_______\n            (__)\\       )\\/\\n                ||----w |\n                ||     ||\n");
         }
     } else if (strcmp(cmd_name, "sl") == 0) {
         terminal_writestring("      ====        ________                ___________ \n  _/ _  \\_      /        \\   \\_    _/    /           \\ \n /    \\   \\    /    /\\    \\    \\  /     /    /\\    /\\ \n/     /    /  /    /  \\    \\    \\/     /    /  \\   \\ \\ \n\\     \\   /  /    /    \\    \\    /     /    /    \\   \\ \\ \n \\     \\/   /    /      \\    \\  /     /    /      \\   \\ \\ \n  \\        /    /        \\    \\/     /    /        \\   \\ \\ \n   \\______/____/__________\\____\\____/____/__________\\___\\ \\ \n");
@@ -1428,18 +2367,7 @@ void execute_command(char* cmd) {
                     if (!use_force) {
                         terminal_writestring("Protected: use rm force <name> to delete");
                     } else {
-                        int found = 0;
-                        for (i = 0; i < current_dir->num_children; i++) {
-                            if (current_dir->children[i] == target) {
-                                for (int j = i; j < current_dir->num_children - 1; j++) {
-                                    current_dir->children[j] = current_dir->children[j + 1];
-                                }
-                                current_dir->num_children--;
-                                found = 1;
-                                break;
-                            }
-                        }
-                        if (found) terminal_writestring("Removed.");
+                        if (fs_node_remove(target) == 0) terminal_writestring("Removed.");
                         else terminal_writestring("Could not remove.");
                     }
                 }
@@ -1481,9 +2409,11 @@ void execute_command(char* cmd) {
             if (source && source->type == FS_FILE) {
                 struct fs_node* copy = create_node(dst, FS_FILE, current_dir);
                 if (copy) {
-                    strcpy(copy->content, source->content);
-                    copy->content_len = source->content_len;
-                    terminal_writestring("Copied.");
+                    if (fs_node_write(copy, 0, source->content, (uint32_t)source->content_len) == 0) terminal_writestring("Copied.");
+                    else {
+                        fs_node_remove(copy);
+                        terminal_writestring("Copy failed.");
+                    }
                 }
             } else {
                 terminal_writestring("Source not found or is a directory.");
@@ -1998,7 +2928,7 @@ void execute_command(char* cmd) {
         terminal_writestring("  ╚══════════════════════════════════════════════════════════════╝\n");
         terminal_set_color(old_color);
     } else if (strcmp(cmd_name, "priv") == 0) {
-        uint64_t cr0_val, cr3_val;
+        uintptr_t cr0_val, cr3_val;
         asm volatile("mov %%cr0, %0" : "=r"(cr0_val));
         asm volatile("mov %%cr3, %0" : "=r"(cr3_val));
 
