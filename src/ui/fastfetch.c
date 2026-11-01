@@ -51,7 +51,7 @@ void show_fastfetch(void) {
         return;
     }
 
-    // Shark ASCII side-by-side like fastfetch
+     
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("       .      .::::::.      .       \n");
     terminal_set_color(vga_entry_color(VGA_COLOR_CYAN, VGA_COLOR_BLACK));
