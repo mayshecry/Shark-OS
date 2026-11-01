@@ -3,10 +3,17 @@
 void get_cpu_model(char* buffer) {
     uint32_t eax, ebx, ecx, edx;
     uint32_t* ptr = (uint32_t*)buffer;
+#ifdef SHARKOS_32BIT
+    uint32_t rflags_before, rflags_after;
+    uint32_t tmp;
+    asm volatile("pushfl; popl %0; movl %0, %1; xorl $0x200000, %1; pushl %1; popfl; pushfl; popl %1"
+        : "=r"(rflags_before), "=r"(tmp) : : "memory");
+#else
     uint64_t rflags_before, rflags_after;
     uint64_t tmp;
     asm volatile("pushfq; popq %0; movq %0, %1; xorq $0x200000, %1; pushq %1; popfq; pushfq; popq %1"
         : "=r"(rflags_before), "=r"(tmp) : : "memory");
+#endif
     rflags_after = tmp;
     if ((rflags_before ^ rflags_after) & 0x200000) {
         for (uint32_t i = 0; i < 3; i++) {
