@@ -776,6 +776,7 @@ void window_drag_update(int mx, int my) {
 
     int new_x = mx - w->drag_off_x;
     int new_y = my - w->drag_off_y;
+    if (new_x == old_x && new_y == old_y) return;
 
     int work_h = (int)screen_height - TASKBAR_HEIGHT;
     if (new_y < 0) new_y = 0;
@@ -812,6 +813,7 @@ void window_resize_update(int mx, int my) {
 
     int dx = mx - w->drag_off_x;
     int dy = my - w->drag_off_y;
+    if (dx == 0 && dy == 0) return;
 
     int new_x = w->rect.x;
     int new_y = w->rect.y;
