@@ -21,7 +21,7 @@ uint32_t* desktop_icon_get_pixels(int idx) {
 
 uint32_t* desktop_icon_pixels_for_type(window_type_t type) {
     int tid = theme_get_id();
-    // Window98 classic C0C0C0 bevel icons
+     
     if (tid == THEME_ID_WIN98) {
         switch (type) {
         case WINDOW_TYPE_TERMINAL:    return (uint32_t*)icon_data_terminal;
@@ -30,7 +30,7 @@ uint32_t* desktop_icon_pixels_for_type(window_type_t type) {
         case WINDOW_TYPE_PONG:        return (uint32_t*)icon_data_pong;
         case WINDOW_TYPE_GDASH:       return (uint32_t*)icon_data_gdash;
         case WINDOW_TYPE_SHARKCRAFT:  return (uint32_t*)icon_data_sharkcraft_w98;
-        case WINDOW_TYPE_SHARKCUBE:   return (uint32_t*)icon_data_sharkcraft_w98; // reuse sharkcraft W98 variant as cube fallback (distinct from smb)
+        case WINDOW_TYPE_SHARKCUBE:   return (uint32_t*)icon_data_sharkcraft_w98;  
         case WINDOW_TYPE_SMB:         return (uint32_t*)icon_data_smb;
         case WINDOW_TYPE_FNAF:        return (uint32_t*)icon_data_fnaf;
         case WINDOW_TYPE_SETTINGS:    return (uint32_t*)icon_data_settings;
@@ -39,14 +39,14 @@ uint32_t* desktop_icon_pixels_for_type(window_type_t type) {
         case WINDOW_TYPE_NETWORK:     return (uint32_t*)icon_data_network;
         case WINDOW_TYPE_TASKMANAGER: return (uint32_t*)icon_data_taskmanager;
         case WINDOW_TYPE_BROWSER:     return (uint32_t*)icon_data_browser;
-        case WINDOW_TYPE_DISKMGMT:    return (uint32_t*)icon_data_folder; // Win98 uses folder for Disk Mgmt
+        case WINDOW_TYPE_DISKMGMT:    return (uint32_t*)icon_data_folder;  
         case WINDOW_TYPE_FAQ:
         case WINDOW_TYPE_FASTFETCH:
         case WINDOW_TYPE_ABOUT:
         default:                      return (uint32_t*)icon_data_info;
         }
     }
-    // Modern sleek #1F2430 with flat minimal
+     
     if (tid == THEME_ID_MODERN) {
         switch (type) {
         case WINDOW_TYPE_TERMINAL:    return (uint32_t*)micon_terminal;
@@ -71,7 +71,7 @@ uint32_t* desktop_icon_pixels_for_type(window_type_t type) {
         default:                      return (uint32_t*)micon_info;
         }
     }
-    // Kawaii pastel candy theme
+     
     if (tid == THEME_ID_KAWAII) {
         switch (type) {
         case WINDOW_TYPE_TERMINAL:    return (uint32_t*)kawaii_icon_data_terminal;
@@ -96,7 +96,7 @@ uint32_t* desktop_icon_pixels_for_type(window_type_t type) {
         default:                      return (uint32_t*)kawaii_icon_data_info;
         }
     }
-    // WindowMaker dark clip #5B5E82 / #000000 flat
+     
     if (tid == THEME_ID_WINDOWMAKER) {
         switch (type) {
         case WINDOW_TYPE_TERMINAL:    return (uint32_t*)wm_icon_data_terminal;
@@ -121,7 +121,7 @@ uint32_t* desktop_icon_pixels_for_type(window_type_t type) {
         default:                      return (uint32_t*)wm_icon_data_info;
         }
     }
-    // fallback win98
+     
     return (uint32_t*)icon_data_info;
 }
 
