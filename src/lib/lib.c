@@ -31,8 +31,10 @@ int strcasecmp(const char* s1, const char* s2) {
     return 0;
 }
 
-void strcpy(char* dest, const char* src) {
-    while ((*dest++ = *src++));
+char* strcpy(char* dest, const char* src) {
+    char* original = dest;
+    while ((*dest++ = *src++)) { }
+    return original;
 }
 
 char* strchr(const char* s, int c) {
