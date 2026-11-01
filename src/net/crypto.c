@@ -425,3 +425,63 @@ void tls_random(uint8_t* out, size_t len) {
         sha256_final(&c, drbg_state);
     }
 }
+
+static uint64_t crypto_read_tsc(void) {
+    uint32_t low, high;
+    asm volatile("rdtsc" : "=a"(low), "=d"(high));
+    return ((uint64_t)high << 32) | low;
+}
+
+static void crypto_timing_random(uint8_t* out, size_t len) {
+    uint8_t entropy[64] = {0};
+    uint64_t previous = crypto_read_tsc();
+    for (uint32_t i = 0; i < 512; i++) {
+        volatile uint32_t spin = (uint32_t)(previous & 31u) + 1;
+        while (spin--) asm volatile("pause");
+        uint64_t current = crypto_read_tsc();
+        uint64_t delta = current - previous;
+        uint32_t a = i & 63u;
+        uint32_t b = (i * 13u + 17u) & 63u;
+        entropy[a] ^= (uint8_t)delta ^ (uint8_t)(uptime_ticks >> (i & 15u)) ^ (uint8_t)rtc_seconds;
+        entropy[b] = (uint8_t)((entropy[b] << 1) | (entropy[b] >> 7));
+        entropy[b] ^= (uint8_t)(current >> ((i & 7u) * 8u));
+        previous = current;
+    }
+    tls_random_seed(entropy, sizeof(entropy));
+    tls_random(out, len);
+    tls_random_seed(out, len);
+    memset(entropy, 0, sizeof(entropy));
+}
+
+int crypto_random_bytes(uint8_t* out, size_t len) {
+    if (!out && len) return -1;
+    if (!len) return 0;
+    uint32_t eax = 1, ebx, ecx = 0, edx;
+    asm volatile("cpuid" : "+a"(eax), "=b"(ebx), "+c"(ecx), "=d"(edx));
+    if (!(ecx & (1u << 30))) {
+        crypto_timing_random(out, len);
+        return 0;
+    }
+    while (len) {
+#ifdef SHARKOS_32BIT
+        uint32_t value = 0;
+#else
+        uint64_t value = 0;
+#endif
+        uint8_t ready = 0;
+        for (int attempt = 0; attempt < 10 && !ready; attempt++) {
+            asm volatile("rdrand %0; setc %1" : "=r"(value), "=qm"(ready));
+            asm volatile("pause");
+        }
+        if (!ready) {
+            crypto_timing_random(out, len);
+            return 0;
+        }
+        size_t take = len < sizeof(value) ? len : sizeof(value);
+        for (size_t i = 0; i < take; i++) out[i] = (uint8_t)(value >> (8 * i));
+        out += take;
+        len -= take;
+        value = 0;
+    }
+    return 0;
+}
