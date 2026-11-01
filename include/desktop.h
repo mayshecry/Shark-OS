@@ -291,6 +291,7 @@ void start_menu_get_rect(int* x, int* y, int* w, int* h);
 
 void app_window_draw_terminal(window_t* w);
 void app_window_draw_doom(window_t* w);
+void app_window_mouse_doom(window_t* w, int mx, int my, int buttons);
 void app_window_draw_flappybird(window_t* w);
 void app_window_draw_smb(window_t* w);
 void app_window_draw_pong(window_t* w);
@@ -313,6 +314,9 @@ void app_window_draw_faq(window_t* w);
 void app_window_draw_fastfetch(window_t* w);
 void app_window_draw_about(window_t* w);
 void app_window_draw_notepad(window_t* w);
+void notepad_open_file(const char* path);
+void notepad_open_node(struct fs_node* file);
+void notepad_cursor_tick(window_t* w);
 void app_window_draw_filemanager(window_t* w);
 void app_window_draw_network(window_t* w);
 void app_window_mouse_network(window_t* w, int mx, int my, int buttons);
