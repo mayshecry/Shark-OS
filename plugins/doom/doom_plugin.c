@@ -4,8 +4,8 @@
 plugin_info_t doom_plugin_info = {
     .version = 1,
     .name = "doom",
-    .author = "id Software",
-    .description = "Classic DOOM engine - 3D raycasting FPS. WASD move, Z/X turn, SPACE shoot, 1-5 weapons.",
+    .author = "DoomGeneric and SharkOS",
+    .description = "Doom engine with Freedoom Phase 1. Arrow keys move and turn, Ctrl fires, Space uses, Shift runs.",
     .major = 1,
     .minor = 0
 };
