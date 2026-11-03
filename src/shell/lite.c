@@ -1,6 +1,8 @@
 #include "kernel.h"
 #include "plugin_manager.h"
 #include "net.h"
+#include "firewall.h"
+#include "router.h"
 
 extern void ui_draw_chrome(void);
 extern void ui_fill_content_bg(void);
@@ -26,6 +28,8 @@ void lite_kmain(void) {
 
     net_init();
     net_stack_init();
+    firewall_init();
+    router_init();
 
     plugin_manager_init();
     extern int plugin_init_entry(void);
