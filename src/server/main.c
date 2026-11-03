@@ -6,6 +6,7 @@
 #include "httpd.h"
 #include "ssh.h"
 #include "firewall.h"
+#include "router.h"
 
 #define SERVER_MULTIBOOT_MAGIC 0x2BADB002u
 #define SERVER_MMAP_SNAPSHOT_SIZE 4096
@@ -304,190 +305,6 @@ static void server_container_command(char* text) {
         return;
     }
     terminal_writestring("unknown container action; use 'container help'\r\n");
-}
-
-static const char* server_firewall_protocol_name(uint8_t protocol) {
-    if (protocol == FIREWALL_PROTOCOL_TCP) return "tcp";
-    if (protocol == FIREWALL_PROTOCOL_UDP) return "udp";
-    if (protocol == FIREWALL_PROTOCOL_ICMP) return "icmp";
-    return "any";
-}
-
-static void server_firewall_list(void) {
-    terminal_writestring("input default policy: ");
-    terminal_writestring(firewall_get_default() == FIREWALL_ACTION_ALLOW ? "allow\r\n" : "deny\r\n");
-    terminal_writestring("new traffic limit: ");
-    if (firewall_get_rate_limit()) {
-        server_putdec(firewall_get_rate_limit());
-        terminal_writestring(" packets/sec per source\r\n");
-    } else terminal_writestring("off\r\n");
-    terminal_writestring("rate-limited drops: ");
-    server_putdec(firewall_rate_drop_count());
-    terminal_writestring("\r\n");
-    terminal_writestring("rules: ");
-    server_putdec(firewall_rule_count());
-    terminal_writestring("/16\r\n");
-    for (uint32_t i = 0; i < FIREWALL_RULE_LIMIT; i++) {
-        const firewall_rule_t* rule = firewall_get_rule(i);
-        if (!rule) continue;
-        server_putdec(i + 1);
-        terminal_writestring(" ");
-        terminal_writestring(rule->action == FIREWALL_ACTION_ALLOW ? "allow " : "deny ");
-        terminal_writestring(server_firewall_protocol_name(rule->protocol));
-        terminal_putchar(' ');
-        if (rule->port) server_putdec(rule->port);
-        else terminal_writestring("any");
-        if (rule->has_source) {
-            terminal_writestring(" from ");
-            server_print_ip(rule->source);
-        }
-        terminal_writestring("\r\n");
-    }
-}
-
-static void server_firewall_docs(void) {
-    terminal_writestring("SharkOS Server IPv4 input firewall\r\n");
-    terminal_writestring("Default policy is allow. Rules are ordered; the first match decides.\r\n");
-    terminal_writestring("Rule syntax: fw allow|deny <tcp|udp|icmp|any> [port|any] [from IPv4]\r\n");
-    terminal_writestring("TCP/UDP ports match destination ports. ICMP is protocol-wide; omit its port.\r\n");
-    terminal_writestring("Disable all incoming ICMP: run fw clear, then run fw deny icmp.\r\n");
-    terminal_writestring("Allow SSH only from 192.168.1.20: fw allow tcp 22 from 192.168.1.20\r\n");
-    terminal_writestring("Deny unmatched traffic, then allow SSH and ping with these commands:\r\n");
-    terminal_writestring("  fw clear\r\n  fw policy deny\r\n  fw allow tcp 22\r\n  fw allow icmp\r\n");
-    terminal_writestring("Block every unmatched protocol: fw policy deny\r\n");
-    terminal_writestring("Explicitly allow all traffic: fw allow any any. Explicitly deny it: fw deny any any.\r\n");
-    terminal_writestring("Rate limit new inbound packets per source: fw rate 20; disable: fw rate off\r\n");
-    terminal_writestring("Check policy, rules, rate and drops: fw status. Delete a rule: fw delete <id>.\r\n");
-    terminal_writestring("Remove rules only: fw clear. Maximum 16 rules. State resets at reboot.\r\n");
-    terminal_writestring("Rate limit counts inbound TCP SYN, UDP and ICMP echo requests; 64 sources/window.\r\n");
-    terminal_writestring("Limits: IPv6, fragments, persistence and bridged container frame filtering are absent.\r\n");
-}
-
-static void server_firewall_command(char* text) {
-    char* cursor = text;
-    char* action = server_next_word(&cursor);
-    if (!action || strcmp(action, "help") == 0) {
-        terminal_writestring("fw docs | status | rate <1-1000|off> | clear | policy allow|deny\r\n");
-        terminal_writestring("fw allow|deny <tcp|udp|icmp|any> [port|any] [from <ip>] | delete <id>\r\n");
-        return;
-    }
-    if (strcmp(action, "docs") == 0) {
-        server_firewall_docs();
-        return;
-    }
-    if (strcmp(action, "status") == 0 || strcmp(action, "list") == 0) {
-        server_firewall_list();
-        return;
-    }
-    if (strcmp(action, "rate") == 0) {
-        char* value = server_next_word(&cursor);
-        uint32_t rate = value && strcmp(value, "off") == 0 ? 0 : server_parse_uint(value, 0);
-        if (!value || (strcmp(value, "off") != 0 && (!rate || rate > 1000)) || server_next_word(&cursor)) {
-            terminal_writestring("usage: fw rate <1-1000|off>\r\n");
-            return;
-        }
-        firewall_set_rate_limit((uint16_t)rate);
-        if (rate) {
-            terminal_writestring("new inbound traffic limited to ");
-            server_putdec(rate);
-            terminal_writestring(" packets/sec per source\r\n");
-        } else terminal_writestring("new inbound traffic rate limit disabled\r\n");
-        return;
-    }
-    if (strcmp(action, "clear") == 0) {
-        firewall_clear_rules();
-        terminal_writestring("firewall rules cleared; policy and rate unchanged\r\n");
-        return;
-    }
-    if (strcmp(action, "policy") == 0) {
-        char* policy = server_next_word(&cursor);
-        if (policy && strcmp(policy, "allow") == 0) firewall_set_default(FIREWALL_ACTION_ALLOW);
-        else if (policy && strcmp(policy, "deny") == 0) firewall_set_default(FIREWALL_ACTION_DENY);
-        else {
-            terminal_writestring("usage: fw policy allow|deny\r\n");
-            return;
-        }
-        terminal_writestring("firewall input policy set to ");
-        terminal_writestring(firewall_get_default() == FIREWALL_ACTION_ALLOW ? "allow\r\n" : "deny\r\n");
-        return;
-    }
-    if (strcmp(action, "delete") == 0 || strcmp(action, "remove") == 0) {
-        char* id_text = server_next_word(&cursor);
-        uint32_t id = server_parse_uint(id_text, 0);
-        if (firewall_delete_rule(id) == 0) terminal_writestring("firewall rule deleted\r\n");
-        else terminal_writestring("invalid firewall rule number\r\n");
-        return;
-    }
-    uint8_t rule_action;
-    if (strcmp(action, "allow") == 0) rule_action = FIREWALL_ACTION_ALLOW;
-    else if (strcmp(action, "deny") == 0) rule_action = FIREWALL_ACTION_DENY;
-    else if (strcmp(action, "add") == 0) {
-        char* value = server_next_word(&cursor);
-        if (value && strcmp(value, "allow") == 0) rule_action = FIREWALL_ACTION_ALLOW;
-        else if (value && strcmp(value, "deny") == 0) rule_action = FIREWALL_ACTION_DENY;
-        else {
-            terminal_writestring("usage: fw add allow|deny <protocol> [port|any]\r\n");
-            return;
-        }
-    } else {
-        terminal_writestring("unknown firewall command; use 'fw docs'\r\n");
-        return;
-    }
-    char* protocol_text = server_next_word(&cursor);
-    uint8_t protocol;
-    if (protocol_text && strcmp(protocol_text, "tcp") == 0) protocol = FIREWALL_PROTOCOL_TCP;
-    else if (protocol_text && strcmp(protocol_text, "udp") == 0) protocol = FIREWALL_PROTOCOL_UDP;
-    else if (protocol_text && strcmp(protocol_text, "icmp") == 0) protocol = FIREWALL_PROTOCOL_ICMP;
-    else if (protocol_text && strcmp(protocol_text, "any") == 0) protocol = FIREWALL_PROTOCOL_ANY;
-    else {
-        terminal_writestring("protocol must be tcp, udp, icmp or any\r\n");
-        return;
-    }
-    char* port_text = server_next_word(&cursor);
-    char* source_keyword = NULL;
-    if (protocol == FIREWALL_PROTOCOL_ICMP && port_text && strcmp(port_text, "from") == 0) {
-        source_keyword = port_text;
-        port_text = NULL;
-    }
-    uint16_t port = 0;
-    if (protocol == FIREWALL_PROTOCOL_ICMP) {
-        if (port_text && strcmp(port_text, "any") != 0) {
-            terminal_writestring("ICMP rules are protocol-wide; omit the port or use any\r\n");
-            return;
-        }
-    } else if (port_text && strcmp(port_text, "any") != 0) {
-        uint32_t parsed_port = server_parse_uint(port_text, 0);
-        if (!parsed_port || parsed_port > 65535) {
-            terminal_writestring("port must be any or 1-65535\r\n");
-            return;
-        }
-        port = (uint16_t)parsed_port;
-    } else if (!port_text) {
-        terminal_writestring("port is required; use any for all ports\r\n");
-        return;
-    }
-    if (!source_keyword) source_keyword = server_next_word(&cursor);
-    uint8_t source[4];
-    const uint8_t* source_ptr = NULL;
-    if (source_keyword) {
-        char* source_text = server_next_word(&cursor);
-        if (strcmp(source_keyword, "from") != 0 || !source_text || !net_parse_ip4(source_text, source)) {
-            terminal_writestring("source filter syntax: from <ip>\r\n");
-            return;
-        }
-        if (server_next_word(&cursor)) {
-            terminal_writestring("too many firewall rule arguments\r\n");
-            return;
-        }
-        source_ptr = source;
-    }
-    int id = firewall_add_rule(rule_action, protocol, port, source_ptr);
-    if (id < 0) terminal_writestring("firewall rule table is full or invalid\r\n");
-    else {
-        terminal_writestring("added firewall rule ");
-        server_putdec((uint32_t)id);
-        terminal_writestring("\r\n");
-    }
 }
 
 static void server_container_network_command(char* command, char* args) {
@@ -797,7 +614,7 @@ static void server_execute_core(char* line) {
     if (*args) *args++ = 0;
     while (*args == ' ' || *args == '\t') args++;
     if (strcmp(line, "container") == 0) { server_container_command(args); return; }
-    if (strcmp(line, "fw") == 0 || strcmp(line, "firewall") == 0) { server_firewall_command(args); return; }
+    if (strcmp(line, "fw") == 0 || strcmp(line, "firewall") == 0) { fw_command(args); return; }
     if (strcmp(line, "httpd") == 0) {
         if (server_active_container >= 0) terminal_writestring("per-container HTTP service contexts are not attached\r\n");
         else server_httpd_command(args);
@@ -832,6 +649,7 @@ static void server_execute_core(char* line) {
     }
     if (strcmp(line, "help") == 0) {
         terminal_writestring("Server: container, fw docs/status/rate/allow/deny/policy/delete/clear, httpd, sshd\r\n");
+        terminal_writestring("Router: rtr start [port], rtr status, rtr help, rtr stop, rtr wan, rtr dhcp, rtr dns\r\n");
         terminal_writestring("Files: ls [-la] [dir], cd <dir>, pwd, cat <file>, nano <file>, tree, find, grep, stat\r\n");
         terminal_writestring("File operations: touch, mkdir, rm [force], mv <src> <dst>, cp <src> <dst>, head, tail, wc\r\n");
         terminal_writestring("System/network: help, whoami, uname, sysinfo, neofetch, uptime, devices, ifconfig, dhcp, ping, dns, netstat\r\n");
@@ -985,6 +803,7 @@ void kmain(uint32_t magic, struct server_multiboot_info* info) {
     firewall_init();
     net_init();
     net_stack_init();
+    router_init();
     ssh_server_init();
     ssh_server_set_password("root", "root123");
     current_dir = root;
@@ -1002,6 +821,7 @@ void kmain(uint32_t magic, struct server_multiboot_info* info) {
     terminal_writestring("  Configure up to four ports and document folders: httpd tui\r\n");
     terminal_writestring("  Check website services: httpd status\r\n");
     terminal_writestring("  System summary: neofetch    Firewall rules: fw docs\r\n");
+    terminal_writestring("  Router: rtr start (DHCP + DNS + WAN + NAT + web console on port 69)\r\n");
     terminal_writestring("  SSH default login: root / root123\r\n");
     terminal_writestring("  Warning: the default SSH password is weak; change it before exposing this host.\r\n");
     if (!ssh_server_has_host_key()) terminal_writestring("  SSH is not active; check adapter and CPU RDRAND support.\r\n");
