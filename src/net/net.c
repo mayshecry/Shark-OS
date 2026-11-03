@@ -16,7 +16,26 @@ uint8_t net_gw[4] = {0,0,0,0};
 uint8_t net_dns[4] = {0,0,0,0};
 int net_configured = 0;
 
+/* PCI address of the adapter that net_init() actually brought up. */
+static uint8_t net_active_bus = 0, net_active_slot = 0, net_active_func = 0;
+static int net_active_known = 0;
+static void net_mark_active(uint8_t bus, uint8_t slot, uint8_t func) {
+    net_active_bus = bus; net_active_slot = slot; net_active_func = func;
+    net_active_known = 1;
+}
+
 static net_rx_cb_t net_rx_cb = NULL;
+static net_service_hook_t net_service_cb_hook = NULL;
+static net_arp_hook_t net_arp_cb_hook = NULL;
+static net_local_ip_hook_t net_local_cb_hook = NULL;
+static net_forward_hook_t net_forward_cb_hook = NULL;
+static net_poll_hook_t net_poll_cb_hook = NULL;
+
+void net_set_service_hook(net_service_hook_t cb) { net_service_cb_hook = cb; }
+void net_set_arp_hook(net_arp_hook_t cb)       { net_arp_cb_hook = cb; }
+void net_set_local_ip_hook(net_local_ip_hook_t cb) { net_local_cb_hook = cb; }
+void net_set_forward_hook(net_forward_hook_t cb) { net_forward_cb_hook = cb; }
+void net_set_poll_hook(net_poll_hook_t cb)     { net_poll_cb_hook = cb; }
 
 static int net_snprintf(char* buf, int size, const char* fmt, ...) {
     __builtin_va_list ap;
@@ -893,6 +912,7 @@ static int r8169_init(uint8_t bus, uint8_t slot, uint8_t func, uint16_t did) {
 }
 
 void net_send_raw(const uint8_t* data, uint32_t len) {
+    if (!firewall_output_allowed(data, len)) return;
     firewall_track_outbound(data, len);
     if (r8169_present) r8169_send(data, len);
     else if (rtl_present) rtl_send(data, len);
@@ -903,6 +923,7 @@ void net_send_raw(const uint8_t* data, uint32_t len) {
 static void dhcp_tick(void);
 
 void net_poll(void) {
+    if (net_poll_cb_hook) net_poll_cb_hook();
     if (r8169_present) r8169_poll();
     else if (rtl_present) rtl_poll();
     else if (pcnet_present) pn_poll();
@@ -924,7 +945,10 @@ void net_init(void) {
                 uint32_t hdr = pci_config_read(bus, slot, func, 0x0C);
 
                 if (vid == 0x10EC && (did == 0x8168 || did == 0x8169)) {
-                    if (r8169_init((uint8_t)bus, (uint8_t)slot, (uint8_t)func, did)) return;
+                    if (r8169_init((uint8_t)bus, (uint8_t)slot, (uint8_t)func, did)) {
+                        net_mark_active((uint8_t)bus, (uint8_t)slot, (uint8_t)func);
+                        return;
+                    }
                 }
                 if (vid == 0x10EC && did == 0x8139) {
                     uint32_t bar0 = pci_config_read(bus, slot, func, 0x10);
@@ -936,6 +960,7 @@ void net_init(void) {
                     rtl_present = true;
                     rtl_reset();
                     rtl_init_chip();
+                    net_mark_active((uint8_t)bus, (uint8_t)slot, (uint8_t)func);
                     return;
                 }
                 if (vid == 0x1022 && (did == 0x2000 || did == 0x2001)) {
@@ -949,7 +974,10 @@ void net_init(void) {
                     strcpy(net_driver_name, did == 0x2001 ? "AMD PCnet-Home" : "AMD PCnet-PCI II/FAST III");
                     pcnet_present = true;
                     pn_init_chip();
-                    if (pcnet_present) return;
+                    if (pcnet_present) {
+                        net_mark_active((uint8_t)bus, (uint8_t)slot, (uint8_t)func);
+                        return;
+                    }
                 }
                 if (vid == 0x8086 && e1000_is_supported(did)) {
                     uint32_t bar0 = pci_config_read(bus, slot, func, 0x10);
@@ -966,7 +994,10 @@ void net_init(void) {
                                                "Intel 8254x (e1000)");
                         e1000_present = true;
                         e1000_init_chip();
-                        if (e1000_present) return;
+                        if (e1000_present) {
+                            net_mark_active((uint8_t)bus, (uint8_t)slot, (uint8_t)func);
+                            return;
+                        }
                     }
                 }
                 if (func == 0 && (hdr & 0x00800000) == 0) break;
@@ -974,6 +1005,87 @@ void net_init(void) {
         }
     }
     strcpy(net_driver_name, "none");
+}
+
+/* ------------------------------------------------------------------ */
+/* physical adapter inventory                                         */
+/* ------------------------------------------------------------------ */
+
+static net_port_t net_ports[NET_PORT_LIMIT];
+static uint32_t net_port_num = 0;
+
+static void net_port_ifname(const char* prefix, uint32_t index, char out[NET_PORT_IFNAME_SIZE]) {
+    uint32_t n = 0;
+    while (prefix[n] && n < NET_PORT_IFNAME_SIZE - 2) { out[n] = prefix[n]; n++; }
+    out[n++] = (char)('0' + (index % 10));
+    out[n] = 0;
+}
+
+static void net_port_driver_copy(char out[NET_PORT_DRIVER_SIZE], const char* text) {
+    uint32_t n = 0;
+    while (text[n] && n < NET_PORT_DRIVER_SIZE - 1) { out[n] = text[n]; n++; }
+    out[n] = 0;
+}
+
+static const char* net_port_label(uint16_t vid, uint16_t did) {
+    if (vid == 0x10EC) {
+        if (did == 0x8169) return "Realtek RTL8169";
+        if (did == 0x8168) return "Realtek RTL8111/8168";
+        if (did == 0x8139) return "Realtek RTL8139";
+        if (did == 0x8029) return "Realtek RTL8029 (NE2000)";
+    }
+    if (vid == 0x1022 && (did == 0x2000 || did == 0x2001)) return "AMD PCnet";
+    if (vid == 0x8086 && e1000_is_supported(did)) return "Intel PRO/1000 (e1000)";
+    if ((vid == 0x1AF4 && did == 0x1000)) return "virtio-net";
+    if (did == 0x0940) return "NE2000-compatible";
+    return 0;
+}
+
+void net_port_scan(void) {
+    net_port_num = 0;
+    memset(net_ports, 0, sizeof(net_ports));
+    uint32_t family_index[5] = {0, 0, 0, 0, 0};
+    for (uint32_t bus = 0; bus < 256 && net_port_num < NET_PORT_LIMIT; bus++) {
+        for (uint32_t slot = 0; slot < 32 && net_port_num < NET_PORT_LIMIT; slot++) {
+            for (uint32_t func = 0; func < 8 && net_port_num < NET_PORT_LIMIT; func++) {
+                uint32_t d = pci_config_read((uint8_t)bus, (uint8_t)slot, (uint8_t)func, 0);
+                if (d == 0xFFFFFFFFu) { if (func == 0) break; else continue; }
+                uint16_t vid = (uint16_t)(d & 0xFFFFu);
+                uint16_t did = (uint16_t)(d >> 16);
+                const char* label = net_port_label(vid, did);
+                if (label) {
+                    net_port_t* p = &net_ports[net_port_num];
+                    const char* prefix = "eth";
+                    uint32_t family = 4;
+                    if (vid == 0x8086) { prefix = "em"; family = 0; }
+                    else if (vid == 0x10EC) { prefix = "re"; family = 1; }
+                    else if (vid == 0x1AF4) { prefix = "vtnet"; family = 2; }
+                    else if (vid == 0x1022) { prefix = "pcn"; family = 3; }
+                    net_port_ifname(prefix, family_index[family]++, p->ifname);
+                    net_port_driver_copy(p->driver, label);
+                    p->vendor = vid; p->device = did;
+                    p->bus = (uint8_t)bus; p->slot = (uint8_t)slot; p->func = (uint8_t)func;
+                    if (net_active_known && p->bus == net_active_bus &&
+                        p->slot == net_active_slot && p->func == net_active_func) {
+                        p->active = 1;
+                        p->link = net_has_link ? 1 : 0;
+                        memcpy(p->mac, net_mac, 6);
+                    }
+                    net_port_num++;
+                }
+                if (func == 0 && (pci_config_read((uint8_t)bus, (uint8_t)slot,
+                                                 (uint8_t)func, 0x0C) & 0x00800000u) == 0) break;
+            }
+        }
+    }
+}
+
+uint32_t net_port_count(void) { return net_port_num; }
+
+int net_port_get(uint32_t index, net_port_t* out) {
+    if (index >= net_port_num || !out) return -1;
+    *out = net_ports[index];
+    return 0;
 }
 
 static int my_memcmp(const void* a, const void* b, int n) {
@@ -1020,6 +1132,51 @@ static uint32_t build_eth(uint8_t* pkt, const uint8_t* dstmac, uint16_t ethertyp
     pkt[12] = (ethertype >> 8) & 0xFF;
     pkt[13] = ethertype & 0xFF;
     return 14;
+}
+
+/* Full UDP checksum (IPv4 pseudo header + UDP header + payload). */
+static uint16_t net_udp_checksum(const uint8_t* src, const uint8_t* dst,
+                                 const uint8_t* udp, uint32_t udp_len) {
+    uint32_t sum = 0;
+    for (uint32_t i = 0; i < 4; i += 2) sum += ((uint32_t)src[i] << 8) | src[i + 1];
+    for (uint32_t i = 0; i < 4; i += 2) sum += ((uint32_t)dst[i] << 8) | dst[i + 1];
+    sum += IP_UDP;
+    sum += udp_len;
+    for (uint32_t i = 0; i < udp_len; i += 2)
+        sum += ((uint32_t)udp[i] << 8) | ((i + 1 < udp_len) ? udp[i + 1] : 0);
+    while (sum >> 16) sum = (sum & 0xFFFFu) + (sum >> 16);
+    uint16_t result = (uint16_t)(~sum & 0xFFFFu);
+    return result ? result : 0xFFFFu;
+}
+
+int net_send_udp(const uint8_t* dst_mac, const uint8_t* src_ip, const uint8_t* dst_ip,
+                 uint16_t src_port, uint16_t dst_port,
+                 const uint8_t* data, uint32_t len) {
+    if (!dst_mac || !src_ip || !dst_ip || (!data && len) || len > 1472) return -1;
+    static uint8_t pkt[1514];
+    uint32_t off = build_eth(pkt, dst_mac, ETH_IP);
+    uint8_t* ip = pkt + off;
+    uint16_t udp_len = (uint16_t)(8 + len);
+    uint16_t total_len = (uint16_t)(20 + udp_len);
+    memset(ip, 0, 20);
+    ip[0] = 0x45;
+    ip[2] = (uint8_t)(total_len >> 8); ip[3] = (uint8_t)total_len;
+    ip[4] = (uint8_t)(uptime_ticks >> 8); ip[5] = (uint8_t)uptime_ticks;
+    ip[6] = 0x40; ip[8] = 0x40; ip[9] = IP_UDP;
+    memcpy(ip + 12, src_ip, 4);
+    memcpy(ip + 16, dst_ip, 4);
+    uint16_t ipc = csum16(ip, 20);
+    ip[10] = (uint8_t)(ipc >> 8); ip[11] = (uint8_t)ipc;
+    uint8_t* udp = ip + 20;
+    udp[0] = (uint8_t)(src_port >> 8); udp[1] = (uint8_t)src_port;
+    udp[2] = (uint8_t)(dst_port >> 8); udp[3] = (uint8_t)dst_port;
+    udp[4] = (uint8_t)(udp_len >> 8); udp[5] = (uint8_t)udp_len;
+    udp[6] = 0; udp[7] = 0;
+    if (len) memcpy(udp + 8, data, len);
+    uint16_t udpc = net_udp_checksum(src_ip, dst_ip, udp, udp_len);
+    udp[6] = (uint8_t)(udpc >> 8); udp[7] = (uint8_t)udpc;
+    net_send_raw(pkt, off + total_len);
+    return (int)len;
 }
 
 #define ARP_CACHE_LIMIT 32
@@ -1089,9 +1246,8 @@ static void arp_send_reply(const uint8_t* dst_mac, const uint8_t* dst_ip) {
     net_send_raw(pkt, 42);
 }
 
-int net_arp_resolve(const uint8_t* ip, uint8_t* mac) {
-    if (arp_lookup(ip, mac)) return 1;
-    if (!net_has_link) return 0;
+void net_arp_request(const uint8_t* ip) {
+    if (!ip || !net_has_link) return;
     uint8_t bc[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
     uint8_t pkt[42];
     uint32_t off = build_eth(pkt, bc, ETH_ARP);
@@ -1104,11 +1260,36 @@ int net_arp_resolve(const uint8_t* ip, uint8_t* mac) {
     for (int i = 0; i < 6; i++) pkt[off + 18 + i] = 0;
     for (int i = 0; i < 4; i++) pkt[off + 24 + i] = ip[i];
     net_send_raw(pkt, 42);
+}
+
+int net_arp_cache_lookup(const uint8_t* ip, uint8_t* mac_out) {
+    if (!ip || !mac_out) return 0;
+    return arp_lookup(ip, mac_out);
+}
+
+int net_route_mac(const uint8_t* ip, uint8_t* mac_out) {
+    if (!ip || !mac_out) return 0;
+    int local = net_configured;
+    if (local) {
+        for (int i = 0; i < 4; i++) {
+            if ((ip[i] & net_mask[i]) != (net_ip[i] & net_mask[i])) { local = 0; break; }
+        }
+    }
+    const uint8_t* next_hop = local ? ip : net_gw;
+    if (arp_lookup(next_hop, mac_out)) return 1;
+    net_arp_request(next_hop);
+    return 0;
+}
+
+int net_arp_resolve(const uint8_t* ip, uint8_t* mac) {
+    if (arp_lookup(ip, mac)) return 1;
+    if (!net_has_link) return 0;
+    net_arp_request(ip);
     for (int attempt = 0; attempt < 4; attempt++) {
         delay_ms(300);
         net_poll();
         if (arp_lookup(ip, mac)) return 1;
-        net_send_raw(pkt, 42);
+        net_arp_request(ip);
     }
     return 0;
 }
@@ -1144,7 +1325,7 @@ static void dhcp_recv(const uint8_t* payload, uint32_t len, const uint8_t* src_i
 static uint8_t icmp_reply_buf[1536];
 
 static void icmp_send_echo_reply(const uint8_t* frame, const uint8_t* icmp,
-                                 uint32_t icmp_len) {
+                                 uint32_t icmp_len, const uint8_t* local_ip) {
     if (icmp_len < 8 || icmp_len > 1480) return;
     uint8_t* pkt = icmp_reply_buf;
     uint32_t off = build_eth(pkt, &frame[6], ETH_IP);
@@ -1154,7 +1335,7 @@ static void icmp_send_echo_reply(const uint8_t* frame, const uint8_t* icmp,
     ip[2] = (tlen >> 8) & 0xFF; ip[3] = tlen & 0xFF;
     ip[4] = 0; ip[5] = 0; ip[6] = 0x40; ip[7] = 0;
     ip[8] = 0x40; ip[9] = IP_ICMP; ip[10] = 0; ip[11] = 0;
-    for (int i = 0; i < 4; i++) ip[12 + i] = net_ip[i];
+    for (int i = 0; i < 4; i++) ip[12 + i] = local_ip[i];
     for (int i = 0; i < 4; i++) ip[16 + i] = frame[14 + 12 + i];
     uint16_t ic = csum16(ip, 20);
     ip[10] = (ic >> 8) & 0xFF; ip[11] = ic & 0xFF;
@@ -1170,6 +1351,7 @@ static void icmp_send_echo_reply(const uint8_t* frame, const uint8_t* icmp,
 
 static int ip_is_for_us(const uint8_t* dip) {
     if (dip[0] == 255 && dip[1] == 255 && dip[2] == 255 && dip[3] == 255) return 1;
+    if (net_local_cb_hook && net_local_cb_hook(dip)) return 1;
     if (!net_configured) return 1;
     if (my_memcmp(dip, net_ip, 4) == 0) return 1;
 
@@ -1184,8 +1366,19 @@ static int ip_is_for_us(const uint8_t* dip) {
 static void net_on_frame(const uint8_t* frame, uint32_t len) {
     if (len < 14) return;
     net_vnic_rx_frame(frame, len);
-    if (!firewall_input_allowed(frame, len)) return;
     uint16_t et = (uint16_t)((frame[12] << 8) | frame[13]);
+
+    /* Frames not addressed to this host are handed to the router's
+     * forwarding hook (if any) instead of the INPUT firewall. */
+    if (et == ETH_IP && len >= 14 + 20 && (frame[14] >> 4) == 4) {
+        uint32_t early_ihl = (uint32_t)((frame[14] & 0x0F) * 4);
+        if (early_ihl >= 20 && len >= 14 + early_ihl && !ip_is_for_us(&frame[14 + 16])) {
+            if (net_forward_cb_hook && firewall_forward_allowed(frame, len))
+                net_forward_cb_hook(frame, len);
+            return;
+        }
+    }
+    if (!firewall_input_allowed(frame, len)) return;
 
     if (et == ETH_ARP) {
         if (len < 14 + 28) return;
@@ -1197,7 +1390,7 @@ static void net_on_frame(const uint8_t* frame, uint32_t len) {
             arp_add(sip, smac);
         } else if (op == ARP_REQ) {
             arp_add(sip, smac);
-
+            if (net_arp_cb_hook && net_arp_cb_hook(tip, smac, sip)) return;
             if (net_configured && my_memcmp(tip, net_ip, 4) == 0) {
                 arp_send_reply(smac, sip);
             }
@@ -1222,12 +1415,22 @@ static void net_on_frame(const uint8_t* frame, uint32_t len) {
 
         if (proto == IP_ICMP) {
             if (plen < 8) return;
-            if (payload[0] == 8 && net_configured && my_memcmp(dip, net_ip, 4) == 0) {
-                icmp_send_echo_reply(frame, payload, plen);
+            uint16_t echo_id = (uint16_t)((payload[4] << 8) | payload[5]);
+            if (net_service_cb_hook && net_service_cb_hook(frame, len, sip, dip,
+                                                          echo_id, echo_id, proto)) return;
+            int local_address = my_memcmp(dip, net_ip, 4) == 0 ||
+                                (net_local_cb_hook && net_local_cb_hook(dip));
+            if (payload[0] == 8 && net_configured && local_address) {
+                icmp_send_echo_reply(frame, payload, plen, dip);
             } else if (payload[0] == 0 && icmp_cb) {
                 icmp_cb(payload, plen, sip);
             }
         } else if (proto == IP_TCP) {
+            if (plen < 20) return;
+            uint16_t tcp_sport = (uint16_t)((payload[0] << 8) | payload[1]);
+            uint16_t tcp_dport = (uint16_t)((payload[2] << 8) | payload[3]);
+            if (net_service_cb_hook && net_service_cb_hook(frame, len, sip, dip,
+                                                          tcp_sport, tcp_dport, proto)) return;
             if (tcp_cb) tcp_cb(payload, plen, sip);
             tcp_server_on_segment(payload, plen, sip);
         } else if (proto == IP_UDP) {
@@ -1238,6 +1441,8 @@ static void net_on_frame(const uint8_t* frame, uint32_t len) {
             if (ulen < 8 || ulen > plen) return;
             const uint8_t* udata = payload + 8;
             uint32_t ulen_data = (uint32_t)ulen - 8;
+            if (net_service_cb_hook && net_service_cb_hook(frame, len, sip, dip,
+                                                          sport, dport, proto)) return;
             if (dport == 68 && sport == 67) {
                 dhcp_recv(udata, ulen_data, sip);
             } else if (udp_cb) {
@@ -1763,6 +1968,8 @@ static void tcp_server_on_segment(const uint8_t* payload, uint32_t len, const ui
     if ((flags & 0x01) && seq + dlen == c->recv_seq) { c->recv_seq++; c->peer_closed = 1; }
     if (dlen || (flags & 0x01)) tcp_server_emit(c, c->send_seq, 0x10, NULL, 0);
 }
+
+int net_tcp_is_listening(uint16_t port) { return tcp_server_is_listening(port); }
 
 int net_tcp_listen(uint16_t port) {
     if (!port) return -1;
@@ -2698,7 +2905,7 @@ void net_cmd_netstat(void) {
 }
 
 enum { DHCP_INIT = 0, DHCP_SELECTING, DHCP_REQUESTING, DHCP_BOUND,
-       DHCP_RENEWING, DHCP_REBINDING, DHCP_LINKLOCAL };
+       DHCP_RENEWING, DHCP_REBINDING, DHCP_LINKLOCAL, DHCP_DISABLED };
 
 static volatile int dhcp_state = DHCP_INIT;
 static uint32_t dhcp_xid = 0;
@@ -2952,6 +3159,7 @@ static void dhcp_use_linklocal(void) {
 }
 
 static void dhcp_tick(void) {
+    if (dhcp_state == DHCP_DISABLED) return;
 
     if (net_has_link != dhcp_had_link) {
         dhcp_had_link = net_has_link;
@@ -3084,4 +3292,25 @@ int net_dhcp(void) {
 
 void net_cmd_dhcp(void) {
     net_dhcp();
+}
+
+int net_dhcp_is_disabled(void) { return dhcp_state == DHCP_DISABLED; }
+
+void net_dhcp_stop(void) {
+    dhcp_state = DHCP_DISABLED;
+    dhcp_verbose = 0;
+    dhcp_lease_secs = 0;
+    dhcp_log("disabled (static WAN)");
+}
+
+int net_set_static_config(const uint8_t* ip, const uint8_t* mask,
+                          const uint8_t* gw, const uint8_t* dns) {
+    if (!ip || !mask) return -1;
+    net_dhcp_stop();
+    memcpy(net_ip, ip, 4);
+    memcpy(net_mask, mask, 4);
+    if (gw) memcpy(net_gw, gw, 4); else memset(net_gw, 0, 4);
+    if (dns) memcpy(net_dns, dns, 4); else memset(net_dns, 0, 4);
+    net_configured = 1;
+    return 0;
 }
