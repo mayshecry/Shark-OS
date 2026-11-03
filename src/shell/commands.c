@@ -4,6 +4,7 @@
 #include "doom.h"
 #include "net.h"
 #include "firewall.h"
+#include "router.h"
 #include "desktop.h"
 #include "theme.h"
 #include "ata.h"
@@ -676,7 +677,7 @@ static void cmd_help(const char* args) {
     terminal_writestring("File operations: touch, mkdir, rm [force], rmdir, mv <src> <dst>, cp <src> <dst>, head, tail, wc\n");
     terminal_writestring("System: whoami, uname, sysinfo, neofetch, uptime, devices, ps, htop, reboot, poweroff\n");
     terminal_writestring("Network: ifconfig, dhcp, ping, dns, netstat, curl, wget\n");
-    terminal_writestring("Services: container, fw docs, httpd, sshd\n");
+    terminal_writestring("Services: container, fw docs, rtr start|status|help, httpd, sshd\n");
     terminal_writestring("GUI apps and ATA/FAT16 mounting are not included in this Server image.\n");
     return;
 #else
@@ -690,6 +691,10 @@ static void cmd_help(const char* args) {
     terminal_writestring("SYSTEM      - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     terminal_writestring("whoami, sysinfo, kernelinfo, colors, devices/lspci, ps, taskmanager, kill, exec\n");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    terminal_writestring("NETWORK     - ");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    terminal_writestring("ifconfig, dhcp, ping, dns, netstat, rtr, fw\n");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("RING 0      - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
@@ -1878,6 +1883,9 @@ static void cmd_sharkfetch(const char* args) {
 }
 #endif
 
+static void cmd_rtr(const char* args) { router_command(args); }
+static void cmd_fw(const char* args)  { fw_command(args); }
+
 static const cmd_entry_t cmd_table[] = {
     {"ls", cmd_ls},
     {"dir", cmd_ls},
@@ -1895,6 +1903,10 @@ static const cmd_entry_t cmd_table[] = {
     {"wc", cmd_wc},
     {"clear", cmd_clear},
     {"cls", cmd_clear},
+    {"rtr", cmd_rtr},
+    {"router", cmd_rtr},
+    {"fw", cmd_fw},
+    {"firewall", cmd_fw},
     {"echo", cmd_echo},
 #ifndef SERVER_IMAGE
     {"edit", cmd_edit},
