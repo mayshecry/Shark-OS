@@ -17,6 +17,31 @@ extern int net_configured;
 void net_init(void);
 int net_has_nic(void);
 
+/* Physical adapter inventory. net_port_scan() walks the PCI config space and
+ * records every network controller it recognises; only one of them is the
+ * driver currently attached (active). The router uses this list to pick its
+ * uplink adapter and, when a second adapter exists, its LAN port. */
+#define NET_PORT_LIMIT        4
+#define NET_PORT_IFNAME_SIZE  8
+#define NET_PORT_DRIVER_SIZE  32
+
+typedef struct {
+    char     ifname[NET_PORT_IFNAME_SIZE];   /* em0, re1, vtnet0, ... */
+    char     driver[NET_PORT_DRIVER_SIZE];   /* human readable adapter name */
+    uint8_t  mac[6];
+    uint16_t vendor;
+    uint16_t device;
+    uint8_t  bus;
+    uint8_t  slot;
+    uint8_t  func;
+    uint8_t  active;      /* 1 = the adapter the kernel driver transmits on */
+    uint8_t  link;        /* 1 = link reported up */
+} net_port_t;
+
+void     net_port_scan(void);
+uint32_t net_port_count(void);
+int      net_port_get(uint32_t index, net_port_t* out);
+
 void net_stack_init(void);
 
 void net_poll(void);
@@ -50,6 +75,58 @@ void net_vnic_poll(void);
 typedef void (*net_rx_cb_t)(const uint8_t* frame, uint32_t len);
 void net_set_rx_callback(net_rx_cb_t cb);
 
+/* ------------------------------------------------------------------------
+ * Service hooks used by the SharkOS router (src/net/router.c). The core
+ * stack stays independent from the router: it only calls these callbacks
+ * when they have been registered. All of them are optional.
+ * ------------------------------------------------------------------------ */
+
+/* L4 service hook: called for TCP and UDP datagrams addressed to this host
+ * before the built-in clients/servers see them. Return 1 when consumed.
+ * `frame` is the full ethernet frame, so a service can reply to the sender
+ * MAC and parse BOOTP/DNS/TCP headers itself. */
+typedef int (*net_service_hook_t)(const uint8_t* frame, uint32_t frame_len,
+                                  const uint8_t* src_ip, const uint8_t* dst_ip,
+                                  uint16_t src_port, uint16_t dst_port,
+                                  uint8_t protocol);
+void net_set_service_hook(net_service_hook_t cb);
+
+/* ARP hook: return 1 when a reply was produced for target_ip. */
+typedef int (*net_arp_hook_t)(const uint8_t* target_ip, const uint8_t* sender_mac,
+                              const uint8_t* sender_ip);
+void net_set_arp_hook(net_arp_hook_t cb);
+
+/* Extra local IPv4 addresses (router LAN address, WAN address, ...). */
+typedef int (*net_local_ip_hook_t)(const uint8_t* ip);
+void net_set_local_ip_hook(net_local_ip_hook_t cb);
+
+/* IPv4 forwarding hook: called for frames that are not addressed to us. */
+typedef int (*net_forward_hook_t)(const uint8_t* frame, uint32_t len);
+void net_set_forward_hook(net_forward_hook_t cb);
+
+/* Periodic hook called from net_poll(); used to age leases/DNS/NAT state
+ * and to poll the management HTTP server. */
+typedef void (*net_poll_hook_t)(void);
+void net_set_poll_hook(net_poll_hook_t cb);
+
+/* Build and transmit a complete ethernet/IPv4/UDP datagram. Used by the
+ * DHCP server, DNS server and DNS forwarder. */
+int net_send_udp(const uint8_t* dst_mac, const uint8_t* src_ip, const uint8_t* dst_ip,
+                 uint16_t src_port, uint16_t dst_port,
+                 const uint8_t* data, uint32_t len);
+
+/* Non-blocking ARP helpers (no polling, safe to call from rx hooks). */
+int net_arp_cache_lookup(const uint8_t* ip, uint8_t* mac_out);
+int net_route_mac(const uint8_t* ip, uint8_t* mac_out);
+void net_arp_request(const uint8_t* ip);
+
+/* WAN management. */
+void net_dhcp_stop(void);
+int  net_dhcp_is_disabled(void);
+int net_set_static_config(const uint8_t* ip, const uint8_t* mask,
+                          const uint8_t* gw, const uint8_t* dns);
+
+
 int net_dhcp(void);
 void net_dhcp_start(void);
 const char* net_dhcp_status(void);
@@ -70,6 +147,7 @@ int net_tcp_connect(const uint8_t* ip, uint16_t port,
 int net_tcp_open(const uint8_t* ip, uint16_t port);
 int net_tcp_send(const uint8_t* data, uint32_t len);
 int net_tcp_listen(uint16_t port);
+int net_tcp_is_listening(uint16_t port);
 int net_tcp_server_accept(uint16_t port);
 int net_tcp_server_send(int handle, const uint8_t* data, uint32_t len);
 int net_tcp_server_recv(int handle, uint8_t* out, uint32_t max, uint32_t timeout_ms);
