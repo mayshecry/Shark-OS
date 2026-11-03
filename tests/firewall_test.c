@@ -150,6 +150,91 @@ int main(void) {
     if (firewall_input_allowed(frame, sizeof(frame))) return 30;
     if (firewall_set_rate_limit(0) != 0 || firewall_get_rate_limit() != 0) return 31;
 
+    /* ---- extended rule engine: CIDR, port ranges, direction policies ---- */
+    firewall_init();
+    firewall_rule_t spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.enabled = 1;
+    spec.action = FIREWALL_ACTION_DENY;
+    spec.protocol = FIREWALL_PROTOCOL_TCP;
+    spec.direction = FIREWALL_DIR_IN;
+    spec.has_source = 1;
+    spec.source[0] = 10;
+    spec.source_prefix = 8;
+    spec.port = 443;
+    spec.port_end = 443;
+    spec.source_port_end = 0xFFFFu;
+    if (firewall_rule_add(&spec) < 0) return 40;
+    make_ipv4(frame, FIREWALL_PROTOCOL_TCP, (uint8_t[]){10,1,2,3}, host, 40000, 443);
+    if (firewall_input_allowed(frame, sizeof(frame))) return 41;
+    make_ipv4(frame, FIREWALL_PROTOCOL_TCP, (uint8_t[]){11,1,2,3}, host, 40000, 443);
+    if (!firewall_input_allowed(frame, sizeof(frame))) return 42;
+    if (firewall_rule_get(1, &spec) != 0 || spec.source_prefix != 8) return 43;
+
+    firewall_init();
+    firewall_set_policy(FIREWALL_DIR_IN, FIREWALL_ACTION_DENY);
+    memset(&spec, 0, sizeof(spec));
+    spec.enabled = 1;
+    spec.action = FIREWALL_ACTION_ALLOW;
+    spec.protocol = FIREWALL_PROTOCOL_TCP;
+    spec.direction = FIREWALL_DIR_IN;
+    spec.port = 8000;
+    spec.port_end = 8100;
+    spec.source_port_end = 0xFFFFu;
+    if (firewall_rule_add(&spec) < 0) return 44;
+    make_ipv4(frame, FIREWALL_PROTOCOL_TCP, remote, host, 40000, 8050);
+    if (!firewall_input_allowed(frame, sizeof(frame))) return 45;
+    make_ipv4(frame, FIREWALL_PROTOCOL_TCP, remote, host, 40000, 9000);
+    if (firewall_input_allowed(frame, sizeof(frame))) return 46;
+
+    firewall_init();
+    firewall_set_policy(FIREWALL_DIR_OUT, FIREWALL_ACTION_DENY);
+    firewall_set_policy(FIREWALL_DIR_FORWARD, FIREWALL_ACTION_DENY);
+    make_ipv4(frame, FIREWALL_PROTOCOL_UDP, host, remote, 1234, 9999);
+    if (firewall_output_allowed(frame, sizeof(frame))) return 47;
+    if (firewall_forward_allowed(frame, sizeof(frame))) return 48;
+    firewall_set_policy(FIREWALL_DIR_OUT, FIREWALL_ACTION_ALLOW);
+    if (!firewall_output_allowed(frame, sizeof(frame))) return 49;
+
+    /* ---- implicit service ports and explicit-rule precedence ---- */
+    firewall_init();
+    firewall_set_policy(FIREWALL_DIR_IN, FIREWALL_ACTION_DENY);
+    if (firewall_service_add(FIREWALL_PROTOCOL_UDP, 5353) < 0) return 50;
+    make_ipv4(frame, FIREWALL_PROTOCOL_UDP, remote, host, 40000, 5353);
+    if (!firewall_input_allowed(frame, sizeof(frame))) return 51;
+    if (firewall_add_rule(FIREWALL_ACTION_DENY, FIREWALL_PROTOCOL_UDP, 5353, NULL) < 0) return 52;
+    if (firewall_input_allowed(frame, sizeof(frame))) return 53;
+    if (firewall_service_remove(FIREWALL_PROTOCOL_UDP, 5353) != 0) return 54;
+    if (firewall_service_count() != 0) return 55;
+
+    /* ---- enable/disable and rule ordering ---- */
+    firewall_init();
+    if (firewall_add_rule(FIREWALL_ACTION_DENY, FIREWALL_PROTOCOL_TCP, 0, NULL) != 1) return 56;
+    if (firewall_add_rule(FIREWALL_ACTION_ALLOW, FIREWALL_PROTOCOL_TCP, 22, NULL) != 2) return 57;
+    make_ipv4(frame, FIREWALL_PROTOCOL_TCP, remote, host, 40000, 22);
+    if (firewall_input_allowed(frame, sizeof(frame))) return 58;
+    if (firewall_rule_enable(1, 0) != 0) return 59;
+    if (!firewall_input_allowed(frame, sizeof(frame))) return 60;
+    if (firewall_rule_enable(1, 1) != 0) return 61;
+    if (firewall_rule_move(1, 1) != 0) return 62;
+    if (!firewall_input_allowed(frame, sizeof(frame))) return 63;
+    if (firewall_hit_count(1) < 1) return 64;
+
+    /* ---- presets, counters and drop logging ---- */
+    firewall_init();
+    if (firewall_apply_preset(FIREWALL_PRESET_SERVER) != 0) return 65;
+    if (firewall_get_policy(FIREWALL_DIR_IN) != FIREWALL_ACTION_DENY) return 66;
+    if (firewall_get_policy(FIREWALL_DIR_OUT) != FIREWALL_ACTION_ALLOW) return 67;
+    if (firewall_rule_count() < 3) return 68;
+    firewall_init();
+    firewall_set_policy(FIREWALL_DIR_IN, FIREWALL_ACTION_DENY);
+    make_ipv4(frame, FIREWALL_PROTOCOL_TCP, remote, host, 40000, 22);
+    if (firewall_input_allowed(frame, sizeof(frame))) return 69;
+    if (firewall_counter(FIREWALL_DIR_IN, FIREWALL_ACTION_DENY) < 1) return 70;
+    if (firewall_log_count() < 1 || !firewall_log_entry(0)) return 71;
+    firewall_log_clear();
+    if (firewall_log_count() != 0) return 72;
+
     puts("IPv4 firewall validation, ordered rules, rate limiting, DHCP, fragments and state tracking passed");
     return 0;
 }
