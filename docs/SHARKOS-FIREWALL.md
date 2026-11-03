@@ -1,35 +1,39 @@
-# SharkOS Server firewall
+# SharkOS firewall
 
-The Server edition has a small IPv4 INPUT packet filter. It validates IPv4 header checksums and basic TCP, UDP, and ICMP lengths, drops fragmented IPv4 packets because reassembly is not implemented, evaluates rules in order, and applies the configured default policy when no rule matches. TCP return traffic is tracked from outbound SYN through a matching SYN-ACK; UDP and ICMP echo replies are matched against outbound traffic. Earlier explicit rules can deny tracked replies. ARP is passed for LAN operation. A DHCP server response from UDP port 67 to client port 68 is automatically allowed only when no explicit rule matches it.
+The firewall is an ordered, first-match, stateful IPv4 packet filter shared by
+the desktop, lite and Server images. It validates IPv4 header checksums and
+basic TCP/UDP/ICMP lengths, drops fragmented IPv4 packets (reassembly is not
+implemented), and applies a default policy when no rule matches. TCP return
+traffic is tracked from outbound SYN through a matching SYN-ACK; UDP and ICMP
+echo replies are matched against outbound flows. Earlier explicit rules can
+deny tracked replies. ARP is passed for LAN operation. A DHCP server response
+from UDP port 67 to client port 68 is allowed only when no explicit rule
+matches.
 
-Rules, rate configuration, and policy are kept in RAM and reset at reboot. The default policy is allow. The firewall filters host INPUT traffic; bridged container frames are delivered to their virtual adapters before the host filter. NAT return traffic is translated to its container first.
+The engine now filters three directions independently — **INPUT** (to this
+host), **OUTPUT** (from this host) and **FORWARD** (the router's NAT path) —
+and supports 64 ordered rules. Rules, policies, rate limits, services and
+counters live in RAM and reset at reboot. The default policy for all three
+directions is `allow`.
 
-Commands:
-
-- `fw docs` displays this guide in the Server console.
-- `fw status` or `fw list` shows the policy, rate setting, drop count, and rules.
-- `fw allow tcp 22` allows TCP destination port 22.
-- `fw deny tcp 23` blocks TCP destination port 23.
-- `fw deny icmp` blocks incoming ICMP, including ping requests.
-- `fw allow icmp` allows incoming ICMP when the default policy is deny.
-- `fw allow tcp 22 from 192.168.1.20` allows SSH only from that source address.
-- `fw deny udp any` blocks all UDP input.
-- `fw policy deny` changes the unmatched-packet policy to deny.
-- `fw policy allow` changes the unmatched-packet policy to allow.
-- `fw delete 1` deletes rule 1.
-- `fw clear` removes rules but does not change the policy or rate setting.
-- `fw rate 20` limits new traffic to 20 packets per second per source IPv4 address.
-- `fw rate off` disables rate limiting.
-
-Rules are evaluated in insertion order; the first matching rule decides. To block all incoming ICMP while otherwise retaining the current default policy, clear conflicting rules and add a deny rule:
+## Classic commands (unchanged)
 
 ```text
-fw clear
-fw deny icmp
-fw status
+fw docs                              show the CLI guide
+fw status / fw list                  policy, rate, rules, services, counters
+fw status -v                         also show recent drops
+fw allow tcp 22                      allow TCP destination port 22
+fw deny tcp 23                       block TCP destination port 23
+fw deny icmp                         block incoming ICMP (including ping)
+fw allow tcp 22 from 192.168.1.20    allow SSH only from that source
+fw deny udp any                      block all UDP input
+fw policy deny / fw policy allow     unmatched INPUT policy
+fw delete 1                          delete rule 1
+fw clear                             remove rules, keep policy/rate
+fw rate 20 / fw rate off             new-traffic limit per source IP
 ```
 
-To use a deny-by-default policy while allowing SSH and ping:
+Deny-by-default with SSH and ping:
 
 ```text
 fw clear
@@ -39,6 +43,91 @@ fw allow icmp
 fw status
 ```
 
-The rate limiter is off by default and accepts values from 1 to 1000 packets per second per source IP. It counts inbound TCP connection SYNs, UDP packets, and ICMP echo requests together per source in one-second windows; tracked replies and DHCP server responses are exempt. `fw status` shows the configured limit and dropped-packet count. It tracks up to 64 source addresses per window and fails closed for additional new sources until the next window.
+## Extended rules
 
-Rule ports apply to TCP or UDP destination ports; ICMP rules are protocol-wide. The rule table supports 16 ordered rules. TCP tracking matches IPv4 addresses, ports, and handshake flags, but does not validate TCP sequence numbers. This is a basic IPv4 input filter, not a replacement for a complete firewall: IPv6 rule filtering, fragment reassembly, persistence, configurable port forwarding, and filtering of bridged container traffic are not provided.
+```text
+fw add <allow|deny> <tcp|udp|icmp|any> [options]
+```
+
+| Option | Meaning |
+| --- | --- |
+| `dir in\|out\|forward\|any` | direction (default `any`) |
+| `from <ip[/prefix]>` | source CIDR, e.g. `10.0.0.0/8` |
+| `to <ip[/prefix]>` | destination CIDR |
+| `dport <port\|a-b>` | destination port or inclusive range |
+| `sport <port\|a-b>` | source port or inclusive range |
+| `state new\|established\|any` | connection state |
+| `icmp <type>` | match a specific ICMP type (`8` = echo request) |
+| `rate <1-1000>` | per-rule packets/second/source |
+| `log` | log every match |
+| `comment "text"` | 31-character label |
+
+Examples:
+
+```text
+fw add deny tcp dir in from 203.0.113.0/24 dport 22 log comment "no ssh"
+fw add allow udp dir forward to 10.0.0.0/8 dport 5000-5100
+fw add allow any state established
+fw add deny icmp icmp 8 rate 5 log comment "ping flood"
+```
+
+Rules are evaluated in insertion order; the first matching enabled rule wins.
+`fw move <id> up|down` reorders, `fw enable <id>` / `fw disable <id>` toggles
+without deleting, `fw hits <id>` shows the hit counter.
+
+## Policies, profiles and services
+
+```text
+fw policy [in|out|forward|any] allow|deny
+fw profile open|server|lockdown|router
+fw service add|del <tcp|udp> <port>
+fw service list
+fw counters [reset]
+fw reset                        factory defaults
+```
+
+- `open` — allow everything.
+- `server` — deny new INPUT, allow established traffic and ICMP, allow OUTPUT
+  and FORWARD.
+- `lockdown` — deny all three directions except established flows.
+- `router` — same idea plus LAN->WAN forwarding and LAN->router input; it uses
+  the LAN subnet configured with `rtr lan`. It also pins explicit deny rules
+  on WAN-side DHCP, DNS and console traffic (the console rule follows
+  `rtr http port <port>`). See [SHARKOS-ROUTER.md](SHARKOS-ROUTER.md).
+
+**Implicit service ports** are local services that stay reachable under a
+deny-by-default policy (DHCP 67/udp, DNS 53/udp, the router console, port
+forwards). They are checked *after* explicit rules, so a deny rule always
+overrides them. `rtr start` registers its own ports automatically.
+
+## Logging and counters
+
+```text
+fw log [count]        newest drop/allow events (newest first)
+fw log clear
+fw log on|off         toggle drop logging
+fw logdrops on|off
+fw counters reset
+```
+
+`fw status` reports per-direction allow/drop counters, the global rate-limit
+drop count and per-rule hit counts. The log is a 24-entry ring buffer, with
+drops rate-limited to one entry per second so a flood cannot erase history.
+
+The global rate limiter accepts 1–1000 packets/second/source and counts new
+inbound and forwarded TCP SYNs, UDP packets and ICMP echo requests together in
+one-second windows; tracked replies and DHCP server responses are exempt. It
+tracks up to 64 sources per window and fails closed for extra sources.
+
+## Guarantees and limits
+
+- 64 rules, 12 implicit service ports, 48 tracked connections (120s idle TTL),
+  64 rate-limit sources, 24 log entries.
+- ICMP rules are protocol-wide unless `icmp <type>` is set; ports apply to
+  TCP/UDP only.
+- TCP tracking matches addresses, ports and handshake flags, not sequence
+  numbers.
+- Bridged container frames are delivered to virtual adapters before the host
+  INPUT filter; NAT return traffic is translated to its container first.
+- No IPv6 filtering, no fragment reassembly, no persistence of rules, no
+  eBPF/nftables-style expressions. This is still a basic IPv4 filter.
