@@ -7,6 +7,8 @@
 #include "pong.h"
 #include "geometrydash.h"
 #include "net.h"
+#include "firewall.h"
+#include "router.h"
 #include "ata.h"
 #include "audio.h"
 
@@ -317,6 +319,8 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     boot_trace("network stack initialization begin");
     net_stack_init();
     boot_trace("network stack initialization complete");
+    firewall_init();
+    router_init();
     struct fs_node* user_dir = find_node(root, "User");
     if (user_dir) strcpy(user_dir->name, current_user);
     while (keyboard_getchar() != 0);
