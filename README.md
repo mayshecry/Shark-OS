@@ -72,9 +72,42 @@ Look for `[audio] found ac97/hda ...`, `[net] RTL8139/e1000`, and `[desktop] wal
 
 **browser/** — Shark Navigator: HTML, CSS, layout, JS and SVG, MIME-aware top-level text/image rendering, URL-encoded GET/POST forms, bounded `fetch()` and synchronous XHR shims, and a single-socket JavaScript WebSocket client. It's intentionally small — not a full Chromium replacement.
 
-**net/** — Custom stack: Ethernet, ARP, IPv4, ICMP, UDP, DHCP, DNS, TCP, HTTP/HTTPS (with `crypto.c`/`tls.c`). Drivers for Realtek RTL8139 (`10EC:8139`) and RTL8111/8168/8211/8411 (`10EC:8168`), RTL8169 (`10EC:8169`), AMD PCnet (`1022:2000`) and Intel e1000 (`8086:10D3/1502`).
+**net/** — Custom stack: Ethernet, ARP, IPv4, ICMP, UDP, DHCP, DNS, TCP, HTTP/HTTPS (with `crypto.c`/`tls.c`), an extended stateful firewall and the `rtr` router subsystem (DHCP server, DNS resolver/forwarder, WAN management, NAT/port forwards and a port-69 web console). Drivers for Realtek RTL8139 (`10EC:8139`) and RTL8111/8168/8211/8411 (`10EC:8168`), RTL8169 (`10EC:8169`), AMD PCnet (`1022:2000`) and Intel e1000 (`8086:10D3/1502`).
 
 **shell/** — `nemo-shell`, 90+ commands. Filesystem (`ls/cd/cat/mkdir/rm/cp/mv`), system (`sysinfo/ps/htop/devices/lspci`), networking (`ifconfig/dhcp/ping/dns/wget/curl/netstat`) and storage (`mount/umount`), utilities (`sharkfetch/neofetch/banner/cowsay/fortune`), audio (`audio status/beep/tone/test/wav`), and package management (`spkg install/list/uninstall`).
+
+---
+
+## Router (Server image)
+
+The Server build can act as a basic IPv4 router. One command starts a DHCP
+server, DNS resolver, WAN management, NAT with port forwards, and an HTTP
+management console on port 69:
+
+```text
+rtr start
+rtr status
+rtr token my-long-secret      # change the default API token first!
+```
+
+Open `http://192.168.10.1:69/` for a pfSense-style single-page dashboard that
+shows everything at once, including the uplink adapter and the automatically
+assigned LAN port (`rtr ports` lists detected NICs). Or use the JSON API
+(`/api/status`, `/api/fw`, `/api/log`, `/api/cli`) with an `X-Shark-Token`
+header. The firewall gained direction policies, CIDR rules, port ranges,
+state matching, per-rule rate limits, logging, hit counters and profiles;
+`fw docs` and `fw status -v` describe them.
+
+Full details, CLI reference, API examples, architecture and limitations are in
+[docs/SHARKOS-ROUTER.md](docs/SHARKOS-ROUTER.md) and
+[docs/SHARKOS-FIREWALL.md](docs/SHARKOS-FIREWALL.md). The dashboard itself is
+[docs/router_ui.html](docs/router_ui.html) (works offline as a preview).
+
+```bash
+make server              # build the Server ISO
+make test-router         # DHCP/DNS/WAN/NAT/CLI regression tests
+make test-firewall       # firewall regression tests
+```
 
 ---
 
