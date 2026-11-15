@@ -126,8 +126,15 @@ static void server_prompt(void) {
     terminal_writestring("# ");
 }
 
+static void server_net_rearm(void) {
+    httpd_rearm();
+    ssh_server_rearm();
+    terminal_writestring("net: link restored; services re-armed\r\n");
+}
+
 static void server_service_poll(void) {
     net_poll();
+    if (net_link_recovered()) server_net_rearm();
     httpd_poll();
     ssh_server_poll();
     server_htop_poll();
