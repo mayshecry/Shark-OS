@@ -86,6 +86,7 @@ typedef struct {
     uint8_t auth_failures;
     uint8_t discard_next;
     uint8_t suppress_lf;
+    uint32_t idle_since;
     struct fs_node* working_directory;
     char line[SSH_TEXT_SIZE];
     uint32_t line_len;
@@ -317,12 +318,34 @@ int ssh_server_has_password(void){return ssh_password_ready;}
 int ssh_server_has_host_key(void){return ssh_host_ready;}
 uint16_t ssh_server_listen_port(void){return ssh_port;}
 
+#define SSH_SESSION_IDLE_MS (30u * 60u * 1000u)
+
+int ssh_session_reap_idle(void){
+    int killed=0;
+    for(int i=0;i<SSH_CLIENTS;i++){
+        ssh_session_t* s=&ssh_sessions[i];
+        if(!s->active)continue;
+        if(net_tcp_server_closed(s->handle)){ssh_close_session(s);killed++;continue;}
+        if(s->idle_since&&uptime_ticks-s->idle_since>=(SSH_SESSION_IDLE_MS/TICKS_PER_SEC)){ssh_close_session(s);killed++;}
+    }
+    return killed;
+}
+
+int ssh_server_rearm(void){
+    if(!ssh_active)return -1;
+    if(!ssh_port)return -1;
+    if(net_tcp_listen(ssh_port)!=0)return -1;
+    for(int i=0;i<SSH_CLIENTS;i++)if(ssh_sessions[i].active&&net_tcp_server_closed(ssh_sessions[i].handle))ssh_close_session(&ssh_sessions[i]);
+    return 0;
+}
+
 void ssh_server_poll(void){
     if(!ssh_active)return;
     for(;;){int handle=net_tcp_server_accept(ssh_port);if(handle<0)break;int stored=0;for(int i=0;i<SSH_CLIENTS;i++)if(!ssh_sessions[i].active){if(ssh_start_session(&ssh_sessions[i],handle)==0)stored=1;break;}if(!stored)net_tcp_server_close(handle);}
     for(int i=0;i<SSH_CLIENTS;i++){
         ssh_session_t* s=&ssh_sessions[i];if(!s->active)continue;
         int got=ssh_stream_fill(s);if(got<0){ssh_close_session(s);continue;}
+        if(got>0)s->idle_since=uptime_ticks;
         int failed=0;
         if(s->state==0){while(s->stream_rd<s->stream_len){uint8_t c=s->stream[s->stream_rd++];if(c=='\n'){if(s->version_len&&s->version[s->version_len-1]=='\r')s->version_len--;s->version[s->version_len]=0;if(s->version_len<8||!ssh_bytes_equal(s->version,(const uint8_t*)"SSH-2.0-",8)){failed=1;break;}memcpy(s->client_version,s->version,s->version_len);s->client_version_len=s->version_len;s->state=1;break;}if(s->version_len+1>=sizeof(s->version)){failed=1;break;}s->version[s->version_len++]=c;}if(s->stream_rd){uint32_t remain=s->stream_len-s->stream_rd;memcpy(s->stream,s->stream+s->stream_rd,remain);s->stream_len=remain;s->stream_rd=0;}}
         if(failed){ssh_close_session(s);continue;}
