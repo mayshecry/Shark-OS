@@ -10,6 +10,57 @@ uint8_t net_mac[6] = {0,0,0,0,0,0};
 int net_has_link = 0;
 char net_driver_name[32] = "none";
 
+static int      net_link_debounce_down = 0;
+static uint32_t net_link_down_since_ms = 0;
+static uint32_t net_link_up_ms         = 0;
+static uint32_t net_link_down_events    = 0;
+static uint32_t net_link_recover_events = 0;
+static int      net_link_recovered_flag = 0;
+
+static uint32_t net_ms(void) { return uptime_ticks * (1000u / TICKS_PER_SEC); }
+uint32_t net_link_uptime_ms(void)   { return net_link_up_ms; }
+uint32_t net_link_down_count(void)  { return net_link_down_events; }
+uint32_t net_link_recover_count(void) { return net_link_recover_events; }
+
+int net_link_recovered(void) {
+    int flag = net_link_recovered_flag;
+    net_link_recovered_flag = 0;
+    return flag;
+}
+
+static void net_link_mark_up(void) {
+    if (net_has_link) return;
+    net_has_link = 1;
+    net_link_debounce_down = 0;
+    net_link_up_ms = net_ms();
+    net_link_recover_events++;
+    net_link_recovered_flag = 1;
+}
+
+static void net_link_mark_down(void) {
+    if (!net_has_link) return;
+    net_has_link = 0;
+    net_link_debounce_down = 0;
+    net_link_up_ms = 0;
+    net_link_down_events++;
+}
+
+void net_link_set_raw(int up) {
+    uint32_t now = net_ms();
+    if (up) {
+        net_link_debounce_down = 0;
+        net_link_mark_up();
+        return;
+    }
+    if (!net_has_link) return;
+    if (!net_link_debounce_down) {
+        net_link_debounce_down = 1;
+        net_link_down_since_ms = now;
+        return;
+    }
+    if (now - net_link_down_since_ms >= NET_LINK_DOWN_DEBOUNCE_MS) net_link_mark_down();
+}
+
 uint8_t net_ip[4] = {0,0,0,0};
 uint8_t net_mask[4] = {0,0,0,0};
 uint8_t net_gw[4] = {0,0,0,0};
@@ -142,7 +193,7 @@ static void rtl_reset(void) {
 static void rtl_read_link(void) {
 
     uint8_t msr = inb(rtl_base + RTL_MSR);
-    net_has_link = (msr & 0x04) ? 0 : 1;
+    net_link_set_raw((msr & 0x04) ? 0 : 1);
 }
 
 static void rtl_init_chip(void) {
@@ -318,7 +369,7 @@ static void* pn_alloc16(uint32_t size) {
 static void pn_read_link(void) {
 
     uint32_t bcr4 = pn_bcrr(4);
-    net_has_link = (bcr4 & 0x0040) ? ((bcr4 & 0x8000) ? 1 : 0) : 1;
+    net_link_set_raw((bcr4 & 0x0040) ? ((bcr4 & 0x8000) ? 1 : 0) : 1);
 }
 
 static void pn_init_chip(void) {
@@ -553,7 +604,7 @@ static int e1000_eeprom_read(uint8_t addr, uint16_t* out) {
 }
 
 static void e1000_read_link(void) {
-    net_has_link = (e1000_r(E1000_STATUS) & 0x2) ? 1 : 0;
+    net_link_set_raw((e1000_r(E1000_STATUS) & 0x2) ? 1 : 0);
 }
 
                                                                            
@@ -906,7 +957,7 @@ static int r8169_init(uint8_t bus, uint8_t slot, uint8_t func, uint16_t did) {
     r8169_w32(R8169_TCR, 0x03000700);
     r8169_w8(R8169_CMD, R8169_CMD_RE | R8169_CMD_TE);
     r8169_present = true;
-    net_has_link = 1;
+    net_link_set_raw(1);
     strcpy(net_driver_name, did == 0x8169 ? "Realtek RTL8169" : "Realtek RTL8111/8168/8211/8411");
     return 1;
 }
@@ -1201,6 +1252,13 @@ static int arp_lookup(const uint8_t* ip, uint8_t* mac) {
         }
     }
     return 0;
+}
+
+void net_arp_flush(void) {
+    for (uint32_t i = 0; i < ARP_CACHE_LIMIT; i++) {
+        arp_table_active[i] = 0;
+        arp_table_seen[i] = 0;
+    }
 }
 
 static void arp_add(const uint8_t* ip, const uint8_t* mac) {
@@ -2238,6 +2296,18 @@ static void http_close_conn(void) {
 
 void net_http_close_idle(void) { http_close_conn(); }
 
+void net_sessions_reset(void) {
+    if (tcp_cb) net_tcp_close();
+    tcp_cb = NULL;
+    tcp_connected = 0;
+    tcp_fin = tcp_reset = 0;
+    tcp_rx_len = 0; tcp_rx_rd = 0;
+    udp_cb = NULL;
+    ws_active = 0;
+    http_conn.open = 0;
+    http_conn.secure = 0;
+}
+
 static int http_conn_alive(void) {
     if (!http_conn.open) return 0;
     net_poll();
@@ -2818,6 +2888,7 @@ void net_stack_init(void) {
     { tls_random_seed(net_mac, 6); }
 
     net_dhcp_start();
+    net_link_recovered_flag = 0;
 }
 
 static void print_ip4(const char* label, const uint8_t* ip) {
@@ -2848,6 +2919,11 @@ void net_cmd_ifconfig(void) {
     net_format_mac(b);
     terminal_writestring("MAC: "); terminal_writestring(b); terminal_writestring("\n");
     terminal_writestring("Link: "); terminal_writestring(net_has_link ? "up\n" : "down\n");
+    terminal_writestring("Link events: ");
+    int_to_string(net_link_down_count(), b); terminal_writestring(b);
+    terminal_writestring(" drops, ");
+    int_to_string(net_link_recover_count(), b); terminal_writestring(b);
+    terminal_writestring(" recoveries\n");
     print_ip4("IP: ", net_ip);
     print_ip4("Mask: ", net_mask);
     print_ip4("Gateway: ", net_gw);
@@ -2905,7 +2981,8 @@ void net_cmd_netstat(void) {
 }
 
 enum { DHCP_INIT = 0, DHCP_SELECTING, DHCP_REQUESTING, DHCP_BOUND,
-       DHCP_RENEWING, DHCP_REBINDING, DHCP_LINKLOCAL, DHCP_DISABLED };
+       DHCP_RENEWING, DHCP_REBINDING, DHCP_LINKLOCAL, DHCP_DISABLED,
+       DHCP_REACQUIRE };
 
 static volatile int dhcp_state = DHCP_INIT;
 static uint32_t dhcp_xid = 0;
@@ -2920,6 +2997,7 @@ static int      dhcp_tries = 0;
 static int      dhcp_had_link = 0;
 static int      dhcp_verbose = 0;
 static char     dhcp_status[48] = "starting";
+static int      dhcp_bound_ok = 0;
 static uint32_t dhcp_seed = 0x5A17C0DE;
 static uint32_t dhcp_start_tick = 0;
 
@@ -2942,7 +3020,7 @@ static void dhcp_log(const char* msg) {
 const char* net_dhcp_status(void) { return dhcp_status; }
 int net_dhcp_state(void) { return dhcp_state; }
 uint32_t net_dhcp_lease_left(void) {
-    if (dhcp_state < DHCP_BOUND || dhcp_state == DHCP_LINKLOCAL || !dhcp_lease_secs) return 0;
+    if (dhcp_state < DHCP_BOUND || dhcp_state == DHCP_LINKLOCAL || dhcp_state == DHCP_DISABLED || !dhcp_lease_secs) return 0;
     uint32_t used = (uptime_ticks - dhcp_bound_tick) / TICKS_PER_SEC;
     return used >= dhcp_lease_secs ? 0 : dhcp_lease_secs - used;
 }
@@ -2967,7 +3045,8 @@ static void dhcp_send(int type, const uint8_t* req_ip, const uint8_t* srv, int u
     d[10] = 0x80; d[11] = 0;
     if (use_unicast || type == 3) {
 
-        if (dhcp_state == DHCP_RENEWING || dhcp_state == DHCP_REBINDING) {
+        if (dhcp_state == DHCP_RENEWING || dhcp_state == DHCP_REBINDING ||
+            dhcp_state == DHCP_REACQUIRE) {
             for (int i = 0; i < 4; i++) d[12 + i] = net_ip[i];
             d[10] = 0;
         }
@@ -2978,7 +3057,7 @@ static void dhcp_send(int type, const uint8_t* req_ip, const uint8_t* srv, int u
     d[o++] = 53; d[o++] = 1; d[o++] = (uint8_t)type;
     d[o++] = 61; d[o++] = 7; d[o++] = 1;
     for (int i = 0; i < 6; i++) d[o++] = net_mac[i];
-    if (type == 3 && dhcp_state == DHCP_REQUESTING && req_ip) {
+    if (type == 3 && (dhcp_state == DHCP_REQUESTING || dhcp_state == DHCP_REACQUIRE) && req_ip) {
         d[o++] = 50; d[o++] = 4; for (int i = 0; i < 4; i++) d[o++] = req_ip[i];
         if (srv) { d[o++] = 54; d[o++] = 4; for (int i = 0; i < 4; i++) d[o++] = srv[i]; }
     }
@@ -3012,6 +3091,12 @@ static void dhcp_send(int type, const uint8_t* req_ip, const uint8_t* srv, int u
 }
 
 static void dhcp_apply_lease(void) {
+    int changed = net_configured && my_memcmp(net_ip, dhcp_offered, 4) != 0;
+    if (changed) {
+        net_arp_flush();
+        net_sessions_reset();
+        dhcp_log("address changed");
+    }
     for (int i = 0; i < 4; i++) {
         net_ip[i]   = dhcp_offered[i];
         net_mask[i] = dhcp_offer_mask[i];
@@ -3023,6 +3108,7 @@ static void dhcp_apply_lease(void) {
         for (int i = 0; i < 4; i++) net_dns[i] = net_gw[i];
     }
     net_configured = 1;
+    dhcp_bound_ok = 1;
     dhcp_bound_tick = uptime_ticks;
     if (dhcp_lease_secs < 60) dhcp_lease_secs = 60;
     if (dhcp_lease_secs > 30u * 86400u) dhcp_lease_secs = 30u * 86400u;
@@ -3116,7 +3202,8 @@ static void dhcp_recv(const uint8_t* payload, uint32_t len, const uint8_t* src_i
         dhcp_next_tick = uptime_ticks + 2 * TICKS_PER_SEC;
     } else if (msgtype == 5 && (dhcp_state == DHCP_REQUESTING ||
                                 dhcp_state == DHCP_RENEWING ||
-                                dhcp_state == DHCP_REBINDING)) {
+                                dhcp_state == DHCP_REBINDING ||
+                                dhcp_state == DHCP_REACQUIRE)) {
         for (int i = 0; i < 4; i++) {
             dhcp_offered[i] = payload[16 + i];
             if (mask[0]) dhcp_offer_mask[i] = mask[i];
@@ -3128,6 +3215,7 @@ static void dhcp_recv(const uint8_t* payload, uint32_t len, const uint8_t* src_i
         dhcp_apply_lease();
     } else if (msgtype == 6) {
         dhcp_log("NAK from server, restarting");
+        dhcp_bound_ok = 0;
         net_configured = 0;
         for (int i = 0; i < 4; i++) net_ip[i] = 0;
         dhcp_state = DHCP_INIT;
@@ -3153,27 +3241,68 @@ static void dhcp_use_linklocal(void) {
     net_mask[0] = 255; net_mask[1] = 255; net_mask[2] = 0; net_mask[3] = 0;
     for (int i = 0; i < 4; i++) { net_gw[i] = 0; net_dns[i] = 0; }
     net_configured = 1;
+    dhcp_bound_ok = 1;
+    dhcp_bound_tick = uptime_ticks;
     dhcp_state = DHCP_LINKLOCAL;
     dhcp_log("no server, using link-local");
     dhcp_next_tick = uptime_ticks + 60 * TICKS_PER_SEC;
 }
 
-static void dhcp_tick(void) {
-    if (dhcp_state == DHCP_DISABLED) return;
+static void dhcp_on_link_up(void) {
+    dhcp_log("link up, re-arming");
+    net_arp_flush();
+    net_sessions_reset();
+    if (net_gw[0] || net_gw[1] || net_gw[2] || net_gw[3]) net_arp_request(net_gw);
+    if (dhcp_bound_ok) {
+        dhcp_state = DHCP_REACQUIRE;
+        dhcp_tries = 0;
+        dhcp_send(3, dhcp_offered, dhcp_srv, 0);
+        dhcp_next_tick = uptime_ticks + 3 * TICKS_PER_SEC;
+        return;
+    }
+    dhcp_state = DHCP_INIT;
+    dhcp_next_tick = uptime_ticks + 200;
+}
 
-    if (net_has_link != dhcp_had_link) {
-        dhcp_had_link = net_has_link;
+static void dhcp_tick(void) {
+    int link_changed = (net_has_link != dhcp_had_link);
+    if (link_changed) dhcp_had_link = net_has_link;
+
+    if (dhcp_state == DHCP_DISABLED) {
+        if (link_changed && net_has_link) {
+            net_arp_flush();
+            net_sessions_reset();
+            if (net_gw[0] || net_gw[1] || net_gw[2] || net_gw[3]) net_arp_request(net_gw);
+        } else if (link_changed) {
+            net_sessions_reset();
+        }
+        return;
+    }
+
+    if (link_changed) {
         if (net_has_link) {
-            dhcp_log("link up");
-            dhcp_state = DHCP_INIT;
-            dhcp_next_tick = uptime_ticks + 200;
+            dhcp_on_link_up();
         } else {
-            dhcp_log("link down");
-            net_configured = 0;
-            dhcp_state = DHCP_INIT;
+            dhcp_log("link down, holding lease");
+            net_sessions_reset();
+            if (!dhcp_lease_secs || dhcp_state < DHCP_BOUND) {
+                dhcp_bound_ok = 0;
+                net_configured = 0;
+                dhcp_state = DHCP_INIT;
+            }
         }
     }
-    if (!net_has_link) return;
+    if (!net_has_link) {
+        if (dhcp_bound_ok && dhcp_lease_secs &&
+            (uptime_ticks - dhcp_bound_tick) / TICKS_PER_SEC >= dhcp_lease_secs) {
+            dhcp_log("lease expired while link down");
+            dhcp_bound_ok = 0;
+            net_configured = 0;
+            for (int i = 0; i < 4; i++) net_ip[i] = 0;
+            dhcp_state = DHCP_INIT;
+        }
+        return;
+    }
     if ((int32_t)(uptime_ticks - dhcp_next_tick) < 0) return;
 
     switch (dhcp_state) {
@@ -3224,6 +3353,7 @@ static void dhcp_tick(void) {
         uint32_t used = (uptime_ticks - dhcp_bound_tick) / TICKS_PER_SEC;
         if (used >= dhcp_lease_secs) {
             dhcp_log("lease expired");
+            dhcp_bound_ok = 0;
             net_configured = 0;
             for (int i = 0; i < 4; i++) net_ip[i] = 0;
             dhcp_state = DHCP_INIT;
@@ -3234,8 +3364,19 @@ static void dhcp_tick(void) {
         break;
     }
 
-    case DHCP_LINKLOCAL:
+    case DHCP_REACQUIRE:
+        if (++dhcp_tries >= 3) {
+            dhcp_log("re-acquire timed out, rediscovering");
+            dhcp_bound_ok = 0;
+            dhcp_state = DHCP_INIT;
+            dhcp_next_tick = uptime_ticks;
+            break;
+        }
+        dhcp_send(3, dhcp_offered, dhcp_srv, 0);
+        dhcp_next_tick = uptime_ticks + 3 * TICKS_PER_SEC;
+        break;
 
+    case DHCP_LINKLOCAL:
         dhcp_xid = dhcp_rand();
         dhcp_send(1, NULL, NULL, 0);
         dhcp_state = DHCP_SELECTING;
@@ -3248,6 +3389,7 @@ static void dhcp_tick(void) {
 
 void net_dhcp_start(void) {
     if (!net_has_nic()) return;
+    dhcp_bound_ok = 0;
     net_configured = 0;
     for (int i = 0; i < 4; i++) net_ip[i] = 0;
     dhcp_state = DHCP_INIT;
@@ -3312,5 +3454,6 @@ int net_set_static_config(const uint8_t* ip, const uint8_t* mask,
     if (gw) memcpy(net_gw, gw, 4); else memset(net_gw, 0, 4);
     if (dns) memcpy(net_dns, dns, 4); else memset(net_dns, 0, 4);
     net_configured = 1;
+    dhcp_bound_ok = 1;
     return 0;
 }
