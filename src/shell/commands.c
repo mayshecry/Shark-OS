@@ -1127,6 +1127,14 @@ static void server_htop_draw(uint32_t cpu_percent) {
         int_to_string(net_tcp_server_connection_count(ssh_server_listen_port()), number);
         terminal_writestring(number);
     } else terminal_writestring("STOPPED");
+    terminal_writestring("\nLINK  ");
+    terminal_writestring(net_has_link ? "UP" : "DOWN");
+    terminal_writestring("  drops ");
+    int_to_string(net_link_down_count(), number);
+    terminal_writestring(number);
+    terminal_writestring("  recoveries ");
+    int_to_string(net_link_recover_count(), number);
+    terminal_writestring(number);
     terminal_writestring("\nTCP connections ");
     int_to_string(net_tcp_server_connection_count(0), number);
     terminal_writestring(number);
