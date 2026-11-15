@@ -469,6 +469,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         if (uptime_ticks - last_net_tick >= 10) {
             last_net_tick = uptime_ticks;
             net_poll();
+            (void)net_link_recovered();
 
             int ns = net_dhcp_state() * 2 + net_has_link;
             if (ns != last_net_state) {
