@@ -18,6 +18,7 @@ typedef struct {
     uint16_t port;
     uint8_t configured;
     uint8_t active;
+    uint8_t desired;
     char root[128];
 } httpd_server_t;
 
@@ -144,6 +145,33 @@ static int httpd_finish_request(httpd_client_t* client) {
     return 1;
 }
 
+static int httpd_rearm_slot(uint32_t slot) {
+    if (slot >= HTTPD_SERVER_LIMIT || !httpd_servers[slot].configured) return -1;
+    if (!httpd_servers[slot].desired) return -1;
+    if (ssh_server_is_active() && ssh_server_listen_port() == httpd_servers[slot].port) return -1;
+    if (net_tcp_listen(httpd_servers[slot].port) != 0) {
+        httpd_servers[slot].active = 0;
+        return -1;
+    }
+    for (int i = 0; i < HTTPD_CLIENTS; i++) {
+        if (httpd_clients[i].active && httpd_clients[i].server == slot) {
+            net_tcp_server_close(httpd_clients[i].handle);
+            httpd_clients[i].active = 0;
+        }
+    }
+    httpd_servers[slot].active = 1;
+    httpd_servers[slot].desired = 1;
+    return 0;
+}
+
+int httpd_rearm(void) {
+    int started = 0;
+    for (uint32_t i = 0; i < HTTPD_SERVER_LIMIT; i++) {
+        if (httpd_rearm_slot(i) == 0) started++;
+    }
+    return started;
+}
+
 int httpd_configure(uint32_t slot, uint16_t port, const char* root, int start) {
     if (slot >= HTTPD_SERVER_LIMIT || !port || !root || !root[0] || strlen(root) >= sizeof(httpd_servers[slot].root)) return -1;
     char root_copy[128];
@@ -159,8 +187,15 @@ int httpd_configure(uint32_t slot, uint16_t port, const char* root, int start) {
     strcpy(httpd_servers[slot].root, root_copy);
     httpd_servers[slot].configured = 1;
     if (start) {
-        if (!net_has_nic() || net_tcp_listen(port) != 0) { httpd_servers[slot].active = 0; return -1; }
+        if (!net_has_nic() || net_tcp_listen(port) != 0) {
+            httpd_servers[slot].active = 0;
+            httpd_servers[slot].desired = 0;
+            return -1;
+        }
         httpd_servers[slot].active = 1;
+        httpd_servers[slot].desired = 1;
+    } else {
+        httpd_servers[slot].desired = 0;
     }
     return 0;
 }
@@ -177,7 +212,9 @@ int httpd_start(uint16_t port) {
 }
 
 void httpd_stop_server(uint32_t slot) {
-    if (slot >= HTTPD_SERVER_LIMIT || !httpd_servers[slot].active) return;
+    if (slot >= HTTPD_SERVER_LIMIT) return;
+    httpd_servers[slot].desired = 0;
+    if (!httpd_servers[slot].active) return;
     uint16_t port = httpd_servers[slot].port;
     net_tcp_server_stop(port);
     for (int i = 0; i < HTTPD_CLIENTS; i++) {
