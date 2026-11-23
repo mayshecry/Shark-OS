@@ -12,16 +12,19 @@
    other's packets instead of misreading them. Packet layout mirrors the
    game repo: [0]='S' [1]='C' [2]=type [3..6]=player_id LE
    [7..8]=x LE [9..10]=y LE (biased +1024) [11..12]=z LE [13]=yaw
-   [14]=flags [15..]=extra. Types: 1=HELLO (extra: seed u32 LE),
-   2=POS, 3=CHAT (extra: text), 4=BLOCK (extra: x,y,z,block). */
+   [14]=flags [15..]=extra. Types: 1=HELLO (extra: seed u32 LE, then the
+   sender's name), 2=POS, 3=CHAT (extra: text), 4=BLOCK (extra: x,y,z,block),
+   5=NAME (extra: text). */
 #define P2P_PORT 31337
 #define P2P_MAX_PEERS 8
 #define P2P_CHAT_MAX 48
+#define P2P_NAME_MAX 16
 #define P2P_HDR_LEN 15
 #define P2P_HELLO 1
 #define P2P_POS 2
 #define P2P_CHAT 3
 #define P2P_BLOCK 4
+#define P2P_NAME 5
 #define P2P_PEER_TIMEOUT_MS 6000
 #define P2P_Y_BIAS 1024
 
@@ -130,6 +133,13 @@ static int prev_mouse_buttons = 0;
 
 static int velocity_x, velocity_y, velocity_z;
 static int on_ground, flying, in_water;
+
+/* Local avatar animation: stride phase 0..255, locomotion blend 0..256,
+   jump/fall pose 0..256. */
+static int sc_walk_phase = 0;
+static int sc_move = 0;
+static int sc_air = 0;
+static int sc_anim_dt = 16;
 static uint32_t last_grounded_tick = 0;
 static uint32_t jump_buffer_deadline = 0;
 static uint32_t move_deadline[INPUT_COUNT];
@@ -171,7 +181,13 @@ typedef struct {
     int active;
     char chat[P2P_CHAT_MAX];
     uint32_t chat_t;
+    char name[P2P_NAME_MAX];
     uint32_t color;
+    int walk_phase;     /* avatar walk-cycle phase, 0..255 */
+    int move;           /* locomotion blend, 0..256 (fades the stride out) */
+    int move_target;
+    int air;            /* avatar jump/fall pose blend, 0..256 */
+    uint32_t air_until; /* tick until which the peer counts as airborne */
 } sc_peer_t;
 
 static sc_peer_t sc_peers[P2P_MAX_PEERS];
@@ -188,6 +204,11 @@ static int sc_seed_dirty = 0;
 static int sc_chat_mode = 0;
 static char sc_chat_buf[P2P_CHAT_MAX];
 static int sc_chat_len = 0;
+
+/* Player name: typed in the menu, shown above the bean and sent to peers. */
+static char sc_player_name[P2P_NAME_MAX];
+static int sc_name_len = 0;
+static int sc_name_mode = 0; /* 0=off, 1=editing from menu, 2=needed before joining */
 
 #define SC_CHAT_HIST 4
 typedef struct {
@@ -896,6 +917,13 @@ static void sc_derive_player_id(void) {
 #ifdef SHARKCRAFT_BUILTIN
 static net_service_hook_t sc_prev_hook = NULL;
 
+/* Copy up to P2P_NAME_MAX-1 bytes into a peer's display name. */
+static void sc_peer_set_name(sc_peer_t *p, const uint8_t *bytes, uint32_t n) {
+    if (n >= P2P_NAME_MAX) n = P2P_NAME_MAX - 1;
+    for (uint32_t i = 0; i < n; i++) p->name[i] = (char)bytes[i];
+    p->name[n] = 0;
+}
+
 static int sc_net_cb(const uint8_t *frame_data, uint32_t frame_len,
                      const uint8_t *src_ip, const uint8_t *dst_ip,
                      uint16_t src_port, uint16_t dst_port, uint8_t protocol) {
@@ -930,6 +958,7 @@ static int sc_net_cb(const uint8_t *frame_data, uint32_t frame_len,
     int py = ((int)pkt[9] | ((int)pkt[10] << 8)) - P2P_Y_BIAS;
     int pz = (int)pkt[11] | ((int)pkt[12] << 8);
     int pyaw = (int)pkt[13];
+    int pflags = (int)pkt[14];
 
     int slot = -1;
     for (int i = 0; i < P2P_MAX_PEERS; i++) {
@@ -942,6 +971,13 @@ static int sc_net_cb(const uint8_t *frame_data, uint32_t frame_len,
     }
     if (slot < 0) return 1;
     sc_peer_t *p = &sc_peers[slot];
+    int had_prev = p->active;
+    int moved_x = 0, moved_y = 0, moved_z = 0;
+    if (had_prev) {
+        moved_x = px - p->x;
+        moved_y = py - p->y;
+        moved_z = pz - p->z;
+    }
     if (!p->active) {
         p->active = 1;
         sc_peer_count++;
@@ -949,6 +985,12 @@ static int sc_net_cb(const uint8_t *frame_data, uint32_t frame_len,
         p->chat[0] = 0;
         p->color = sc_peer_color(id);
         p->rx = px; p->ry = py; p->rz = pz;
+        p->name[0] = 0;
+        p->walk_phase = 0;
+        p->move = 0;
+        p->move_target = 0;
+        p->air = 0;
+        p->air_until = 0;
     }
     p->x = px;
     p->y = py;
@@ -957,6 +999,18 @@ static int sc_net_cb(const uint8_t *frame_data, uint32_t frame_len,
     p->last_seen = sharkapi_get_ticks();
     for (int i = 0; i < 4; i++) p->ip[i] = src_ip[i];
 
+    /* Drive the remote avatar's animation from its reported motion:
+       horizontal travel advances the walk cycle; a big vertical jump
+       (or the flying flag) holds the airborne pose for a short while. */
+    if (had_prev) {
+        int travel = abs_val(moved_x) + abs_val(moved_z);
+        p->walk_phase = (p->walk_phase + ((travel * 110) >> 8)) & 255;
+        p->move_target = travel * 32 > 256 ? 256 : travel * 32;
+        if (abs_val(moved_y) > 16 || (pflags & 1)) {
+            p->air_until = sharkapi_get_ticks() + 280;
+        }
+    }
+
     if (type == P2P_HELLO && plen >= P2P_HDR_LEN + 4) {
         uint32_t seed = (uint32_t)pkt[15] | ((uint32_t)pkt[16] << 8) |
                         ((uint32_t)pkt[17] << 16) | ((uint32_t)pkt[18] << 24);
@@ -964,6 +1018,12 @@ static int sc_net_cb(const uint8_t *frame_data, uint32_t frame_len,
             sc_pending_seed = seed;
             sc_seed_dirty = 1;
         }
+        /* We append our name after the seed so late joiners learn it. */
+        if (plen > P2P_HDR_LEN + 4) {
+            sc_peer_set_name(p, pkt + P2P_HDR_LEN + 4, plen - (P2P_HDR_LEN + 4));
+        }
+    } else if (type == P2P_NAME && plen > P2P_HDR_LEN) {
+        sc_peer_set_name(p, pkt + P2P_HDR_LEN, plen - P2P_HDR_LEN);
     } else if (type == P2P_CHAT && plen > P2P_HDR_LEN) {
         uint32_t n = plen - P2P_HDR_LEN;
         if (n >= P2P_CHAT_MAX) n = P2P_CHAT_MAX - 1;
@@ -1039,6 +1099,15 @@ static void sc_p2p_send(uint8_t type, const uint8_t *dst_ip,
     }
 }
 
+/* Tell everyone the name we're currently playing under. */
+static void sc_broadcast_name(void) {
+    if (!sc_net_mode || !net_has_nic() || !net_configured) return;
+    sc_p2p_send(P2P_NAME, NULL, (const uint8_t *)sc_player_name, (uint32_t)sc_name_len);
+    if (sc_manual_set) {
+        sc_p2p_send(P2P_NAME, sc_manual_ip, (const uint8_t *)sc_player_name, (uint32_t)sc_name_len);
+    }
+}
+
 static void sc_p2p_poll(void) {
     net_poll();
     uint32_t now = sharkapi_get_ticks();
@@ -1078,12 +1147,15 @@ static void sc_p2p_poll(void) {
     }
     if ((int)(now - sc_last_hello) >= 1200) {
         sc_last_hello = now;
-        uint8_t seed_extra[4] = {
-            (uint8_t)(world_seed & 0xFF), (uint8_t)((world_seed >> 8) & 0xFF),
-            (uint8_t)((world_seed >> 16) & 0xFF), (uint8_t)((world_seed >> 24) & 0xFF)
-        };
-        sc_p2p_send(P2P_HELLO, NULL, seed_extra, 4);
-        if (sc_manual_set) sc_p2p_send(P2P_HELLO, sc_manual_ip, seed_extra, 4);
+        uint8_t seed_extra[4 + P2P_NAME_MAX];
+        seed_extra[0] = (uint8_t)(world_seed & 0xFF);
+        seed_extra[1] = (uint8_t)((world_seed >> 8) & 0xFF);
+        seed_extra[2] = (uint8_t)((world_seed >> 16) & 0xFF);
+        seed_extra[3] = (uint8_t)((world_seed >> 24) & 0xFF);
+        for (int i = 0; i < sc_name_len; i++) seed_extra[4 + i] = (uint8_t)sc_player_name[i];
+        uint32_t extra_len = 4 + (uint32_t)sc_name_len;
+        sc_p2p_send(P2P_HELLO, NULL, seed_extra, extra_len);
+        if (sc_manual_set) sc_p2p_send(P2P_HELLO, sc_manual_ip, seed_extra, extra_len);
     }
 }
 #else
@@ -1094,15 +1166,20 @@ static void sc_p2p_send(uint8_t type, const uint8_t *dst_ip,
     (void)type; (void)dst_ip; (void)extra; (void)extra_len;
 }
 static void sc_p2p_poll(void) {}
+static void sc_broadcast_name(void) {}
 #endif
 
 static void sc_start_game(int net_on) {
     sc_net_mode = net_on;
     if (net_on) sc_net_enable();
     else sc_net_disable();
+    if (net_on && sc_player_name[0]) sc_broadcast_name();
     world_generate();
     camera_reset();
     sc_third_person = 0;
+    sc_walk_phase = 0;
+    sc_move = 0;
+    sc_air = 0;
     sc_chat_mode = 0;
     sc_chat_len = 0;
     sc_seed_dirty = 0;
@@ -1128,6 +1205,9 @@ void sharkcraft_game_reset(void) {
     sc_ip_len = 0;
     sc_chat_hist_n = 0;
     sc_seed_dirty = 0;
+    sc_walk_phase = 0;
+    sc_move = 0;
+    sc_air = 0;
     for (int i = 0; i < P2P_MAX_PEERS; i++) sc_peers[i].active = 0;
     sc_peer_count = 0;
     sc_derive_player_id();
@@ -1537,9 +1617,13 @@ static void bean_init_eyes(void) {
     bean_eye_ready = 1;
 }
 
-/* Draw one world-space quad (4 verts in Q fixed-point) with a flat tex. */
-static void bean_quad(const int verts[4][3], const uint32_t *tex,
-                      int cs_r, int sn_r, int cs_p, int sn_p) {
+/* Draw one world-space quad (4 verts in Q fixed-point) with a flat tex.
+   The world-to-camera transform must use the render camera's rotation,
+   not the bean's own yaw (verts are already rotated into world space). */
+static void bean_quad(const int verts[4][3], const uint32_t *tex) {
+    int cr = rcam_yaw & 255, cp = rcam_pitch & 255;
+    int cs_r = cs[cr], sn_r = sn[cr];
+    int cs_p = cs[cp], sn_p = sn[cp];
     camera_vertex_t input[4], clipped[12];
     for (int k = 0; k < 4; k++) {
         int vdx = verts[k][0] - rcam_x;
@@ -1564,9 +1648,10 @@ static void bean_quad(const int verts[4][3], const uint32_t *tex,
     }
 }
 
-/* Draw a yaw-rotated box: center (cx,cy,cz) in Q, half extents, face tex. */
+/* Draw a yaw-rotated box: center (cx,cy,cz) in Q, half extents, face tex.
+   cs_r/sn_r rotate the box by the bean's own yaw. */
 static void bean_box(int cx, int cy, int cz, int hx, int hy, int hz,
-                     int cs_r, int sn_r, int cs_p, int sn_p) {
+                     int cs_r, int sn_r) {
     static const int lc[6][4][3] = {
         {{ 1,-1, 1},{ 1, 1, 1},{ 1, 1,-1},{ 1,-1,-1}},
         {{-1,-1,-1},{-1, 1,-1},{-1, 1, 1},{-1,-1, 1}},
@@ -1579,11 +1664,13 @@ static void bean_box(int cx, int cy, int cz, int hx, int hy, int hz,
         {1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1}
     };
     for (int f = 0; f < 6; f++) {
-        int nx = (ln[f][0] * cs_r + ln[f][2] * sn_r) >> 10;
-        int nz = (-ln[f][0] * sn_r + ln[f][2] * cs_r) >> 10;
-        int ny = ln[f][1];
+        /* Rotated face normal, kept at 1024-scale so no component
+           truncates to zero (ln is a unit vector). */
+        int nx = ln[f][0] * cs_r + ln[f][2] * sn_r;
+        int nz = -ln[f][0] * sn_r + ln[f][2] * cs_r;
+        int ny = ln[f][1] * 1024;
         int verts[4][3];
-        int fcx = cx, fcy = cy, fcz = cz;
+        int fcx = 0, fcy = 0, fcz = 0;
         for (int k = 0; k < 4; k++) {
             int lx = lc[f][k][0] * hx;
             int ly = lc[f][k][1] * hy;
@@ -1591,14 +1678,14 @@ static void bean_box(int cx, int cy, int cz, int hx, int hy, int hz,
             verts[k][0] = cx + ((lx * cs_r + lz * sn_r) >> 10);
             verts[k][1] = cy + ly;
             verts[k][2] = cz + ((-lx * sn_r + lz * cs_r) >> 10);
-            fcx += verts[k][0] - cx;
-            fcy += verts[k][1] - cy;
-            fcz += verts[k][2] - cz;
+            fcx += verts[k][0];
+            fcy += verts[k][1];
+            fcz += verts[k][2];
         }
         fcx /= 4; fcy /= 4; fcz /= 4;
         int facing = nx * (rcam_x - fcx) + ny * (rcam_y - fcy) + nz * (rcam_z - fcz);
         if (facing <= 0) continue;
-        bean_quad(verts, bean_face_tex[f], cs_r, sn_r, cs_p, sn_p);
+        bean_quad(verts, bean_face_tex[f]);
     }
 }
 
@@ -1616,30 +1703,57 @@ static uint32_t bean_lighten(uint32_t c, int add) {
     return 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
 }
 
-/* One yaw-rotated body part. (lx) is a sideways offset in local space,
+/* One yaw-rotated body part. (lx,lz) is an offset in local space,
    cy is the world height of the part center; hx/hy/hz are half extents. */
-static void bean_part(int px, int pz, int lx, int cy, int hx, int hy, int hz,
-                      int cs_r, int sn_r, int cs_p, int sn_p) {
-    int cx = px + ((lx * cs_r) >> 10);
-    int cz = pz + ((-lx * sn_r) >> 10);
-    bean_box(cx, cy, cz, hx, hy, hz, cs_r, sn_r, cs_p, sn_p);
+static void bean_part(int px, int pz, int lx, int lz, int cy, int hx, int hy, int hz,
+                      int cs_r, int sn_r) {
+    int cx = px + ((lx * cs_r + lz * sn_r) >> 10);
+    int cz = pz + ((-lx * sn_r + lz * cs_r) >> 10);
+    bean_box(cx, cy, cz, hx, hy, hz, cs_r, sn_r);
 }
 
-static void render_bean(int px, int py_eye, int pz, int pyaw, uint32_t color) {
+/* walk_phase is a 0..255 stride cycle; move fades the stride in and out
+   (0 = standing neutral); air blends in the jump/fall pose. */
+static void render_bean(int px, int py_eye, int pz, int pyaw, uint32_t color,
+                        int walk_phase, int move, int air) {
     bean_init_eyes();
     int r = pyaw & 255;
     int cs_r = cs[r], sn_r = sn[r];
-    int cs_p = cs[rcam_pitch & 255], sn_p = sn[rcam_pitch & 255];
+    int cr = rcam_yaw & 255, cp = rcam_pitch & 255;
+    int cs_c = cs[cr], sn_c = sn[cr];
+    int cs_p = cs[cp], sn_p = sn[cp];
     int fy = py_eye - EYE_HEIGHT; /* feet */
     int H = PLAYER_HEIGHT;
 
-    /* Body-center frustum cull. */
+    /* Body-center frustum cull (uses the render camera's rotation). */
     int cdx = px - rcam_x;
     int cdy = (fy + H / 2) - rcam_y;
     int cdz = pz - rcam_z;
-    int chz = (cdx * sn_r + cdz * cs_r) >> 10;
+    int chz = (cdx * sn_c + cdz * cs_c) >> 10;
     int cz = (cdy * sn_p + chz * cs_p) >> 10;
     if (cz < NEAR_CLIP - Q || cz > MAX_RENDER_DIST) return;
+
+    /* ---- pose: bouncy stride + jump/fall blend ---- */
+    if (air < 0) air = 0;
+    if (air > 256) air = 256;
+    if (move < 0) move = 0;
+    if (move > 256) move = 256;
+    int wp = walk_phase & 255;
+    int s = sn[wp];             /* stride swing, -1024..1024 */
+    int c = cs[wp];
+    int ground = 256 - air;     /* 256 = planted, 0 = fully airborne */
+
+    int swing = (((s * 46) >> 10) * ground >> 8) * move >> 8;   /* legs fore/aft */
+    int liftL = (c > 0 ? (c * 22) >> 10 : 0) * ground >> 8;
+    int liftR = (c < 0 ? (-c * 22) >> 10 : 0) * ground >> 8;
+    liftL = liftL * move >> 8;
+    liftR = liftR * move >> 8;
+    int tuck = (air * 40) >> 8;                         /* knees up in the air */
+    int fold = (air * 14) >> 8;                         /* legs shorten a touch */
+    int bob = (-(((s < 0 ? -s : s) * 30) >> 10)) * move >> 8;  /* dips twice/stride */
+    int armSway = (((s * 30) >> 10) * ground >> 8) * move >> 8; /* arms counter-swing */
+    int armUp = (air * 52) >> 8;                        /* arms thrown up ... */
+    int armOut = (air * 30) >> 8;                       /* ... and outward */
 
     /* Proportions (Q units), feet at fy, head top at fy + H. */
     int legH = H * 42 / 100;
@@ -1655,25 +1769,31 @@ static void render_bean(int px, int py_eye, int pz, int pyaw, uint32_t color) {
     uint32_t armCol = bean_darken(color, 205);
     uint32_t headCol = bean_lighten(color, 30);
 
-    /* Legs */
+    /* Legs: alternate stride, little step lift, pull up when airborne
+       (top stays near the hip, so the foot rises). */
     bean_fill_all(legCol);
-    bean_part(px, pz, -legOff, fy + legH / 2, legW / 2, legH / 2, legD / 2, cs_r, sn_r, cs_p, sn_p);
-    bean_part(px, pz,  legOff, fy + legH / 2, legW / 2, legH / 2, legD / 2, cs_r, sn_r, cs_p, sn_p);
+    bean_part(px, pz, -legOff,  swing, fy + legH / 2 + bob + liftL + tuck,
+              legW / 2, legH / 2 - fold, legD / 2, cs_r, sn_r);
+    bean_part(px, pz,  legOff, -swing, fy + legH / 2 + bob + liftR + tuck,
+              legW / 2, legH / 2 - fold, legD / 2, cs_r, sn_r);
 
-    /* Torso */
+    /* Torso bobs with the stride. */
     bean_fill_all(color);
-    bean_part(px, pz, 0, fy + legH + torsoH / 2, torsoW / 2, torsoH / 2, torsoD / 2, cs_r, sn_r, cs_p, sn_p);
+    bean_part(px, pz, 0, 0, fy + legH + torsoH / 2 + bob,
+              torsoW / 2, torsoH / 2, torsoD / 2, cs_r, sn_r);
 
-    /* Arms */
+    /* Arms counter-swing while walking, lift and spread in the air. */
     bean_fill_all(armCol);
-    bean_part(px, pz, -armOff, fy + legH + torsoH / 2, armW / 2, torsoH / 2, armD / 2, cs_r, sn_r, cs_p, sn_p);
-    bean_part(px, pz,  armOff, fy + legH + torsoH / 2, armW / 2, torsoH / 2, armD / 2, cs_r, sn_r, cs_p, sn_p);
+    bean_part(px, pz, -(armOff + armOut), -armSway,
+              fy + legH + torsoH / 2 + bob + armUp, armW / 2, torsoH / 2, armD / 2, cs_r, sn_r);
+    bean_part(px, pz,  (armOff + armOut),  armSway,
+              fy + legH + torsoH / 2 + bob + armUp, armW / 2, torsoH / 2, armD / 2, cs_r, sn_r);
 
-    /* Head */
-    int headCY = fy + legH + torsoH + headH / 2;
+    /* Head rides the bob too. */
+    int headCY = fy + legH + torsoH + headH / 2 + bob;
     int headW = 120, headD = 116;
     bean_fill_all(headCol);
-    bean_part(px, pz, 0, headCY, headW / 2, headH / 2, headD / 2, cs_r, sn_r, cs_p, sn_p);
+    bean_part(px, pz, 0, 0, headCY, headW / 2, headH / 2, headD / 2, cs_r, sn_r);
 
     /* Eyes on the head front (local +Z = facing direction). */
     int eyeY = headCY + headH / 8;
@@ -1690,7 +1810,7 @@ static void render_bean(int px, int py_eye, int pz, int pyaw, uint32_t color) {
             {ex + dxn, eyeY + hy, ez - dzn},
             {ex - dxn, eyeY + hy, ez + dzn}
         };
-        bean_quad(verts, bean_eye_white, cs_r, sn_r, cs_p, sn_p);
+        bean_quad(verts, bean_eye_white);
 
         int lz2 = frontZ + 3;
         int px2 = px + ((lx * cs_r + lz2 * sn_r) >> 10);
@@ -1703,7 +1823,7 @@ static void render_bean(int px, int py_eye, int pz, int pyaw, uint32_t color) {
             {px2 + dxn2, eyeY + hy2, pz2 - dzn2},
             {px2 - dxn2, eyeY + hy2, pz2 + dzn2}
         };
-        bean_quad(verts2, bean_eye_black, cs_r, sn_r, cs_p, sn_p);
+        bean_quad(verts2, bean_eye_black);
     }
 }
 
@@ -1725,6 +1845,7 @@ static int sc_project(int wx, int wy, int wz, int *sx, int *sy) {
 }
 
 static int hud_draw_text(int x, int y, const char *s, uint32_t col);
+static int sc_text_width(const char *s);
 
 static void sc_draw_bean_tags(void) {
     static const char hexd[] = "0123456789ABCDEF";
@@ -1737,19 +1858,36 @@ static void sc_draw_bean_tags(void) {
         int head_y = p->ry - EYE_HEIGHT + PLAYER_HEIGHT + 10;
         if (!sc_project(p->rx, head_y, p->rz, &sx, &sy)) continue;
         if (sx < -30 || sx > RW + 30 || sy < 0 || sy > RH) continue;
-        char tag[6];
-        tag[0] = 'P';
-        tag[1] = hexd[(p->id >> 12) & 15];
-        tag[2] = hexd[(p->id >> 8) & 15];
-        tag[3] = hexd[(p->id >> 4) & 15];
-        tag[4] = hexd[p->id & 15];
-        tag[5] = 0;
-        int tw = 5 * 6;
+        char tag[P2P_NAME_MAX + 1];
+        if (p->name[0]) {
+            int n = 0;
+            while (p->name[n] && n < P2P_NAME_MAX) { tag[n] = p->name[n]; n++; }
+            tag[n] = 0;
+        } else {
+            tag[0] = 'P';
+            tag[1] = hexd[(p->id >> 12) & 15];
+            tag[2] = hexd[(p->id >> 8) & 15];
+            tag[3] = hexd[(p->id >> 4) & 15];
+            tag[4] = hexd[p->id & 15];
+            tag[5] = 0;
+        }
+        int tw = sc_text_width(tag);
         hud_draw_text(sx - tw / 2, sy, tag, p->color);
         if (p->chat[0] && (int)(now - p->chat_t) < 4000) {
             int cw = 0;
             for (int k = 0; p->chat[k]; k++) cw += 6;
             if (sy - 8 >= 0) hud_draw_text(sx - cw / 2, sy - 8, p->chat, 0xFFFFFFFFu);
+        }
+    }
+
+    /* Our own name floats above us in third-person mode. */
+    if (sc_third_person && sc_player_name[0]) {
+        int sx, sy;
+        int head_y = camera_y - EYE_HEIGHT + PLAYER_HEIGHT + 10;
+        if (sc_project(camera_x, head_y, camera_z, &sx, &sy) &&
+            sx >= -30 && sx <= RW + 30 && sy >= 0 && sy <= RH) {
+            int tw = sc_text_width(sc_player_name);
+            hud_draw_text(sx - tw / 2, sy, sc_player_name, sc_peer_color(sc_player_id));
         }
     }
 }
@@ -1930,7 +2068,7 @@ static void draw_hud(void) {
 
 #define SC_MENU_TOP 60
 #define SC_MENU_ROW 14
-#define SC_MAIN_ITEMS 5
+#define SC_MAIN_ITEMS 6
 #define SC_PAUSE_ITEMS 4
 
 static void sc_fill_rect(int x, int y, int w, int h, uint32_t col) {
@@ -2009,6 +2147,18 @@ static void sc_draw_main_menu(void) {
     line[p] = 0;
     sc_draw_menu_label(SC_MENU_TOP, 1, sc_menu_sel, line);
 
+    p = 0;
+    a = "NAME: ";
+    for (int i = 0; a[i]; i++) line[p++] = a[i];
+    if (sc_player_name[0]) {
+        for (int i = 0; sc_player_name[i] && p < (int)sizeof(line) - 1; i++) line[p++] = sc_player_name[i];
+    } else {
+        a = "NONE";
+        for (int i = 0; a[i]; i++) line[p++] = a[i];
+    }
+    line[p] = 0;
+    sc_draw_menu_label(SC_MENU_TOP, 2, sc_menu_sel, line);
+
     char ip[24];
     if (sc_manual_set) sc_format_ip(ip, sc_manual_ip);
     else { ip[0] = 'N'; ip[1] = 'O'; ip[2] = 'N'; ip[3] = 'E'; ip[4] = 0; }
@@ -2017,10 +2167,10 @@ static void sc_draw_main_menu(void) {
     for (int i = 0; a[i]; i++) line[p++] = a[i];
     for (int i = 0; ip[i]; i++) line[p++] = ip[i];
     line[p] = 0;
-    sc_draw_menu_label(SC_MENU_TOP, 2, sc_menu_sel, line);
+    sc_draw_menu_label(SC_MENU_TOP, 3, sc_menu_sel, line);
 
-    sc_draw_menu_label(SC_MENU_TOP, 3, sc_menu_sel, "HELP");
-    sc_draw_menu_label(SC_MENU_TOP, 4, sc_menu_sel, "QUIT");
+    sc_draw_menu_label(SC_MENU_TOP, 4, sc_menu_sel, "HELP");
+    sc_draw_menu_label(SC_MENU_TOP, 5, sc_menu_sel, "QUIT");
     sc_draw_text_centered(RW / 2, RH - 14, "ARROWS:MOVE ENTER:SELECT", 0xFF707680u);
 }
 
@@ -2064,6 +2214,19 @@ static void sc_draw_ip(void) {
     sc_draw_text_centered(RW / 2, RH - 20, "ENTER:OK  ESC:CANCEL", 0xFF707680u);
 }
 
+static void sc_draw_name(void) {
+    sc_fill_rect(0, 0, RW, RH, 0xE0060910u);
+    sc_draw_border(0, 0, RW, RH, 0xFF20262Eu);
+    sc_draw_text_centered(RW / 2, 40, "YOUR NAME", 0xFF66EEFFu);
+    sc_draw_text_centered(RW / 2, 60, "TYPE THEN ENTER", 0xFFAAB0B8u);
+    sc_fill_rect(40, 90, RW - 80, 16, 0xFF0A0E14u);
+    sc_draw_border(40, 90, RW - 80, 16, 0xFF3A4048u);
+    hud_draw_text(46, 95, sc_player_name, 0xFFFFFFFFu);
+    int cx = 46 + sc_text_width(sc_player_name);
+    if (cx < RW - 6) sc_fill_rect(cx, 95, 5, 5, 0xFFFFFFFFu);
+    sc_draw_text_centered(RW / 2, RH - 20, "ENTER:OK  ESC:CANCEL", 0xFF707680u);
+}
+
 static void sc_draw_chat(void) {
     int y = RH - 24 - sc_chat_hist_n * 9;
     if (y < 12) y = 12;
@@ -2082,7 +2245,8 @@ static void sc_draw_chat(void) {
 
 static void sc_draw_overlays(void) {
     if (sc_state == SC_MENU) {
-        if (sc_ip_mode) sc_draw_ip();
+        if (sc_name_mode) sc_draw_name();
+        else if (sc_ip_mode) sc_draw_ip();
         else sc_draw_main_menu();
     } else if (sc_state == SC_HELP) {
         sc_draw_help();
@@ -2291,13 +2455,27 @@ static void draw_scene(int ox, int oy, int w, int h) {
     /* Remote player beans (opaque, depth-tested against terrain).
        Smoothly interpolate each peer's render position toward the latest
        network position so movement looks continuous instead of snapping. */
+    uint32_t frame_now = sharkapi_get_ticks();
     for (int i = 0; i < P2P_MAX_PEERS; i++) {
         sc_peer_t *pp = &sc_peers[i];
         if (!pp->active) continue;
         if (pp->rx != pp->x) pp->rx += (pp->x - pp->rx) >> 2;
         if (pp->ry != pp->y) pp->ry += (pp->y - pp->ry) >> 2;
         if (pp->rz != pp->z) pp->rz += (pp->z - pp->rz) >> 2;
-        render_bean(pp->rx, pp->ry, pp->rz, pp->yaw, pp->color);
+        /* Ease the remote jump pose and locomotion blend toward targets. */
+        int air_target = ((int32_t)(pp->air_until - frame_now) > 0) ? 256 : 0;
+        if (pp->air < air_target) pp->air += (air_target - pp->air) >> 3;
+        else if (pp->air > air_target) pp->air -= (pp->air - air_target) >> 3;
+        if (pp->move < pp->move_target) pp->move += (pp->move_target - pp->move) >> 3;
+        else if (pp->move > pp->move_target) pp->move -= (pp->move - pp->move_target) >> 3;
+        render_bean(pp->rx, pp->ry, pp->rz, pp->yaw, pp->color,
+                    pp->walk_phase, pp->move, pp->air);
+    }
+
+    /* Our own bean, only visible in third-person mode. */
+    if (sc_third_person) {
+        render_bean(camera_x, camera_y, camera_z, yaw, sc_peer_color(sc_player_id),
+                    sc_walk_phase, sc_move, sc_air);
     }
 
     for (int ring = max_ring; ring >= 0; ring--) {
@@ -2434,6 +2612,7 @@ static void physics_update(void) {
     if (elapsed > 50) elapsed = 50;
     if (!elapsed) return;
     int dt = (int)elapsed;
+    sc_anim_dt = dt;
 
     int look_yaw = input_active(INPUT_LOOK_RIGHT, now) - input_active(INPUT_LOOK_LEFT, now);
     int look_pitch = input_active(INPUT_LOOK_UP, now) - input_active(INPUT_LOOK_DOWN, now);
@@ -2540,6 +2719,22 @@ static void physics_update(void) {
 
     clamp_camera();
     if (camera_y < -4 * Q) camera_reset();
+}
+
+/* Advance the local avatar's stride cycle by the distance travelled and
+   ease the jump/fall pose in and out. Runs once per game tick. */
+static void sc_update_avatar_anim(void) {
+    int adv = ((abs_val(velocity_x) + abs_val(velocity_z)) * sc_anim_dt) / 1000;
+    sc_walk_phase = (sc_walk_phase + ((adv * 110) >> 8)) & 255;
+    int move_target = adv * 32 > 256 ? 256 : adv * 32;
+    if (sc_move < move_target) sc_move += (move_target - sc_move) >> 3;
+    else if (sc_move > move_target) sc_move -= (sc_move - move_target) >> 3;
+    int target = on_ground ? 0 : 256;
+    if (flying) target = 176; /* hover: half-raised arms */
+    if (sc_air < target) sc_air += (target - sc_air) >> 3;
+    else if (sc_air > target) sc_air -= (sc_air - target) >> 3;
+    if (sc_air < 0) sc_air = 0;
+    if (sc_air > 256) sc_air = 256;
 }
 
 static void register_key_press(int idx, uint32_t now) {
@@ -2656,7 +2851,10 @@ static int move_key(char key) {
 
 void sharkcraft_tick(void) {
     if (!world_ready) sharkcraft_game_reset();
-    if (sc_state == SC_PLAY) physics_update();
+    if (sc_state == SC_PLAY) {
+        physics_update();
+        sc_update_avatar_anim();
+    }
     sc_p2p_poll();
 }
 
@@ -2726,13 +2924,35 @@ static void sc_send_chat(void) {
     if (sc_manual_set) sc_p2p_send(P2P_CHAT, sc_manual_ip, (const uint8_t *)sc_chat_buf, (uint32_t)sc_chat_len);
 }
 
+static void sc_open_name_entry(int mode) {
+    sc_name_mode = mode;
+    sc_name_len = 0;
+    while (sc_player_name[sc_name_len]) sc_name_len++;
+}
+
+static void sc_commit_name(void) {
+    sc_player_name[sc_name_len] = 0;
+    if (sc_name_mode == 2) {
+        sc_name_mode = 0;
+        sc_start_game(1);
+    } else {
+        sc_name_mode = 0;
+    }
+    if (sc_player_name[0]) sc_broadcast_name();
+}
+
 static void sc_activate_main(void) {
     switch (sc_menu_sel) {
-        case 0: sc_start_game(sc_net_mode); break;
+        case 0:
+            /* Going multiplayer? Ask for a name first if none is set. */
+            if (sc_net_mode && !sc_player_name[0]) sc_open_name_entry(2);
+            else sc_start_game(sc_net_mode);
+            break;
         case 1: sc_net_mode = !sc_net_mode; break;
-        case 2: sc_ip_mode = 1; sc_ip_len = 0; sc_ip_buf[0] = 0; break;
-        case 3: sc_help_return = SC_MENU; sc_state = SC_HELP; break;
-        case 4: sc_wants_close = 1; break;
+        case 2: sc_open_name_entry(1); break;
+        case 3: sc_ip_mode = 1; sc_ip_len = 0; sc_ip_buf[0] = 0; break;
+        case 4: sc_help_return = SC_MENU; sc_state = SC_HELP; break;
+        case 5: sc_wants_close = 1; break;
     }
 }
 
@@ -2749,6 +2969,20 @@ static void sc_activate_pause(void) {
             break;
         case 3: sc_wants_close = 1; break;
     }
+}
+
+static int sc_handle_name_key(char key) {
+    if (key == '\n' || key == '\r') { sc_commit_name(); return 1; }
+    if (key == 27) { sc_name_mode = 0; return 1; }
+    if (key == '\b') { if (sc_name_len > 0) sc_player_name[--sc_name_len] = 0; return 1; }
+    if (key >= 32 && key < 127) {
+        if (sc_name_len < P2P_NAME_MAX - 1) {
+            sc_player_name[sc_name_len++] = (char)key;
+            sc_player_name[sc_name_len] = 0;
+        }
+        return 1;
+    }
+    return 0;
 }
 
 static int sc_handle_menu_key(char key) {
@@ -2803,6 +3037,7 @@ int sharkcraft_handle_key(char key) {
     switch (sc_state) {
         case SC_MENU:
             if (sc_ip_mode) return sc_handle_ip_key(key);
+            if (sc_name_mode) return sc_handle_name_key(key);
             return sc_handle_menu_key(key);
         case SC_HELP:
             sc_state = sc_help_return;
@@ -2825,7 +3060,7 @@ int sharkcraft_handle_mouse(int x, int y, int buttons) {
 
     /* Menus and text entry: pointer selects/activates, keyboard still works. */
     if (sc_state != SC_PLAY) {
-        int in_menu = (sc_state == SC_MENU && !sc_ip_mode) || sc_state == SC_PAUSE;
+        int in_menu = (sc_state == SC_MENU && !sc_ip_mode && !sc_name_mode) || sc_state == SC_PAUSE;
         int count = (sc_state == SC_PAUSE) ? SC_PAUSE_ITEMS : SC_MAIN_ITEMS;
         int px = sc_screen_to_pixel_x(x);
         int py = sc_screen_to_pixel_y(y);
@@ -2926,7 +3161,10 @@ int sharkcraft_plugin_command(int argc, char **argv) {
             sharkapi_clear_screen();
             return 0;
         }
-        if (sc_state == SC_PLAY) physics_update();
+        if (sc_state == SC_PLAY) {
+            physics_update();
+            sc_update_avatar_anim();
+        }
         sc_p2p_poll();
         uint32_t now = sharkapi_get_ticks();
         if (changed || now - last >= 16) {
