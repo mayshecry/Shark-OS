@@ -1980,8 +1980,13 @@ void app_window_mouse_sharkcube(window_t* w, int mx, int my, int buttons) {
 }
 
 void app_window_keyboard_sharkcraft(window_t* w, char c) {
-    if (c == 27) { window_close_by_ptr(w); return; }
+    /* SharkCraft manages ESC itself (main menu / pause / chat cancel).
+       It asks the window to close via sharkcraft_wants_close(). */
     if (sharkcraft_handle_key(c)) { w->needs_redraw=true; desktop.dirty=true; }
+    if (sharkcraft_wants_close()) {
+        sharkcraft_clear_wants_close();
+        window_close_by_ptr(w);
+    }
 }
 
 void app_window_mouse_sharkcraft(window_t* w, int mx, int my, int buttons) {

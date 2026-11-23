@@ -307,6 +307,8 @@ void sharkcraft_tick(void);
 void sharkcraft_draw_window(int x, int y, int width, int height);
 int sharkcraft_handle_key(char key);
 int sharkcraft_handle_mouse(int x, int y, int buttons);
+int sharkcraft_wants_close(void);
+void sharkcraft_clear_wants_close(void);
 void app_window_draw_settings(window_t* w);
 void app_window_mouse_settings(window_t* w, int mx, int my, int buttons);
 void app_window_mouse_filemanager(window_t* w, int mx, int my, int buttons);

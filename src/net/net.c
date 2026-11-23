@@ -84,6 +84,7 @@ static net_forward_hook_t net_forward_cb_hook = NULL;
 static net_poll_hook_t net_poll_cb_hook = NULL;
 
 void net_set_service_hook(net_service_hook_t cb) { net_service_cb_hook = cb; }
+net_service_hook_t net_get_service_hook(void) { return net_service_cb_hook; }
 void net_set_arp_hook(net_arp_hook_t cb)       { net_arp_cb_hook = cb; }
 void net_set_local_ip_hook(net_local_ip_hook_t cb) { net_local_cb_hook = cb; }
 void net_set_forward_hook(net_forward_hook_t cb) { net_forward_cb_hook = cb; }

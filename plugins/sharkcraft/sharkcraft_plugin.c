@@ -2,6 +2,29 @@
 #include "desktop.h"
 #include <stdint.h>
 
+#ifdef SHARKCRAFT_BUILTIN
+#include "net.h"
+#endif
+
+/* ---- P2P multiplayer (ported from mayshecry/game) --------------------
+   UDP port 31337, same as the game repo, but with 'S','C' magic so a
+   SharkCraft client and a game-repo client on the same LAN ignore each
+   other's packets instead of misreading them. Packet layout mirrors the
+   game repo: [0]='S' [1]='C' [2]=type [3..6]=player_id LE
+   [7..8]=x LE [9..10]=y LE (biased +1024) [11..12]=z LE [13]=yaw
+   [14]=flags [15..]=extra. Types: 1=HELLO (extra: seed u32 LE),
+   2=POS, 3=CHAT (extra: text), 4=BLOCK (extra: x,y,z,block). */
+#define P2P_PORT 31337
+#define P2P_MAX_PEERS 8
+#define P2P_CHAT_MAX 48
+#define P2P_HDR_LEN 15
+#define P2P_HELLO 1
+#define P2P_POS 2
+#define P2P_CHAT 3
+#define P2P_BLOCK 4
+#define P2P_PEER_TIMEOUT_MS 6000
+#define P2P_Y_BIAS 1024
+
 #define RW 320
 #define RH 224
 #define WX 32
@@ -66,9 +89,9 @@ plugin_info_t sharkcraft_plugin_info = {
     .version = SHARKAPI_VERSION,
     .name = "sharkcraft",
     .author = "SharkOS community",
-    .description = "3D voxel sandbox: procedural terrain, water, trees, physics, and building.",
+    .description = "3D voxel sandbox: procedural terrain, water, trees, physics, building, and P2P multiplayer with bean avatars and chat.",
     .major = 1,
-    .minor = 0
+    .minor = 1
 };
 
 static const uint8_t hotbar_blocks[HOTBAR_COUNT] = {
@@ -118,6 +141,68 @@ static uint32_t physics_last_tick = 0;
 static int physics_clock_ready = 0;
 static int position_remainder_x, position_remainder_y, position_remainder_z;
 static int yaw_look_remainder, pitch_look_remainder;
+
+/* ---- Game state: main menu / help / play / pause -------------------- */
+#define SC_MENU 0
+#define SC_HELP 1
+#define SC_PLAY 2
+#define SC_PAUSE 3
+
+static int sc_state = SC_MENU;
+static int sc_help_return = SC_MENU;
+static int sc_menu_sel = 0;
+static int sc_wants_close = 0;
+static int sc_net_mode = 1; /* 1 = multiplayer (P2P on), 0 = singleplayer */
+static int sc_third_person = 0;
+static int g_draw_ox = 0, g_draw_oy = 0, g_draw_w = 320, g_draw_h = 224;
+static int g_mouse_x = -100, g_mouse_y = -100;
+
+/* Render camera (differs from physics camera in third-person mode). */
+static int rcam_x, rcam_y, rcam_z, rcam_yaw, rcam_pitch;
+
+/* ---- P2P peers + chat (ported from mayshecry/game) ------------------ */
+typedef struct {
+    uint8_t ip[4];
+    uint32_t id;
+    int x, y, z; /* eye position, Q fixed-point (latest received) */
+    int rx, ry, rz; /* smoothed render position (interpolated toward x/y/z) */
+    int yaw;
+    uint32_t last_seen;
+    int active;
+    char chat[P2P_CHAT_MAX];
+    uint32_t chat_t;
+    uint32_t color;
+} sc_peer_t;
+
+static sc_peer_t sc_peers[P2P_MAX_PEERS];
+static int sc_peer_count = 0;
+static uint32_t sc_player_id = 0;
+static uint8_t sc_manual_ip[4];
+static int sc_manual_set = 0;
+static uint32_t sc_last_net_send = 0;
+static uint32_t sc_last_hello = 0;
+static int sc_last_sent_x, sc_last_sent_y, sc_last_sent_z;
+static uint32_t sc_pending_seed = 0;
+static int sc_seed_dirty = 0;
+
+static int sc_chat_mode = 0;
+static char sc_chat_buf[P2P_CHAT_MAX];
+static int sc_chat_len = 0;
+
+#define SC_CHAT_HIST 4
+typedef struct {
+    char text[P2P_CHAT_MAX];
+    uint32_t id;
+    uint32_t t;
+    int own;
+} sc_chat_msg_t;
+
+static sc_chat_msg_t sc_chat_hist[SC_CHAT_HIST];
+static int sc_chat_hist_n = 0;
+
+static int sc_ip_mode = 0;
+static char sc_ip_buf[32];
+static int sc_ip_len = 0;
 
 static int has_target = 0;
 static int target_bx, target_by, target_bz;
@@ -677,6 +762,15 @@ static void clear_inputs(void) {
 static void camera_reset(void) {
     int sx = WX / 2;
     int sz = WZ / 2;
+    /* Offset the spawn by player id so multiplayer beans don't stack. */
+    if (sc_player_id) {
+        sx += (int)((sc_player_id >> 3) % 5) - 2;
+        sz += (int)((sc_player_id >> 7) % 5) - 2;
+        if (sx < 2) sx = 2;
+        if (sx > WX - 3) sx = WX - 3;
+        if (sz < 2) sz = 2;
+        if (sz > WZ - 3) sz = WZ - 3;
+    }
     camera_x = sx * Q + Q / 2;
     camera_z = sz * Q + Q / 2;
     camera_y = world_surface_height(sx, sz) + EYE_HEIGHT;
@@ -723,6 +817,8 @@ static int map_key_to_input(char key, uint8_t base_scancode) {
 }
 
 static void sharkcraft_raw_key_cb(char key, uint8_t scancode) {
+    /* Movement keys must not leak into the world while chatting or in menus. */
+    if (sc_state != SC_PLAY || sc_chat_mode) return;
     int released = (scancode & 0x80) != 0;
     uint8_t base = scancode & 0x7F;
     int idx = map_key_to_input(key, base);
@@ -758,10 +854,287 @@ static void ensure_desktop_integration(void) {
 #endif
 }
 
+/* ---- P2P multiplayer (ported from mayshecry/game) ------------------ */
+
+static uint32_t sc_peer_color(uint32_t id) {
+    static const uint32_t palette[8] = {
+        0xFFFF5555u, 0xFFFFAA33u, 0xFFFFFF55u, 0xFF55FF77u,
+        0xFF55DDFFu, 0xFF6688FFu, 0xFFFF55FFu, 0xFFFFFFFFu
+    };
+    return palette[(id * 2654435761u) >> 29];
+}
+
+static void sc_chat_push(const char *text, uint32_t id, int own) {
+    if (!text || !text[0]) return;
+    if (sc_chat_hist_n >= SC_CHAT_HIST) {
+        for (int i = 1; i < SC_CHAT_HIST; i++) sc_chat_hist[i - 1] = sc_chat_hist[i];
+        sc_chat_hist_n = SC_CHAT_HIST - 1;
+    }
+    sc_chat_msg_t *m = &sc_chat_hist[sc_chat_hist_n++];
+    int i = 0;
+    while (text[i] && i < P2P_CHAT_MAX - 1) {
+        m->text[i] = text[i];
+        i++;
+    }
+    m->text[i] = 0;
+    m->id = id;
+    m->own = own;
+    m->t = sharkapi_get_ticks();
+}
+
+static void sc_derive_player_id(void) {
+    uint32_t id = 0;
+#ifdef SHARKCRAFT_BUILTIN
+    for (int i = 0; i < 6; i++) id = id * 31u + net_mac[i] + 7u;
+#endif
+    id = id * 2654435761u + (sharkapi_get_ticks() & 0xFFFFu);
+    id ^= sharkapi_get_ticks();
+    if (!id) id = 12345u;
+    sc_player_id = id;
+}
+
+#ifdef SHARKCRAFT_BUILTIN
+static net_service_hook_t sc_prev_hook = NULL;
+
+static int sc_net_cb(const uint8_t *frame_data, uint32_t frame_len,
+                     const uint8_t *src_ip, const uint8_t *dst_ip,
+                     uint16_t src_port, uint16_t dst_port, uint8_t protocol) {
+    (void)dst_ip;
+    (void)protocol;
+    if (dst_port != P2P_PORT || src_port != P2P_PORT) {
+        if (sc_prev_hook) return sc_prev_hook(frame_data, frame_len, src_ip, dst_ip, src_port, dst_port, protocol);
+        return 0;
+    }
+    if (frame_len < 14 + 20 + 8 + P2P_HDR_LEN) {
+        if (sc_prev_hook) return sc_prev_hook(frame_data, frame_len, src_ip, dst_ip, src_port, dst_port, protocol);
+        return 0;
+    }
+    uint32_t ihl = (uint32_t)((frame_data[14] & 0x0F) * 4);
+    if (ihl < 20 || frame_len < 14 + ihl + 8 + P2P_HDR_LEN) {
+        if (sc_prev_hook) return sc_prev_hook(frame_data, frame_len, src_ip, dst_ip, src_port, dst_port, protocol);
+        return 0;
+    }
+    const uint8_t *pkt = frame_data + 14 + ihl + 8;
+    uint32_t plen = frame_len - (14 + ihl + 8);
+    if (plen < P2P_HDR_LEN || pkt[0] != 'S' || pkt[1] != 'C') {
+        if (sc_prev_hook) return sc_prev_hook(frame_data, frame_len, src_ip, dst_ip, src_port, dst_port, protocol);
+        return 0;
+    }
+    uint8_t type = pkt[2];
+    uint32_t id = (uint32_t)pkt[3] | ((uint32_t)pkt[4] << 8) |
+                  ((uint32_t)pkt[5] << 16) | ((uint32_t)pkt[6] << 24);
+    if (id == sc_player_id) return 1; /* our own packet: consume */
+    if (!sc_net_mode) return 1;       /* singleplayer: drop silently */
+
+    int px = (int)pkt[7] | ((int)pkt[8] << 8);
+    int py = ((int)pkt[9] | ((int)pkt[10] << 8)) - P2P_Y_BIAS;
+    int pz = (int)pkt[11] | ((int)pkt[12] << 8);
+    int pyaw = (int)pkt[13];
+
+    int slot = -1;
+    for (int i = 0; i < P2P_MAX_PEERS; i++) {
+        if (sc_peers[i].active && sc_peers[i].id == id) { slot = i; break; }
+    }
+    if (slot < 0) {
+        for (int i = 0; i < P2P_MAX_PEERS; i++) {
+            if (!sc_peers[i].active) { slot = i; break; }
+        }
+    }
+    if (slot < 0) return 1;
+    sc_peer_t *p = &sc_peers[slot];
+    if (!p->active) {
+        p->active = 1;
+        sc_peer_count++;
+        p->id = id;
+        p->chat[0] = 0;
+        p->color = sc_peer_color(id);
+        p->rx = px; p->ry = py; p->rz = pz;
+    }
+    p->x = px;
+    p->y = py;
+    p->z = pz;
+    p->yaw = pyaw;
+    p->last_seen = sharkapi_get_ticks();
+    for (int i = 0; i < 4; i++) p->ip[i] = src_ip[i];
+
+    if (type == P2P_HELLO && plen >= P2P_HDR_LEN + 4) {
+        uint32_t seed = (uint32_t)pkt[15] | ((uint32_t)pkt[16] << 8) |
+                        ((uint32_t)pkt[17] << 16) | ((uint32_t)pkt[18] << 24);
+        if (seed != world_seed) {
+            sc_pending_seed = seed;
+            sc_seed_dirty = 1;
+        }
+    } else if (type == P2P_CHAT && plen > P2P_HDR_LEN) {
+        uint32_t n = plen - P2P_HDR_LEN;
+        if (n >= P2P_CHAT_MAX) n = P2P_CHAT_MAX - 1;
+        for (uint32_t i = 0; i < n; i++) p->chat[i] = (char)pkt[P2P_HDR_LEN + i];
+        p->chat[n] = 0;
+        p->chat_t = sharkapi_get_ticks();
+        sc_chat_push(p->chat, id, 0);
+    } else if (type == P2P_BLOCK && plen >= P2P_HDR_LEN + 4) {
+        int bx = pkt[P2P_HDR_LEN];
+        int by = pkt[P2P_HDR_LEN + 1];
+        int bz = pkt[P2P_HDR_LEN + 2];
+        int nb = pkt[P2P_HDR_LEN + 3];
+        if ((unsigned)bx < WX && (unsigned)by < WY && (unsigned)bz < WZ &&
+            nb < BLOCK_COUNT && world[by][bz][bx] != nb) {
+            if (!(world[by][bz][bx] == BEDROCK && nb == AIR)) {
+                world[by][bz][bx] = (uint8_t)nb;
+                update_neighborhood_visibility(bx, by, bz);
+            }
+        }
+    }
+    return 1;
+}
+
+static void sc_net_enable(void) {
+    if (net_get_service_hook() != sc_net_cb) {
+        sc_prev_hook = net_get_service_hook();
+        net_set_service_hook(sc_net_cb);
+    }
+}
+
+static void sc_net_disable(void) {
+    if (net_get_service_hook() == sc_net_cb) {
+        net_set_service_hook(sc_prev_hook);
+    }
+    sc_prev_hook = NULL;
+    for (int i = 0; i < P2P_MAX_PEERS; i++) sc_peers[i].active = 0;
+    sc_peer_count = 0;
+}
+
+static void sc_p2p_send(uint8_t type, const uint8_t *dst_ip,
+                        const uint8_t *extra, uint32_t extra_len) {
+    if (!sc_net_mode || !net_has_nic() || !net_configured) return;
+    uint8_t pkt[128];
+    uint32_t o = 0;
+    pkt[o++] = 'S';
+    pkt[o++] = 'C';
+    pkt[o++] = type;
+    pkt[o++] = (uint8_t)(sc_player_id & 0xFF);
+    pkt[o++] = (uint8_t)((sc_player_id >> 8) & 0xFF);
+    pkt[o++] = (uint8_t)((sc_player_id >> 16) & 0xFF);
+    pkt[o++] = (uint8_t)((sc_player_id >> 24) & 0xFF);
+    pkt[o++] = (uint8_t)(camera_x & 0xFF);
+    pkt[o++] = (uint8_t)((camera_x >> 8) & 0xFF);
+    int yb = camera_y + P2P_Y_BIAS;
+    pkt[o++] = (uint8_t)(yb & 0xFF);
+    pkt[o++] = (uint8_t)((yb >> 8) & 0xFF);
+    pkt[o++] = (uint8_t)(camera_z & 0xFF);
+    pkt[o++] = (uint8_t)((camera_z >> 8) & 0xFF);
+    pkt[o++] = (uint8_t)(yaw & 255);
+    pkt[o++] = (uint8_t)(flying ? 1 : 0);
+    if (extra && extra_len) {
+        for (uint32_t i = 0; i < extra_len && o < 120; i++) pkt[o++] = extra[i];
+    }
+    uint8_t mac[6];
+    uint8_t bc[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    uint8_t bcip[4] = {255, 255, 255, 255};
+    if (dst_ip) {
+        if (net_route_mac(dst_ip, mac)) {
+            net_send_udp(mac, net_ip, dst_ip, P2P_PORT, P2P_PORT, pkt, o);
+        }
+    } else {
+        net_send_udp(bc, net_ip, bcip, P2P_PORT, P2P_PORT, pkt, o);
+    }
+}
+
+static void sc_p2p_poll(void) {
+    net_poll();
+    uint32_t now = sharkapi_get_ticks();
+    /* Self-heal: the router installs its own service hook; re-chain ours
+       on top of it so both keep working regardless of install order. */
+    if (sc_net_mode && net_get_service_hook() != sc_net_cb) sc_net_enable();
+    for (int i = 0; i < P2P_MAX_PEERS; i++) {
+        sc_peer_t *p = &sc_peers[i];
+        if (!p->active) continue;
+        if ((int)(now - p->last_seen) > P2P_PEER_TIMEOUT_MS) {
+            p->active = 0;
+            sc_peer_count--;
+        }
+    }
+    if (sc_seed_dirty && sc_pending_seed != world_seed) {
+        world_seed = sc_pending_seed;
+        world_generate();
+        camera_reset();
+        sc_chat_push("WORLD RESET BY PEER", 0, 0);
+    }
+    sc_seed_dirty = 0;
+    if (!sc_net_mode || !net_has_nic() || !net_configured) return;
+    if (sc_state == SC_PLAY) {
+        int moved = abs_val(camera_x - sc_last_sent_x) >= 32 ||
+                    abs_val(camera_y - sc_last_sent_y) >= 32 ||
+                    abs_val(camera_z - sc_last_sent_z) >= 32;
+        int due = (int)(now - sc_last_net_send) >= 50;
+        int urgent = moved && (int)(now - sc_last_net_send) >= 16;
+        if (due || urgent) {
+            sc_last_net_send = now;
+            sc_last_sent_x = camera_x;
+            sc_last_sent_y = camera_y;
+            sc_last_sent_z = camera_z;
+            sc_p2p_send(P2P_POS, NULL, NULL, 0);
+            if (sc_manual_set) sc_p2p_send(P2P_POS, sc_manual_ip, NULL, 0);
+        }
+    }
+    if ((int)(now - sc_last_hello) >= 1200) {
+        sc_last_hello = now;
+        uint8_t seed_extra[4] = {
+            (uint8_t)(world_seed & 0xFF), (uint8_t)((world_seed >> 8) & 0xFF),
+            (uint8_t)((world_seed >> 16) & 0xFF), (uint8_t)((world_seed >> 24) & 0xFF)
+        };
+        sc_p2p_send(P2P_HELLO, NULL, seed_extra, 4);
+        if (sc_manual_set) sc_p2p_send(P2P_HELLO, sc_manual_ip, seed_extra, 4);
+    }
+}
+#else
+static void sc_net_enable(void) {}
+static void sc_net_disable(void) {}
+static void sc_p2p_send(uint8_t type, const uint8_t *dst_ip,
+                        const uint8_t *extra, uint32_t extra_len) {
+    (void)type; (void)dst_ip; (void)extra; (void)extra_len;
+}
+static void sc_p2p_poll(void) {}
+#endif
+
+static void sc_start_game(int net_on) {
+    sc_net_mode = net_on;
+    if (net_on) sc_net_enable();
+    else sc_net_disable();
+    world_generate();
+    camera_reset();
+    sc_third_person = 0;
+    sc_chat_mode = 0;
+    sc_chat_len = 0;
+    sc_seed_dirty = 0;
+    sc_last_hello = 0;
+    sc_last_net_send = 0;
+    sc_last_sent_x = camera_x;
+    sc_last_sent_y = camera_y;
+    sc_last_sent_z = camera_z;
+    clear_inputs();
+    sc_state = SC_PLAY;
+}
+
 void sharkcraft_game_reset(void) {
     world_generate();
     camera_reset();
     ensure_desktop_integration();
+    sc_state = SC_MENU;
+    sc_menu_sel = 0;
+    sc_wants_close = 0;
+    sc_chat_mode = 0;
+    sc_chat_len = 0;
+    sc_ip_mode = 0;
+    sc_ip_len = 0;
+    sc_chat_hist_n = 0;
+    sc_seed_dirty = 0;
+    for (int i = 0; i < P2P_MAX_PEERS; i++) sc_peers[i].active = 0;
+    sc_peer_count = 0;
+    sc_derive_player_id();
+    sc_net_mode = 1;
+    sc_net_enable();
+    sc_last_hello = 0;
+    sc_last_net_send = 0;
 }
 
 static int ray_target(int *tx, int *ty, int *tz, int *px, int *py, int *pz, int *out_face) {
@@ -839,6 +1212,13 @@ static void settle_blocks_at(int x, int y, int z) {
     }
 }
 
+static void sc_broadcast_block(int bx, int by, int bz, int nb) {
+    if (!sc_net_mode) return;
+    uint8_t extra[4] = {(uint8_t)bx, (uint8_t)by, (uint8_t)bz, (uint8_t)nb};
+    sc_p2p_send(P2P_BLOCK, NULL, extra, 4);
+    if (sc_manual_set) sc_p2p_send(P2P_BLOCK, sc_manual_ip, extra, 4);
+}
+
 static void interact(int mode) {
     int tx, ty, tz, px, py, pz, face;
     if (!ray_target(&tx, &ty, &tz, &px, &py, &pz, &face)) return;
@@ -865,12 +1245,14 @@ static void interact(int mode) {
             }
             settle_blocks_at(px, py, pz);
             update_neighborhood_visibility(px, py, pz);
+            sc_broadcast_block(px, py, pz, selected);
         }
     } else {
         if (ty == 0 && world[ty][tz][tx] == BEDROCK) return;
         world[ty][tz][tx] = AIR;
         settle_blocks_at(tx, ty, tz);
         update_neighborhood_visibility(tx, ty, tz);
+        sc_broadcast_block(tx, ty, tz, AIR);
     }
 }
 
@@ -1057,9 +1439,9 @@ static void raster_triangle(vertex_t a, vertex_t b, vertex_t c,
 
 static void render_block(int x, int y, int z, uint8_t b, uint8_t fm,
                          int cs_r, int sn_r, int cs_p, int sn_p) {
-    int cdx = (x << 8) + 128 - camera_x;
-    int cdy = (y << 8) + 128 - camera_y;
-    int cdz = (z << 8) + 128 - camera_z;
+    int cdx = (x << 8) + 128 - rcam_x;
+    int cdy = (y << 8) + 128 - rcam_y;
+    int cdz = (z << 8) + 128 - rcam_z;
 
     int chz = (cdx * sn_r + cdz * cs_r) >> 10;
     int cz = (cdy * sn_p + chz * cs_p) >> 10;
@@ -1083,17 +1465,17 @@ static void render_block(int x, int y, int z, uint8_t b, uint8_t fm,
         int fcx = block_Cx + face_neighbor[f][0] * 128;
         int fcy = block_Cy + face_neighbor[f][1] * 128;
         int fcz = block_Cz + face_neighbor[f][2] * 128;
-        int facing = face_neighbor[f][0] * (camera_x - fcx) +
-                     face_neighbor[f][1] * (camera_y - fcy) +
-                     face_neighbor[f][2] * (camera_z - fcz);
+        int facing = face_neighbor[f][0] * (rcam_x - fcx) +
+                     face_neighbor[f][1] * (rcam_y - fcy) +
+                     face_neighbor[f][2] * (rcam_z - fcz);
         if (facing <= 0) continue;
 
         camera_vertex_t input[4], clipped[12];
         for (int k = 0; k < 4; k++) {
             const int *c = face_corner[f][k];
-            int vdx = ((x + c[0]) << 8) - camera_x;
-            int vdy = ((y + c[1]) << 8) - camera_y;
-            int vdz = ((z + c[2]) << 8) - camera_z;
+            int vdx = ((x + c[0]) << 8) - rcam_x;
+            int vdy = ((y + c[1]) << 8) - rcam_y;
+            int vdz = ((z + c[2]) << 8) - rcam_z;
             int vhz = (vdx * sn_r + vdz * cs_r) >> 10;
             input[k].x = (vdx * cs_r - vdz * sn_r) >> 10;
             input[k].y = (vdy * cs_p - vhz * sn_p) >> 10;
@@ -1119,6 +1501,255 @@ static void render_block(int x, int y, int z, uint8_t b, uint8_t fm,
                 raster_triangle(first, previous, current, face_tex, flags);
                 previous = current;
             }
+        }
+    }
+}
+
+/* ---- Bean avatars (3D models for players, beans for now) ------------ */
+
+static uint32_t bean_face_tex[6][256];
+static uint32_t bean_eye_white[256];
+static uint32_t bean_eye_black[256];
+static int bean_eye_ready = 0;
+
+static void bean_fill_tex(uint32_t color, int face, int shade_num) {
+    int r = (int)((color >> 16) & 0xFF);
+    int g = (int)((color >> 8) & 0xFF);
+    int b = (int)(color & 0xFF);
+    r = clamp_byte((r * shade_num) >> 8);
+    g = clamp_byte((g * shade_num) >> 8);
+    b = clamp_byte((b * shade_num) >> 8);
+    uint32_t c = 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+    for (int i = 0; i < 256; i++) bean_face_tex[face][i] = c;
+}
+
+static void bean_fill_all(uint32_t color) {
+    static const int shades[6] = {192, 192, 256, 150, 222, 222};
+    for (int f = 0; f < 6; f++) bean_fill_tex(color, f, shades[f]);
+}
+
+static void bean_init_eyes(void) {
+    if (bean_eye_ready) return;
+    for (int i = 0; i < 256; i++) {
+        bean_eye_white[i] = 0xFFFFFFFFu;
+        bean_eye_black[i] = 0xFF101014u;
+    }
+    bean_eye_ready = 1;
+}
+
+/* Draw one world-space quad (4 verts in Q fixed-point) with a flat tex. */
+static void bean_quad(const int verts[4][3], const uint32_t *tex,
+                      int cs_r, int sn_r, int cs_p, int sn_p) {
+    camera_vertex_t input[4], clipped[12];
+    for (int k = 0; k < 4; k++) {
+        int vdx = verts[k][0] - rcam_x;
+        int vdy = verts[k][1] - rcam_y;
+        int vdz = verts[k][2] - rcam_z;
+        int vhz = (vdx * sn_r + vdz * cs_r) >> 10;
+        input[k].x = (vdx * cs_r - vdz * sn_r) >> 10;
+        input[k].y = (vdy * cs_p - vhz * sn_p) >> 10;
+        input[k].z = (vdy * sn_p + vhz * cs_p) >> 10;
+        input[k].u = (k >= 2) ? 255 : 0;
+        input[k].v = (k == 1 || k == 2) ? 0 : 255;
+    }
+    int count = clip_frustum(input, clipped);
+    if (count < 3) return;
+    vertex_t first, previous, current;
+    project_camera(&first, clipped[0]);
+    project_camera(&previous, clipped[1]);
+    for (int k = 2; k < count; k++) {
+        project_camera(&current, clipped[k]);
+        raster_triangle(first, previous, current, tex, 0);
+        previous = current;
+    }
+}
+
+/* Draw a yaw-rotated box: center (cx,cy,cz) in Q, half extents, face tex. */
+static void bean_box(int cx, int cy, int cz, int hx, int hy, int hz,
+                     int cs_r, int sn_r, int cs_p, int sn_p) {
+    static const int lc[6][4][3] = {
+        {{ 1,-1, 1},{ 1, 1, 1},{ 1, 1,-1},{ 1,-1,-1}},
+        {{-1,-1,-1},{-1, 1,-1},{-1, 1, 1},{-1,-1, 1}},
+        {{-1, 1, 1},{ 1, 1, 1},{ 1, 1,-1},{-1, 1,-1}},
+        {{-1,-1,-1},{ 1,-1,-1},{ 1,-1, 1},{-1,-1, 1}},
+        {{-1,-1, 1},{ 1,-1, 1},{ 1, 1, 1},{-1, 1, 1}},
+        {{ 1,-1,-1},{-1,-1,-1},{-1, 1,-1},{ 1, 1,-1}}
+    };
+    static const int ln[6][3] = {
+        {1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1}
+    };
+    for (int f = 0; f < 6; f++) {
+        int nx = (ln[f][0] * cs_r + ln[f][2] * sn_r) >> 10;
+        int nz = (-ln[f][0] * sn_r + ln[f][2] * cs_r) >> 10;
+        int ny = ln[f][1];
+        int verts[4][3];
+        int fcx = cx, fcy = cy, fcz = cz;
+        for (int k = 0; k < 4; k++) {
+            int lx = lc[f][k][0] * hx;
+            int ly = lc[f][k][1] * hy;
+            int lz = lc[f][k][2] * hz;
+            verts[k][0] = cx + ((lx * cs_r + lz * sn_r) >> 10);
+            verts[k][1] = cy + ly;
+            verts[k][2] = cz + ((-lx * sn_r + lz * cs_r) >> 10);
+            fcx += verts[k][0] - cx;
+            fcy += verts[k][1] - cy;
+            fcz += verts[k][2] - cz;
+        }
+        fcx /= 4; fcy /= 4; fcz /= 4;
+        int facing = nx * (rcam_x - fcx) + ny * (rcam_y - fcy) + nz * (rcam_z - fcz);
+        if (facing <= 0) continue;
+        bean_quad(verts, bean_face_tex[f], cs_r, sn_r, cs_p, sn_p);
+    }
+}
+
+static uint32_t bean_darken(uint32_t c, int num) {
+    int r = (int)(((c >> 16) & 0xFF) * num >> 8);
+    int g = (int)(((c >> 8) & 0xFF) * num >> 8);
+    int b = (int)((c & 0xFF) * num >> 8);
+    return 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
+
+static uint32_t bean_lighten(uint32_t c, int add) {
+    int r = clamp_byte((int)((c >> 16) & 0xFF) + add);
+    int g = clamp_byte((int)((c >> 8) & 0xFF) + add);
+    int b = clamp_byte((int)(c & 0xFF) + add);
+    return 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
+
+/* One yaw-rotated body part. (lx) is a sideways offset in local space,
+   cy is the world height of the part center; hx/hy/hz are half extents. */
+static void bean_part(int px, int pz, int lx, int cy, int hx, int hy, int hz,
+                      int cs_r, int sn_r, int cs_p, int sn_p) {
+    int cx = px + ((lx * cs_r) >> 10);
+    int cz = pz + ((-lx * sn_r) >> 10);
+    bean_box(cx, cy, cz, hx, hy, hz, cs_r, sn_r, cs_p, sn_p);
+}
+
+static void render_bean(int px, int py_eye, int pz, int pyaw, uint32_t color) {
+    bean_init_eyes();
+    int r = pyaw & 255;
+    int cs_r = cs[r], sn_r = sn[r];
+    int cs_p = cs[rcam_pitch & 255], sn_p = sn[rcam_pitch & 255];
+    int fy = py_eye - EYE_HEIGHT; /* feet */
+    int H = PLAYER_HEIGHT;
+
+    /* Body-center frustum cull. */
+    int cdx = px - rcam_x;
+    int cdy = (fy + H / 2) - rcam_y;
+    int cdz = pz - rcam_z;
+    int chz = (cdx * sn_r + cdz * cs_r) >> 10;
+    int cz = (cdy * sn_p + chz * cs_p) >> 10;
+    if (cz < NEAR_CLIP - Q || cz > MAX_RENDER_DIST) return;
+
+    /* Proportions (Q units), feet at fy, head top at fy + H. */
+    int legH = H * 42 / 100;
+    int torsoH = H * 30 / 100;
+    int headH = H - legH - torsoH;
+    int torsoW = 150, torsoD = 84;
+    int legW = 58, legD = 66;
+    int armW = 46, armD = 60;
+    int legOff = 40;
+    int armOff = torsoW / 2 + armW / 2;
+
+    uint32_t legCol = bean_darken(color, 180);
+    uint32_t armCol = bean_darken(color, 205);
+    uint32_t headCol = bean_lighten(color, 30);
+
+    /* Legs */
+    bean_fill_all(legCol);
+    bean_part(px, pz, -legOff, fy + legH / 2, legW / 2, legH / 2, legD / 2, cs_r, sn_r, cs_p, sn_p);
+    bean_part(px, pz,  legOff, fy + legH / 2, legW / 2, legH / 2, legD / 2, cs_r, sn_r, cs_p, sn_p);
+
+    /* Torso */
+    bean_fill_all(color);
+    bean_part(px, pz, 0, fy + legH + torsoH / 2, torsoW / 2, torsoH / 2, torsoD / 2, cs_r, sn_r, cs_p, sn_p);
+
+    /* Arms */
+    bean_fill_all(armCol);
+    bean_part(px, pz, -armOff, fy + legH + torsoH / 2, armW / 2, torsoH / 2, armD / 2, cs_r, sn_r, cs_p, sn_p);
+    bean_part(px, pz,  armOff, fy + legH + torsoH / 2, armW / 2, torsoH / 2, armD / 2, cs_r, sn_r, cs_p, sn_p);
+
+    /* Head */
+    int headCY = fy + legH + torsoH + headH / 2;
+    int headW = 120, headD = 116;
+    bean_fill_all(headCol);
+    bean_part(px, pz, 0, headCY, headW / 2, headH / 2, headD / 2, cs_r, sn_r, cs_p, sn_p);
+
+    /* Eyes on the head front (local +Z = facing direction). */
+    int eyeY = headCY + headH / 8;
+    int frontZ = headD / 2 + 2;
+    for (int e = 0; e < 2; e++) {
+        int lx = (e == 0) ? -headW / 5 : headW / 5;
+        int ex = px + ((lx * cs_r + frontZ * sn_r) >> 10);
+        int ez = pz + ((-lx * sn_r + frontZ * cs_r) >> 10);
+        int dxn = (14 * cs_r) >> 10, dzn = (14 * sn_r) >> 10;
+        int hy = 16;
+        int verts[4][3] = {
+            {ex - dxn, eyeY - hy, ez + dzn},
+            {ex + dxn, eyeY - hy, ez - dzn},
+            {ex + dxn, eyeY + hy, ez - dzn},
+            {ex - dxn, eyeY + hy, ez + dzn}
+        };
+        bean_quad(verts, bean_eye_white, cs_r, sn_r, cs_p, sn_p);
+
+        int lz2 = frontZ + 3;
+        int px2 = px + ((lx * cs_r + lz2 * sn_r) >> 10);
+        int pz2 = pz + ((-lx * sn_r + lz2 * cs_r) >> 10);
+        int dxn2 = (6 * cs_r) >> 10, dzn2 = (6 * sn_r) >> 10;
+        int hy2 = 8;
+        int verts2[4][3] = {
+            {px2 - dxn2, eyeY - hy2, pz2 + dzn2},
+            {px2 + dxn2, eyeY - hy2, pz2 - dzn2},
+            {px2 + dxn2, eyeY + hy2, pz2 - dzn2},
+            {px2 - dxn2, eyeY + hy2, pz2 + dzn2}
+        };
+        bean_quad(verts2, bean_eye_black, cs_r, sn_r, cs_p, sn_p);
+    }
+}
+
+static int sc_project(int wx, int wy, int wz, int *sx, int *sy) {
+    int r = rcam_yaw & 255, p = rcam_pitch & 255;
+    int cs_r = cs[r], sn_r = sn[r];
+    int cs_p = cs[p], sn_p = sn[p];
+    int vdx = wx - rcam_x;
+    int vdy = wy - rcam_y;
+    int vdz = wz - rcam_z;
+    int vhz = (vdx * sn_r + vdz * cs_r) >> 10;
+    int vx = (vdx * cs_r - vdz * sn_r) >> 10;
+    int vy = (vdy * cs_p - vhz * sn_p) >> 10;
+    int vz = (vdy * sn_p + vhz * cs_p) >> 10;
+    if (vz < NEAR_CLIP) return 0;
+    *sx = (RW / 2) + (vx * focal_length) / vz;
+    *sy = (RH / 2) - (vy * focal_length) / vz;
+    return 1;
+}
+
+static int hud_draw_text(int x, int y, const char *s, uint32_t col);
+
+static void sc_draw_bean_tags(void) {
+    static const char hexd[] = "0123456789ABCDEF";
+    uint32_t now = sharkapi_get_ticks();
+    for (int i = 0; i < P2P_MAX_PEERS; i++) {
+        sc_peer_t *p = &sc_peers[i];
+        if (!p->active) continue;
+        int sx, sy;
+        /* Tag sits just above the model's head (model top = feet + PLAYER_HEIGHT). */
+        int head_y = p->ry - EYE_HEIGHT + PLAYER_HEIGHT + 10;
+        if (!sc_project(p->rx, head_y, p->rz, &sx, &sy)) continue;
+        if (sx < -30 || sx > RW + 30 || sy < 0 || sy > RH) continue;
+        char tag[6];
+        tag[0] = 'P';
+        tag[1] = hexd[(p->id >> 12) & 15];
+        tag[2] = hexd[(p->id >> 8) & 15];
+        tag[3] = hexd[(p->id >> 4) & 15];
+        tag[4] = hexd[p->id & 15];
+        tag[5] = 0;
+        int tw = 5 * 6;
+        hud_draw_text(sx - tw / 2, sy, tag, p->color);
+        if (p->chat[0] && (int)(now - p->chat_t) < 4000) {
+            int cw = 0;
+            for (int k = 0; p->chat[k]; k++) cw += 6;
+            if (sy - 8 >= 0) hud_draw_text(sx - cw / 2, sy - 8, p->chat, 0xFFFFFFFFu);
         }
     }
 }
@@ -1295,6 +1926,181 @@ static void draw_hud(void) {
     }
 }
 
+/* ---- 2D overlay helpers: menus, chat, IP entry --------------------- */
+
+#define SC_MENU_TOP 60
+#define SC_MENU_ROW 14
+#define SC_MAIN_ITEMS 5
+#define SC_PAUSE_ITEMS 4
+
+static void sc_fill_rect(int x, int y, int w, int h, uint32_t col) {
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    int x1 = x + w; if (x1 > RW) x1 = RW;
+    int y1 = y + h; if (y1 > RH) y1 = RH;
+    for (int yy = y0; yy < y1; yy++) {
+        uint32_t *row = &pixels[yy * RW];
+        for (int xx = x0; xx < x1; xx++) row[xx] = col;
+    }
+}
+
+static void sc_draw_border(int x, int y, int w, int h, uint32_t col) {
+    for (int xx = x; xx < x + w; xx++) {
+        if ((unsigned)xx < RW) {
+            if ((unsigned)y < RH) pixels[y * RW + xx] = col;
+            if ((unsigned)(y + h - 1) < RH) pixels[(y + h - 1) * RW + xx] = col;
+        }
+    }
+    for (int yy = y; yy < y + h; yy++) {
+        if ((unsigned)yy < RH) {
+            if ((unsigned)x < RW) pixels[yy * RW + x] = col;
+            if ((unsigned)(x + w - 1) < RW) pixels[yy * RW + x + w - 1] = col;
+        }
+    }
+}
+
+static int sc_text_width(const char *s) {
+    int w = 0;
+    for (; *s; s++) w += (*s == ':' || *s == ',' || *s == '[' || *s == ']') ? 4 : 6;
+    return w;
+}
+
+static void sc_draw_text_centered(int cx, int y, const char *s, uint32_t col) {
+    hud_draw_text(cx - sc_text_width(s) / 2, y, s, col);
+}
+
+static void sc_format_ip(char *buf, const uint8_t ip[4]) {
+    int p = 0;
+    for (int i = 0; i < 4; i++) {
+        int v = ip[i];
+        if (v >= 100) { buf[p++] = (char)('0' + v / 100); v %= 100; buf[p++] = (char)('0' + v / 10); buf[p++] = (char)('0' + v % 10); }
+        else if (v >= 10) { buf[p++] = (char)('0' + v / 10); buf[p++] = (char)('0' + v % 10); }
+        else buf[p++] = (char)('0' + v);
+        if (i < 3) buf[p++] = '.';
+    }
+    buf[p] = 0;
+}
+
+static void sc_draw_menu_label(int top, int index, int sel, const char *label) {
+    int y = top + index * SC_MENU_ROW;
+    int w = sc_text_width(label);
+    int x = (RW - w) / 2;
+    if (index == sel) {
+        sc_fill_rect(x - 8, y - 2, w + 16, 9, 0xFF2A3340u);
+        hud_draw_char(x - 8, y, '>', 0xFFFFDD55u);
+    }
+    hud_draw_text(x, y, label, index == sel ? 0xFFFFFFFFu : 0xFFAAB0B8u);
+}
+
+static void sc_draw_main_menu(void) {
+    char line[64];
+    sc_fill_rect(0, 0, RW, RH, 0xE0060910u);
+    sc_draw_border(0, 0, RW, RH, 0xFF20262Eu);
+    sc_draw_text_centered(RW / 2, 20, "SHARKCRAFT", 0xFF66EEFFu);
+    sc_draw_text_centered(RW / 2, 32, sc_net_mode ? "MULTIPLAYER" : "SINGLEPLAYER", 0xFF88FF88u);
+
+    sc_draw_menu_label(SC_MENU_TOP, 0, sc_menu_sel, "PLAY");
+
+    int p = 0;
+    const char *a = "MULTIPLAYER: ";
+    const char *b = sc_net_mode ? "ON" : "OFF";
+    for (int i = 0; a[i]; i++) line[p++] = a[i];
+    for (int i = 0; b[i]; i++) line[p++] = b[i];
+    line[p] = 0;
+    sc_draw_menu_label(SC_MENU_TOP, 1, sc_menu_sel, line);
+
+    char ip[24];
+    if (sc_manual_set) sc_format_ip(ip, sc_manual_ip);
+    else { ip[0] = 'N'; ip[1] = 'O'; ip[2] = 'N'; ip[3] = 'E'; ip[4] = 0; }
+    p = 0;
+    a = "SERVER IP: ";
+    for (int i = 0; a[i]; i++) line[p++] = a[i];
+    for (int i = 0; ip[i]; i++) line[p++] = ip[i];
+    line[p] = 0;
+    sc_draw_menu_label(SC_MENU_TOP, 2, sc_menu_sel, line);
+
+    sc_draw_menu_label(SC_MENU_TOP, 3, sc_menu_sel, "HELP");
+    sc_draw_menu_label(SC_MENU_TOP, 4, sc_menu_sel, "QUIT");
+    sc_draw_text_centered(RW / 2, RH - 14, "ARROWS:MOVE ENTER:SELECT", 0xFF707680u);
+}
+
+static void sc_draw_pause_menu(void) {
+    static const char *items[SC_PAUSE_ITEMS] = { "RESUME", "HELP", "MAIN MENU", "QUIT" };
+    sc_fill_rect(0, 0, RW, RH, 0xE0060910u);
+    sc_draw_border(0, 0, RW, RH, 0xFF20262Eu);
+    sc_draw_text_centered(RW / 2, 18, "PAUSED", 0xFF66EEFFu);
+    for (int i = 0; i < SC_PAUSE_ITEMS; i++) sc_draw_menu_label(SC_MENU_TOP, i, sc_menu_sel, items[i]);
+    sc_draw_text_centered(RW / 2, RH - 14, "ARROWS:MOVE ENTER:SELECT", 0xFF707680u);
+}
+
+static void sc_draw_help(void) {
+    static const char *lines[] = {
+        "WASD: MOVE   SPACE: JUMP",
+        "MOUSE: LOOK   F: FLY MODE",
+        "Q/E: BREAK/PLACE BLOCK",
+        "1-9: SELECT   G: NEW WORLD",
+        "T: CHAT   V: THIRD PERSON",
+        "ESC: PAUSE",
+    };
+    int n = (int)(sizeof(lines) / sizeof(lines[0]));
+    sc_fill_rect(0, 0, RW, RH, 0xE0060910u);
+    sc_draw_border(0, 0, RW, RH, 0xFF20262Eu);
+    sc_draw_text_centered(RW / 2, 12, "HOW TO PLAY", 0xFF66EEFFu);
+    int y = 34;
+    for (int i = 0; i < n; i++) { sc_draw_text_centered(RW / 2, y, lines[i], 0xFFD0D4D8u); y += 12; }
+    sc_draw_text_centered(RW / 2, RH - 16, "PRESS ANY KEY", 0xFF707680u);
+}
+
+static void sc_draw_ip(void) {
+    sc_fill_rect(0, 0, RW, RH, 0xE0060910u);
+    sc_draw_border(0, 0, RW, RH, 0xFF20262Eu);
+    sc_draw_text_centered(RW / 2, 40, "SERVER IP", 0xFF66EEFFu);
+    sc_draw_text_centered(RW / 2, 60, "ENTER x.x.x.x", 0xFFAAB0B8u);
+    sc_fill_rect(40, 90, RW - 80, 16, 0xFF0A0E14u);
+    sc_draw_border(40, 90, RW - 80, 16, 0xFF3A4048u);
+    hud_draw_text(46, 95, sc_ip_buf, 0xFFFFFFFFu);
+    int cx = 46 + sc_text_width(sc_ip_buf);
+    if (cx < RW - 6) sc_fill_rect(cx, 95, 5, 5, 0xFFFFFFFFu);
+    sc_draw_text_centered(RW / 2, RH - 20, "ENTER:OK  ESC:CANCEL", 0xFF707680u);
+}
+
+static void sc_draw_chat(void) {
+    int y = RH - 24 - sc_chat_hist_n * 9;
+    if (y < 12) y = 12;
+    for (int i = 0; i < sc_chat_hist_n; i++) {
+        uint32_t col = sc_chat_hist[i].own ? 0xFF88FF88u : 0xFFFFFFFFu;
+        hud_draw_text(4, y + i * 9, sc_chat_hist[i].text, col);
+    }
+    if (sc_chat_mode) {
+        sc_fill_rect(0, RH - 12, RW, 12, 0xE0060910u);
+        sc_draw_border(0, RH - 12, RW, 12, 0xFF3A4048u);
+        hud_draw_text(4, RH - 9, sc_chat_buf, 0xFFFFFFFFu);
+        int cx = 4 + sc_text_width(sc_chat_buf);
+        if (cx < RW - 6) sc_fill_rect(cx, RH - 9, 5, 5, 0xFFFFFFFFu);
+    }
+}
+
+static void sc_draw_overlays(void) {
+    if (sc_state == SC_MENU) {
+        if (sc_ip_mode) sc_draw_ip();
+        else sc_draw_main_menu();
+    } else if (sc_state == SC_HELP) {
+        sc_draw_help();
+    } else if (sc_state == SC_PAUSE) {
+        sc_draw_pause_menu();
+    }
+    if (sc_state == SC_PLAY) sc_draw_chat();
+}
+
+/* Returns menu item index under a pixel row, or -1. */
+static int sc_menu_index_at(int py, int top, int count) {
+    if (py < top - 2) return -1;
+    int i = (py - (top - 2)) / SC_MENU_ROW;
+    if (i < 0 || i >= count) return -1;
+    if (py > top - 2 + i * SC_MENU_ROW + 11) return -1;
+    return i;
+}
+
 static void blit_scene(int ox, int oy, int w, int h) {
     if (w <= 0 || h <= 0) return;
 
@@ -1362,8 +2168,38 @@ static void blit_scene(int ox, int oy, int w, int h) {
     }
 }
 
+static void sc_update_render_camera(void) {
+    int r = yaw & 255, p = pitch & 255;
+    int cs_r = cs[r], sn_r = sn[r];
+    int cs_p = cs[p], sn_p = sn[p];
+    rcam_yaw = yaw;
+    rcam_pitch = pitch;
+    rcam_x = camera_x;
+    rcam_y = camera_y;
+    rcam_z = camera_z;
+    if (!sc_third_person) return;
+
+    /* World-space forward vector (Q=1024 rotation math). */
+    int fx = (cs_p * sn_r) >> 10;
+    int fy = sn_p;
+    int fz = (cs_p * cs_r) >> 10;
+
+    /* Pull the camera back along -forward, stopping before it clips. */
+    int dist = 3 * Q;
+    for (int d = Q; d <= dist; d += Q / 2) {
+        int tx = camera_x - ((fx * d) >> 10);
+        int ty = camera_y - ((fy * d) >> 10);
+        int tz = camera_z - ((fz * d) >> 10);
+        if (player_collides_at(tx, ty, tz)) break;
+        rcam_x = tx;
+        rcam_y = ty;
+        rcam_z = tz;
+    }
+}
+
 static void draw_scene(int ox, int oy, int w, int h) {
     init_textures();
+    sc_update_render_camera();
     has_target = ray_target(&target_bx, &target_by, &target_bz,
                             &target_px, &target_py, &target_pz, &target_face);
 
@@ -1402,9 +2238,9 @@ static void draw_scene(int ox, int oy, int w, int h) {
         }
     }
 
-    int cam_bx = floor_block(camera_x);
-    int cam_by = floor_block(camera_y);
-    int cam_bz = floor_block(camera_z);
+    int cam_bx = floor_block(rcam_x);
+    int cam_by = floor_block(rcam_y);
+    int cam_bz = floor_block(rcam_z);
     if (cam_bx < 0) cam_bx = 0;
     if (cam_bx >= WX) cam_bx = WX - 1;
     if (cam_by < 0) cam_by = 0;
@@ -1452,6 +2288,18 @@ static void draw_scene(int ox, int oy, int w, int h) {
         }
     }
 
+    /* Remote player beans (opaque, depth-tested against terrain).
+       Smoothly interpolate each peer's render position toward the latest
+       network position so movement looks continuous instead of snapping. */
+    for (int i = 0; i < P2P_MAX_PEERS; i++) {
+        sc_peer_t *pp = &sc_peers[i];
+        if (!pp->active) continue;
+        if (pp->rx != pp->x) pp->rx += (pp->x - pp->rx) >> 2;
+        if (pp->ry != pp->y) pp->ry += (pp->y - pp->ry) >> 2;
+        if (pp->rz != pp->z) pp->rz += (pp->z - pp->rz) >> 2;
+        render_bean(pp->rx, pp->ry, pp->rz, pp->yaw, pp->color);
+    }
+
     for (int ring = max_ring; ring >= 0; ring--) {
         int z_min = cam_bz - ring;
         int z_max = cam_bz + ring;
@@ -1480,7 +2328,9 @@ static void draw_scene(int ox, int oy, int w, int h) {
         }
     }
 
+    sc_draw_bean_tags();
     draw_hud();
+    sc_draw_overlays();
     blit_scene(ox, oy, w, h);
 }
 
@@ -1806,21 +2656,191 @@ static int move_key(char key) {
 
 void sharkcraft_tick(void) {
     if (!world_ready) sharkcraft_game_reset();
-    physics_update();
+    if (sc_state == SC_PLAY) physics_update();
+    sc_p2p_poll();
 }
 
 void sharkcraft_draw_window(int x, int y, int w, int h) {
+    g_draw_ox = x; g_draw_oy = y; g_draw_w = w; g_draw_h = h;
     if (!world_ready) sharkcraft_game_reset();
     ensure_desktop_integration();
-    physics_update();
     if (w > 0 && h > 0) draw_scene(x, y, w, h);
 }
 
+int sharkcraft_wants_close(void) {
+    return sc_wants_close;
+}
+
+void sharkcraft_clear_wants_close(void) {
+    sc_wants_close = 0;
+    sc_state = SC_MENU;
+    sc_net_mode = 1;
+    sc_net_disable();
+    clear_inputs();
+}
+
+/* ---- State-machine helpers ----------------------------------------- */
+
+static int sc_parse_ip(const char *s, uint8_t out[4]) {
+    int i = 0;
+    for (int part = 0; part < 4; part++) {
+        int val = 0, digits = 0;
+        while (s[i] >= '0' && s[i] <= '9') {
+            val = val * 10 + (s[i] - '0');
+            if (val > 255) return 0;
+            i++;
+            digits++;
+        }
+        if (digits == 0) return 0;
+        out[part] = (uint8_t)val;
+        if (part < 3) {
+            if (s[i] != '.') return 0;
+            i++;
+        }
+    }
+    return s[i] == 0;
+}
+
+static void sc_commit_ip(void) {
+    uint8_t parsed[4];
+    int had_text = (sc_ip_len > 0);
+    int ok = had_text && sc_parse_ip(sc_ip_buf, parsed);
+    sc_ip_mode = 0;
+    sc_ip_len = 0;
+    sc_ip_buf[0] = 0;
+    if (ok) {
+        for (int i = 0; i < 4; i++) sc_manual_ip[i] = parsed[i];
+        sc_manual_set = 1;
+        sc_chat_push("SERVER IP SET", 0, 1);
+    } else if (had_text) {
+        sc_manual_set = 0;
+        sc_chat_push("INVALID IP", 0, 1);
+    }
+}
+
+static void sc_send_chat(void) {
+    if (sc_chat_len <= 0) return;
+    sc_chat_buf[sc_chat_len] = 0;
+    sc_chat_push(sc_chat_buf, sc_player_id, 1);
+    sc_p2p_send(P2P_CHAT, NULL, (const uint8_t *)sc_chat_buf, (uint32_t)sc_chat_len);
+    if (sc_manual_set) sc_p2p_send(P2P_CHAT, sc_manual_ip, (const uint8_t *)sc_chat_buf, (uint32_t)sc_chat_len);
+}
+
+static void sc_activate_main(void) {
+    switch (sc_menu_sel) {
+        case 0: sc_start_game(sc_net_mode); break;
+        case 1: sc_net_mode = !sc_net_mode; break;
+        case 2: sc_ip_mode = 1; sc_ip_len = 0; sc_ip_buf[0] = 0; break;
+        case 3: sc_help_return = SC_MENU; sc_state = SC_HELP; break;
+        case 4: sc_wants_close = 1; break;
+    }
+}
+
+static void sc_activate_pause(void) {
+    switch (sc_menu_sel) {
+        case 0: sc_state = SC_PLAY; break;
+        case 1: sc_help_return = SC_PAUSE; sc_state = SC_HELP; break;
+        case 2:
+            sc_net_disable();
+            sc_net_mode = 1;
+            clear_inputs();
+            sc_state = SC_MENU;
+            sc_menu_sel = 0;
+            break;
+        case 3: sc_wants_close = 1; break;
+    }
+}
+
+static int sc_handle_menu_key(char key) {
+    if (key == 0x10 || key == 'w' || key == 'W') { sc_menu_sel = (sc_menu_sel + SC_MAIN_ITEMS - 1) % SC_MAIN_ITEMS; return 1; }
+    if (key == 0x11 || key == 's' || key == 'S') { sc_menu_sel = (sc_menu_sel + 1) % SC_MAIN_ITEMS; return 1; }
+    if (key == '\n' || key == '\r' || key == ' ') { sc_activate_main(); return 1; }
+    if (key == 27) { sc_wants_close = 1; return 1; }
+    return 0;
+}
+
+static int sc_handle_pause_key(char key) {
+    if (key == 0x10 || key == 'w' || key == 'W') { sc_menu_sel = (sc_menu_sel + SC_PAUSE_ITEMS - 1) % SC_PAUSE_ITEMS; return 1; }
+    if (key == 0x11 || key == 's' || key == 'S') { sc_menu_sel = (sc_menu_sel + 1) % SC_PAUSE_ITEMS; return 1; }
+    if (key == '\n' || key == '\r' || key == ' ') { sc_activate_pause(); return 1; }
+    if (key == 27) { sc_state = SC_PLAY; return 1; }
+    return 0;
+}
+
+static int sc_handle_chat_key(char key) {
+    if (key == '\n' || key == '\r') { sc_send_chat(); sc_chat_mode = 0; sc_chat_len = 0; sc_chat_buf[0] = 0; return 1; }
+    if (key == 27) { sc_chat_mode = 0; sc_chat_len = 0; sc_chat_buf[0] = 0; return 1; }
+    if (key == '\b') { if (sc_chat_len > 0) sc_chat_buf[--sc_chat_len] = 0; return 1; }
+    if (key >= 32 && key < 127) {
+        if (sc_chat_len < P2P_CHAT_MAX - 1) { sc_chat_buf[sc_chat_len++] = key; sc_chat_buf[sc_chat_len] = 0; }
+        return 1;
+    }
+    return 0;
+}
+
+static int sc_handle_ip_key(char key) {
+    if (key == '\n' || key == '\r') { sc_commit_ip(); return 1; }
+    if (key == 27) { sc_ip_mode = 0; sc_ip_len = 0; sc_ip_buf[0] = 0; return 1; }
+    if (key == '\b') { if (sc_ip_len > 0) sc_ip_buf[--sc_ip_len] = 0; return 1; }
+    if ((key >= '0' && key <= '9') || key == '.') {
+        if (sc_ip_len < (int)sizeof(sc_ip_buf) - 1) { sc_ip_buf[sc_ip_len++] = key; sc_ip_buf[sc_ip_len] = 0; }
+        return 1;
+    }
+    return 0;
+}
+
+static int sc_screen_to_pixel_x(int x) {
+    if (g_draw_w <= 0) return -1;
+    return (x - g_draw_ox) * RW / g_draw_w;
+}
+
+static int sc_screen_to_pixel_y(int y) {
+    if (g_draw_h <= 0) return -1;
+    return (y - g_draw_oy) * RH / g_draw_h;
+}
+
 int sharkcraft_handle_key(char key) {
-    return move_key(key);
+    switch (sc_state) {
+        case SC_MENU:
+            if (sc_ip_mode) return sc_handle_ip_key(key);
+            return sc_handle_menu_key(key);
+        case SC_HELP:
+            sc_state = sc_help_return;
+            return 1;
+        case SC_PAUSE:
+            return sc_handle_pause_key(key);
+        case SC_PLAY:
+        default:
+            if (sc_chat_mode) return sc_handle_chat_key(key);
+            if (key == 27) { sc_state = SC_PAUSE; sc_menu_sel = 0; clear_inputs(); return 1; }
+            if (key == 't' || key == 'T') { sc_chat_mode = 1; sc_chat_len = 0; sc_chat_buf[0] = 0; clear_inputs(); return 1; }
+            if (key == 'v' || key == 'V') { sc_third_person = !sc_third_person; return 1; }
+            return move_key(key);
+    }
 }
 
 int sharkcraft_handle_mouse(int x, int y, int buttons) {
+    int click = (buttons & 1) && !(prev_mouse_buttons & 1);
+    int release = !(buttons & 1) && (prev_mouse_buttons & 1);
+
+    /* Menus and text entry: pointer selects/activates, keyboard still works. */
+    if (sc_state != SC_PLAY) {
+        int in_menu = (sc_state == SC_MENU && !sc_ip_mode) || sc_state == SC_PAUSE;
+        int count = (sc_state == SC_PAUSE) ? SC_PAUSE_ITEMS : SC_MAIN_ITEMS;
+        int px = sc_screen_to_pixel_x(x);
+        int py = sc_screen_to_pixel_y(y);
+        int idx = (in_menu && px >= 0) ? sc_menu_index_at(py, SC_MENU_TOP, count) : -1;
+        if ((buttons & 1) && idx >= 0) sc_menu_sel = idx;
+        if (release && idx >= 0 && in_menu) {
+            sc_menu_sel = idx;
+            if (sc_state == SC_MENU) sc_activate_main();
+            else sc_activate_pause();
+        }
+        if (click && sc_state == SC_HELP) sc_state = sc_help_return;
+        prev_mouse_buttons = buttons;
+        return 1;
+    }
+
     int changed = 0;
 
     if ((buttons & 2) && !(prev_mouse_buttons & 2)) {
@@ -1899,14 +2919,15 @@ int sharkcraft_plugin_command(int argc, char **argv) {
         char c;
         int n = 0;
         while (n++ < 12 && (c = sharkapi_getchar()) != 0) {
-            if (c == 27) {
-                sharkapi_unregister_key_handler();
-                sharkapi_clear_screen();
-                return 0;
-            }
-            changed |= move_key(c);
+            changed |= sharkcraft_handle_key(c);
         }
-        physics_update();
+        if (sharkcraft_wants_close()) {
+            sharkapi_unregister_key_handler();
+            sharkapi_clear_screen();
+            return 0;
+        }
+        if (sc_state == SC_PLAY) physics_update();
+        sc_p2p_poll();
         uint32_t now = sharkapi_get_ticks();
         if (changed || now - last >= 16) {
             draw_scene(0, 0, w, h);

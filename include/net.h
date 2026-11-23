@@ -85,6 +85,7 @@ typedef int (*net_service_hook_t)(const uint8_t* frame, uint32_t frame_len,
                                   uint16_t src_port, uint16_t dst_port,
                                   uint8_t protocol);
 void net_set_service_hook(net_service_hook_t cb);
+net_service_hook_t net_get_service_hook(void);
 
 
 typedef int (*net_arp_hook_t)(const uint8_t* target_ip, const uint8_t* sender_mac,
