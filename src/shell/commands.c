@@ -2012,6 +2012,13 @@ void execute_command(char* cmd) {
     char* args = (cmd[i] == ' ') ? &cmd[i+1] : "";
     while (*args == ' ') args++;
 
+    if (strcmp(cmd_name, "hot") == 0) {
+        terminal_hot_easter_egg();
+        terminal_set_color(old_color);
+        return;
+    }
+    if (terminal_hot_active()) terminal_hot_clear();
+
     cmd_handler_t handler = find_command(cmd_name);
     if (handler) {
         handler(args);

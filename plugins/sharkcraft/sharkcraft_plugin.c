@@ -6,15 +6,6 @@
 #include "net.h"
 #endif
 
-/* ---- P2P multiplayer (ported from mayshecry/game) --------------------
-   UDP port 31337, same as the game repo, but with 'S','C' magic so a
-   SharkCraft client and a game-repo client on the same LAN ignore each
-   other's packets instead of misreading them. Packet layout mirrors the
-   game repo: [0]='S' [1]='C' [2]=type [3..6]=player_id LE
-   [7..8]=x LE [9..10]=y LE (biased +1024) [11..12]=z LE [13]=yaw
-   [14]=flags [15..]=extra. Types: 1=HELLO (extra: seed u32 LE, then the
-   sender's name), 2=POS, 3=CHAT (extra: text), 4=BLOCK (extra: x,y,z,block),
-   5=NAME (extra: text). */
 #define P2P_PORT 31337
 #define P2P_MAX_PEERS 8
 #define P2P_CHAT_MAX 48
@@ -134,11 +125,11 @@ static int prev_mouse_buttons = 0;
 static int velocity_x, velocity_y, velocity_z;
 static int on_ground, flying, in_water;
 
-/* Local avatar animation: stride phase 0..255, locomotion blend 0..256,
-   jump/fall pose 0..256. */
 static int sc_walk_phase = 0;
 static int sc_move = 0;
 static int sc_air = 0;
+static int sc_fly = 0;
+static int sc_flap_phase = 0;
 static int sc_anim_dt = 16;
 static uint32_t last_grounded_tick = 0;
 static uint32_t jump_buffer_deadline = 0;
@@ -152,7 +143,6 @@ static int physics_clock_ready = 0;
 static int position_remainder_x, position_remainder_y, position_remainder_z;
 static int yaw_look_remainder, pitch_look_remainder;
 
-/* ---- Game state: main menu / help / play / pause -------------------- */
 #define SC_MENU 0
 #define SC_HELP 1
 #define SC_PLAY 2
@@ -162,20 +152,18 @@ static int sc_state = SC_MENU;
 static int sc_help_return = SC_MENU;
 static int sc_menu_sel = 0;
 static int sc_wants_close = 0;
-static int sc_net_mode = 1; /* 1 = multiplayer (P2P on), 0 = singleplayer */
+static int sc_net_mode = 1;
 static int sc_third_person = 0;
 static int g_draw_ox = 0, g_draw_oy = 0, g_draw_w = 320, g_draw_h = 224;
 static int g_mouse_x = -100, g_mouse_y = -100;
 
-/* Render camera (differs from physics camera in third-person mode). */
 static int rcam_x, rcam_y, rcam_z, rcam_yaw, rcam_pitch;
 
-/* ---- P2P peers + chat (ported from mayshecry/game) ------------------ */
 typedef struct {
     uint8_t ip[4];
     uint32_t id;
-    int x, y, z; /* eye position, Q fixed-point (latest received) */
-    int rx, ry, rz; /* smoothed render position (interpolated toward x/y/z) */
+    int x, y, z;
+    int rx, ry, rz;
     int yaw;
     uint32_t last_seen;
     int active;
@@ -183,11 +171,14 @@ typedef struct {
     uint32_t chat_t;
     char name[P2P_NAME_MAX];
     uint32_t color;
-    int walk_phase;     /* avatar walk-cycle phase, 0..255 */
-    int move;           /* locomotion blend, 0..256 (fades the stride out) */
+    int walk_phase;
+    int move;
     int move_target;
-    int air;            /* avatar jump/fall pose blend, 0..256 */
-    uint32_t air_until; /* tick until which the peer counts as airborne */
+    int air;
+    uint32_t air_until;
+    int fly;
+    int fly_target;
+    int flap;
 } sc_peer_t;
 
 static sc_peer_t sc_peers[P2P_MAX_PEERS];
@@ -205,10 +196,9 @@ static int sc_chat_mode = 0;
 static char sc_chat_buf[P2P_CHAT_MAX];
 static int sc_chat_len = 0;
 
-/* Player name: typed in the menu, shown above the bean and sent to peers. */
 static char sc_player_name[P2P_NAME_MAX];
 static int sc_name_len = 0;
-static int sc_name_mode = 0; /* 0=off, 1=editing from menu, 2=needed before joining */
+static int sc_name_mode = 0;
 
 #define SC_CHAT_HIST 4
 typedef struct {
@@ -783,7 +773,6 @@ static void clear_inputs(void) {
 static void camera_reset(void) {
     int sx = WX / 2;
     int sz = WZ / 2;
-    /* Offset the spawn by player id so multiplayer beans don't stack. */
     if (sc_player_id) {
         sx += (int)((sc_player_id >> 3) % 5) - 2;
         sz += (int)((sc_player_id >> 7) % 5) - 2;
@@ -838,7 +827,6 @@ static int map_key_to_input(char key, uint8_t base_scancode) {
 }
 
 static void sharkcraft_raw_key_cb(char key, uint8_t scancode) {
-    /* Movement keys must not leak into the world while chatting or in menus. */
     if (sc_state != SC_PLAY || sc_chat_mode) return;
     int released = (scancode & 0x80) != 0;
     uint8_t base = scancode & 0x7F;
@@ -875,7 +863,6 @@ static void ensure_desktop_integration(void) {
 #endif
 }
 
-/* ---- P2P multiplayer (ported from mayshecry/game) ------------------ */
 
 static uint32_t sc_peer_color(uint32_t id) {
     static const uint32_t palette[8] = {
@@ -917,7 +904,6 @@ static void sc_derive_player_id(void) {
 #ifdef SHARKCRAFT_BUILTIN
 static net_service_hook_t sc_prev_hook = NULL;
 
-/* Copy up to P2P_NAME_MAX-1 bytes into a peer's display name. */
 static void sc_peer_set_name(sc_peer_t *p, const uint8_t *bytes, uint32_t n) {
     if (n >= P2P_NAME_MAX) n = P2P_NAME_MAX - 1;
     for (uint32_t i = 0; i < n; i++) p->name[i] = (char)bytes[i];
@@ -951,8 +937,8 @@ static int sc_net_cb(const uint8_t *frame_data, uint32_t frame_len,
     uint8_t type = pkt[2];
     uint32_t id = (uint32_t)pkt[3] | ((uint32_t)pkt[4] << 8) |
                   ((uint32_t)pkt[5] << 16) | ((uint32_t)pkt[6] << 24);
-    if (id == sc_player_id) return 1; /* our own packet: consume */
-    if (!sc_net_mode) return 1;       /* singleplayer: drop silently */
+    if (id == sc_player_id) return 1;
+    if (!sc_net_mode) return 1;
 
     int px = (int)pkt[7] | ((int)pkt[8] << 8);
     int py = ((int)pkt[9] | ((int)pkt[10] << 8)) - P2P_Y_BIAS;
@@ -999,16 +985,15 @@ static int sc_net_cb(const uint8_t *frame_data, uint32_t frame_len,
     p->last_seen = sharkapi_get_ticks();
     for (int i = 0; i < 4; i++) p->ip[i] = src_ip[i];
 
-    /* Drive the remote avatar's animation from its reported motion:
-       horizontal travel advances the walk cycle; a big vertical jump
-       (or the flying flag) holds the airborne pose for a short while. */
     if (had_prev) {
         int travel = abs_val(moved_x) + abs_val(moved_z);
         p->walk_phase = (p->walk_phase + ((travel * 110) >> 8)) & 255;
         p->move_target = travel * 32 > 256 ? 256 : travel * 32;
+        p->fly_target = (pflags & 1) ? 256 : 0;
         if (abs_val(moved_y) > 16 || (pflags & 1)) {
             p->air_until = sharkapi_get_ticks() + 280;
         }
+        if (pflags & 1) p->flap = (p->flap + 26) & 255;
     }
 
     if (type == P2P_HELLO && plen >= P2P_HDR_LEN + 4) {
@@ -1018,7 +1003,6 @@ static int sc_net_cb(const uint8_t *frame_data, uint32_t frame_len,
             sc_pending_seed = seed;
             sc_seed_dirty = 1;
         }
-        /* We append our name after the seed so late joiners learn it. */
         if (plen > P2P_HDR_LEN + 4) {
             sc_peer_set_name(p, pkt + P2P_HDR_LEN + 4, plen - (P2P_HDR_LEN + 4));
         }
@@ -1099,7 +1083,6 @@ static void sc_p2p_send(uint8_t type, const uint8_t *dst_ip,
     }
 }
 
-/* Tell everyone the name we're currently playing under. */
 static void sc_broadcast_name(void) {
     if (!sc_net_mode || !net_has_nic() || !net_configured) return;
     sc_p2p_send(P2P_NAME, NULL, (const uint8_t *)sc_player_name, (uint32_t)sc_name_len);
@@ -1111,8 +1094,6 @@ static void sc_broadcast_name(void) {
 static void sc_p2p_poll(void) {
     net_poll();
     uint32_t now = sharkapi_get_ticks();
-    /* Self-heal: the router installs its own service hook; re-chain ours
-       on top of it so both keep working regardless of install order. */
     if (sc_net_mode && net_get_service_hook() != sc_net_cb) sc_net_enable();
     for (int i = 0; i < P2P_MAX_PEERS; i++) {
         sc_peer_t *p = &sc_peers[i];
@@ -1180,6 +1161,8 @@ static void sc_start_game(int net_on) {
     sc_walk_phase = 0;
     sc_move = 0;
     sc_air = 0;
+    sc_fly = 0;
+    sc_flap_phase = 0;
     sc_chat_mode = 0;
     sc_chat_len = 0;
     sc_seed_dirty = 0;
@@ -1208,6 +1191,8 @@ void sharkcraft_game_reset(void) {
     sc_walk_phase = 0;
     sc_move = 0;
     sc_air = 0;
+    sc_fly = 0;
+    sc_flap_phase = 0;
     for (int i = 0; i < P2P_MAX_PEERS; i++) sc_peers[i].active = 0;
     sc_peer_count = 0;
     sc_derive_player_id();
@@ -1585,7 +1570,6 @@ static void render_block(int x, int y, int z, uint8_t b, uint8_t fm,
     }
 }
 
-/* ---- Bean avatars (3D models for players, beans for now) ------------ */
 
 static uint32_t bean_face_tex[6][256];
 static uint32_t bean_eye_white[256];
@@ -1617,9 +1601,6 @@ static void bean_init_eyes(void) {
     bean_eye_ready = 1;
 }
 
-/* Draw one world-space quad (4 verts in Q fixed-point) with a flat tex.
-   The world-to-camera transform must use the render camera's rotation,
-   not the bean's own yaw (verts are already rotated into world space). */
 static void bean_quad(const int verts[4][3], const uint32_t *tex) {
     int cr = rcam_yaw & 255, cp = rcam_pitch & 255;
     int cs_r = cs[cr], sn_r = sn[cr];
@@ -1648,8 +1629,6 @@ static void bean_quad(const int verts[4][3], const uint32_t *tex) {
     }
 }
 
-/* Draw a yaw-rotated box: center (cx,cy,cz) in Q, half extents, face tex.
-   cs_r/sn_r rotate the box by the bean's own yaw. */
 static void bean_box(int cx, int cy, int cz, int hx, int hy, int hz,
                      int cs_r, int sn_r) {
     static const int lc[6][4][3] = {
@@ -1664,8 +1643,6 @@ static void bean_box(int cx, int cy, int cz, int hx, int hy, int hz,
         {1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1}
     };
     for (int f = 0; f < 6; f++) {
-        /* Rotated face normal, kept at 1024-scale so no component
-           truncates to zero (ln is a unit vector). */
         int nx = ln[f][0] * cs_r + ln[f][2] * sn_r;
         int nz = -ln[f][0] * sn_r + ln[f][2] * cs_r;
         int ny = ln[f][1] * 1024;
@@ -1703,8 +1680,6 @@ static uint32_t bean_lighten(uint32_t c, int add) {
     return 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
 }
 
-/* One yaw-rotated body part. (lx,lz) is an offset in local space,
-   cy is the world height of the part center; hx/hy/hz are half extents. */
 static void bean_part(int px, int pz, int lx, int lz, int cy, int hx, int hy, int hz,
                       int cs_r, int sn_r) {
     int cx = px + ((lx * cs_r + lz * sn_r) >> 10);
@@ -1712,20 +1687,17 @@ static void bean_part(int px, int pz, int lx, int lz, int cy, int hx, int hy, in
     bean_box(cx, cy, cz, hx, hy, hz, cs_r, sn_r);
 }
 
-/* walk_phase is a 0..255 stride cycle; move fades the stride in and out
-   (0 = standing neutral); air blends in the jump/fall pose. */
 static void render_bean(int px, int py_eye, int pz, int pyaw, uint32_t color,
-                        int walk_phase, int move, int air) {
+                        int walk_phase, int move, int air, int fly_phase, int fly) {
     bean_init_eyes();
     int r = pyaw & 255;
     int cs_r = cs[r], sn_r = sn[r];
     int cr = rcam_yaw & 255, cp = rcam_pitch & 255;
     int cs_c = cs[cr], sn_c = sn[cr];
     int cs_p = cs[cp], sn_p = sn[cp];
-    int fy = py_eye - EYE_HEIGHT; /* feet */
+    int fy = py_eye - EYE_HEIGHT;
     int H = PLAYER_HEIGHT;
 
-    /* Body-center frustum cull (uses the render camera's rotation). */
     int cdx = px - rcam_x;
     int cdy = (fy + H / 2) - rcam_y;
     int cdz = pz - rcam_z;
@@ -1733,29 +1705,43 @@ static void render_bean(int px, int py_eye, int pz, int pyaw, uint32_t color,
     int cz = (cdy * sn_p + chz * cs_p) >> 10;
     if (cz < NEAR_CLIP - Q || cz > MAX_RENDER_DIST) return;
 
-    /* ---- pose: bouncy stride + jump/fall blend ---- */
     if (air < 0) air = 0;
     if (air > 256) air = 256;
     if (move < 0) move = 0;
     if (move > 256) move = 256;
+    if (fly < 0) fly = 0;
+    if (fly > 256) fly = 256;
     int wp = walk_phase & 255;
-    int s = sn[wp];             /* stride swing, -1024..1024 */
+    int s = sn[wp];
     int c = cs[wp];
-    int ground = 256 - air;     /* 256 = planted, 0 = fully airborne */
+    int ground = 256 - air;
 
-    int swing = (((s * 46) >> 10) * ground >> 8) * move >> 8;   /* legs fore/aft */
+    int swing = (((s * 46) >> 10) * ground >> 8) * move >> 8;
     int liftL = (c > 0 ? (c * 22) >> 10 : 0) * ground >> 8;
     int liftR = (c < 0 ? (-c * 22) >> 10 : 0) * ground >> 8;
     liftL = liftL * move >> 8;
     liftR = liftR * move >> 8;
-    int tuck = (air * 40) >> 8;                         /* knees up in the air */
-    int fold = (air * 14) >> 8;                         /* legs shorten a touch */
-    int bob = (-(((s < 0 ? -s : s) * 30) >> 10)) * move >> 8;  /* dips twice/stride */
-    int armSway = (((s * 30) >> 10) * ground >> 8) * move >> 8; /* arms counter-swing */
-    int armUp = (air * 52) >> 8;                        /* arms thrown up ... */
-    int armOut = (air * 30) >> 8;                       /* ... and outward */
+    int tuck = (air * 40 + fly * 30) >> 8;
+    int fold = (air * 14 + fly * 10) >> 8;
+    int bob = (-(((s < 0 ? -s : s) * 30) >> 10)) * move >> 8;
+    int armSway = (((s * 56) >> 10) * ground >> 8) * move >> 8;
+    int armDip = (((s < 0 ? -s : s) * 16) >> 10) * move >> 8;
+    int fph = fly_phase & 255;
+    int fs = sn[fph];
+    int fc = cs[fph];
+    int flapBeat = (fs * 70) >> 10;
+    int flapSweep = (fc * 34) >> 10;
+    int flapLiftL = (flapBeat * fly) >> 8;
+    int flapSweepL = (flapSweep * fly) >> 8;
+    int wingLiftL = ((fs * 88) >> 10) * fly >> 8;
+    int wingSweepL = ((fc * 54) >> 10) * fly >> 8;
+    int wingReach = 14 + ((fly * 22) >> 8);
+    int wingHx = 32 + ((fly * 8) >> 8);
+    int wingHy = 18 + ((fly * 8) >> 8);
+    int wingHz = 52;
+    int armUp = (air * 52 + fly * 72) >> 8;
+    int armOut = (air * 30 + fly * 34) >> 8;
 
-    /* Proportions (Q units), feet at fy, head top at fy + H. */
     int legH = H * 42 / 100;
     int torsoH = H * 30 / 100;
     int headH = H - legH - torsoH;
@@ -1769,33 +1755,37 @@ static void render_bean(int px, int py_eye, int pz, int pyaw, uint32_t color,
     uint32_t armCol = bean_darken(color, 205);
     uint32_t headCol = bean_lighten(color, 30);
 
-    /* Legs: alternate stride, little step lift, pull up when airborne
-       (top stays near the hip, so the foot rises). */
     bean_fill_all(legCol);
     bean_part(px, pz, -legOff,  swing, fy + legH / 2 + bob + liftL + tuck,
               legW / 2, legH / 2 - fold, legD / 2, cs_r, sn_r);
     bean_part(px, pz,  legOff, -swing, fy + legH / 2 + bob + liftR + tuck,
               legW / 2, legH / 2 - fold, legD / 2, cs_r, sn_r);
 
-    /* Torso bobs with the stride. */
     bean_fill_all(color);
     bean_part(px, pz, 0, 0, fy + legH + torsoH / 2 + bob,
               torsoW / 2, torsoH / 2, torsoD / 2, cs_r, sn_r);
 
-    /* Arms counter-swing while walking, lift and spread in the air. */
     bean_fill_all(armCol);
-    bean_part(px, pz, -(armOff + armOut), -armSway,
-              fy + legH + torsoH / 2 + bob + armUp, armW / 2, torsoH / 2, armD / 2, cs_r, sn_r);
-    bean_part(px, pz,  (armOff + armOut),  armSway,
-              fy + legH + torsoH / 2 + bob + armUp, armW / 2, torsoH / 2, armD / 2, cs_r, sn_r);
+    bean_part(px, pz, -(armOff + armOut), -armSway - flapSweepL,
+              fy + legH + torsoH / 2 + bob + armUp + flapLiftL - armDip,
+              armW / 2, torsoH / 2, armD / 2, cs_r, sn_r);
+    bean_part(px, pz,  (armOff + armOut),  armSway + flapSweepL,
+              fy + legH + torsoH / 2 + bob + armUp - flapLiftL - armDip,
+              armW / 2, torsoH / 2, armD / 2, cs_r, sn_r);
 
-    /* Head rides the bob too. */
+    if (fly > 8) {
+        int wingY = fy + legH + torsoH / 2 + bob + armUp;
+        bean_part(px, pz, -(armOff + armOut + wingReach), -armSway - wingSweepL,
+                  wingY + wingLiftL, wingHx, wingHy, wingHz, cs_r, sn_r);
+        bean_part(px, pz,  (armOff + armOut + wingReach),  armSway + wingSweepL,
+                  wingY - wingLiftL, wingHx, wingHy, wingHz, cs_r, sn_r);
+    }
+
     int headCY = fy + legH + torsoH + headH / 2 + bob;
     int headW = 120, headD = 116;
     bean_fill_all(headCol);
     bean_part(px, pz, 0, 0, headCY, headW / 2, headH / 2, headD / 2, cs_r, sn_r);
 
-    /* Eyes on the head front (local +Z = facing direction). */
     int eyeY = headCY + headH / 8;
     int frontZ = headD / 2 + 2;
     for (int e = 0; e < 2; e++) {
@@ -1854,7 +1844,6 @@ static void sc_draw_bean_tags(void) {
         sc_peer_t *p = &sc_peers[i];
         if (!p->active) continue;
         int sx, sy;
-        /* Tag sits just above the model's head (model top = feet + PLAYER_HEIGHT). */
         int head_y = p->ry - EYE_HEIGHT + PLAYER_HEIGHT + 10;
         if (!sc_project(p->rx, head_y, p->rz, &sx, &sy)) continue;
         if (sx < -30 || sx > RW + 30 || sy < 0 || sy > RH) continue;
@@ -1880,7 +1869,6 @@ static void sc_draw_bean_tags(void) {
         }
     }
 
-    /* Our own name floats above us in third-person mode. */
     if (sc_third_person && sc_player_name[0]) {
         int sx, sy;
         int head_y = camera_y - EYE_HEIGHT + PLAYER_HEIGHT + 10;
@@ -2064,7 +2052,6 @@ static void draw_hud(void) {
     }
 }
 
-/* ---- 2D overlay helpers: menus, chat, IP entry --------------------- */
 
 #define SC_MENU_TOP 60
 #define SC_MENU_ROW 14
@@ -2256,7 +2243,6 @@ static void sc_draw_overlays(void) {
     if (sc_state == SC_PLAY) sc_draw_chat();
 }
 
-/* Returns menu item index under a pixel row, or -1. */
 static int sc_menu_index_at(int py, int top, int count) {
     if (py < top - 2) return -1;
     int i = (py - (top - 2)) / SC_MENU_ROW;
@@ -2343,12 +2329,10 @@ static void sc_update_render_camera(void) {
     rcam_z = camera_z;
     if (!sc_third_person) return;
 
-    /* World-space forward vector (Q=1024 rotation math). */
     int fx = (cs_p * sn_r) >> 10;
     int fy = sn_p;
     int fz = (cs_p * cs_r) >> 10;
 
-    /* Pull the camera back along -forward, stopping before it clips. */
     int dist = 3 * Q;
     for (int d = Q; d <= dist; d += Q / 2) {
         int tx = camera_x - ((fx * d) >> 10);
@@ -2452,9 +2436,6 @@ static void draw_scene(int ox, int oy, int w, int h) {
         }
     }
 
-    /* Remote player beans (opaque, depth-tested against terrain).
-       Smoothly interpolate each peer's render position toward the latest
-       network position so movement looks continuous instead of snapping. */
     uint32_t frame_now = sharkapi_get_ticks();
     for (int i = 0; i < P2P_MAX_PEERS; i++) {
         sc_peer_t *pp = &sc_peers[i];
@@ -2462,20 +2443,22 @@ static void draw_scene(int ox, int oy, int w, int h) {
         if (pp->rx != pp->x) pp->rx += (pp->x - pp->rx) >> 2;
         if (pp->ry != pp->y) pp->ry += (pp->y - pp->ry) >> 2;
         if (pp->rz != pp->z) pp->rz += (pp->z - pp->rz) >> 2;
-        /* Ease the remote jump pose and locomotion blend toward targets. */
         int air_target = ((int32_t)(pp->air_until - frame_now) > 0) ? 256 : 0;
         if (pp->air < air_target) pp->air += (air_target - pp->air) >> 3;
         else if (pp->air > air_target) pp->air -= (pp->air - air_target) >> 3;
         if (pp->move < pp->move_target) pp->move += (pp->move_target - pp->move) >> 3;
         else if (pp->move > pp->move_target) pp->move -= (pp->move - pp->move_target) >> 3;
+        if (pp->fly < pp->fly_target) pp->fly += (pp->fly_target - pp->fly) >> 3;
+        else if (pp->fly > pp->fly_target) pp->fly -= (pp->fly - pp->fly_target) >> 3;
+        if (pp->fly < 0) pp->fly = 0;
+        if (pp->fly > 256) pp->fly = 256;
         render_bean(pp->rx, pp->ry, pp->rz, pp->yaw, pp->color,
-                    pp->walk_phase, pp->move, pp->air);
+                    pp->walk_phase, pp->move, pp->air, pp->flap, pp->fly);
     }
 
-    /* Our own bean, only visible in third-person mode. */
     if (sc_third_person) {
         render_bean(camera_x, camera_y, camera_z, yaw, sc_peer_color(sc_player_id),
-                    sc_walk_phase, sc_move, sc_air);
+                    sc_walk_phase, sc_move, sc_air, sc_flap_phase, sc_fly);
     }
 
     for (int ring = max_ring; ring >= 0; ring--) {
@@ -2721,8 +2704,6 @@ static void physics_update(void) {
     if (camera_y < -4 * Q) camera_reset();
 }
 
-/* Advance the local avatar's stride cycle by the distance travelled and
-   ease the jump/fall pose in and out. Runs once per game tick. */
 static void sc_update_avatar_anim(void) {
     int adv = ((abs_val(velocity_x) + abs_val(velocity_z)) * sc_anim_dt) / 1000;
     sc_walk_phase = (sc_walk_phase + ((adv * 110) >> 8)) & 255;
@@ -2730,11 +2711,17 @@ static void sc_update_avatar_anim(void) {
     if (sc_move < move_target) sc_move += (move_target - sc_move) >> 3;
     else if (sc_move > move_target) sc_move -= (sc_move - move_target) >> 3;
     int target = on_ground ? 0 : 256;
-    if (flying) target = 176; /* hover: half-raised arms */
+    if (flying) target = 176;
     if (sc_air < target) sc_air += (target - sc_air) >> 3;
     else if (sc_air > target) sc_air -= (sc_air - target) >> 3;
     if (sc_air < 0) sc_air = 0;
     if (sc_air > 256) sc_air = 256;
+    sc_flap_phase = (sc_flap_phase + ((sc_anim_dt * 90) >> 8)) & 255;
+    int fly_target = flying ? 256 : 0;
+    if (sc_fly < fly_target) sc_fly += (fly_target - sc_fly) >> 3;
+    else if (sc_fly > fly_target) sc_fly -= (sc_fly - fly_target) >> 3;
+    if (sc_fly < 0) sc_fly = 0;
+    if (sc_fly > 256) sc_fly = 256;
 }
 
 static void register_key_press(int idx, uint32_t now) {
@@ -2877,7 +2864,6 @@ void sharkcraft_clear_wants_close(void) {
     clear_inputs();
 }
 
-/* ---- State-machine helpers ----------------------------------------- */
 
 static int sc_parse_ip(const char *s, uint8_t out[4]) {
     int i = 0;
@@ -2944,7 +2930,6 @@ static void sc_commit_name(void) {
 static void sc_activate_main(void) {
     switch (sc_menu_sel) {
         case 0:
-            /* Going multiplayer? Ask for a name first if none is set. */
             if (sc_net_mode && !sc_player_name[0]) sc_open_name_entry(2);
             else sc_start_game(sc_net_mode);
             break;
@@ -3058,7 +3043,6 @@ int sharkcraft_handle_mouse(int x, int y, int buttons) {
     int click = (buttons & 1) && !(prev_mouse_buttons & 1);
     int release = !(buttons & 1) && (prev_mouse_buttons & 1);
 
-    /* Menus and text entry: pointer selects/activates, keyboard still works. */
     if (sc_state != SC_PLAY) {
         int in_menu = (sc_state == SC_MENU && !sc_ip_mode && !sc_name_mode) || sc_state == SC_PAUSE;
         int count = (sc_state == SC_PAUSE) ? SC_PAUSE_ITEMS : SC_MAIN_ITEMS;

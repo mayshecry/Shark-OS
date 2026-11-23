@@ -183,7 +183,7 @@ fs/fs.o: src/fs/fs.c include/kernel.h | fs
 fs/fat16.o: src/fs/fat16.c include/kernel.h include/ata.h | fs
 	@printf "  CC  %s\n" "$<"; $(CC) -c src/fs/fat16.c -o fs/fat16.o $(CFLAGS)
 
-ui/terminal.o: src/ui/terminal.c include/kernel.h include/term_font16_data.h | ui
+ui/terminal.o: src/ui/terminal.c include/kernel.h include/term_font16_data.h include/hot_image_data.h | ui
 	@printf "  CC  %s\n" "$<"; $(CC) -c src/ui/terminal.c -o ui/terminal.o $(CFLAGS)
 
 ui/ui.o: src/ui/ui.c include/kernel.h | ui

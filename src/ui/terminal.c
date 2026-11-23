@@ -1,5 +1,6 @@
 #include "kernel.h"
 #include "term_font16_data.h"
+#include "hot_image_data.h"
 
 void ui_init_metrics(void) {
     uint32_t w = (uint32_t)screen_width;
@@ -270,6 +271,75 @@ void terminal_clear(void) {
     draw_rect(px_start, row_px(content_first_row), px_width, content_h, UI_SURFACE);
     terminal_row = content_first_row;
     terminal_column = panes[active_pane].col_start;
+}
+
+static bool hot_easter_egg_on = false;
+
+bool terminal_hot_active(void) {
+    return hot_easter_egg_on;
+}
+
+void terminal_hot_clear(void) {
+    hot_easter_egg_on = false;
+}
+
+void terminal_hot_draw_into(int rx, int ry, int rw, int rh) {
+    if (!hot_easter_egg_on) return;
+    if (rw <= 0 || rh <= 0) return;
+
+    uint32_t size = (uint32_t)(rw < rh ? rw : rh);
+    if (size > HOT_IMAGE_W) size = HOT_IMAGE_W;
+    if (size == 0) return;
+
+    int x0 = rx + (rw - (int)size) / 2;
+    int y0 = ry + (rh - (int)size) / 2;
+
+    for (uint32_t y = 0; y < size; y++) {
+        uint32_t sy0 = y * HOT_IMAGE_H / size;
+        uint32_t sy1 = (y + 1) * HOT_IMAGE_H / size;
+        if (sy1 <= sy0) sy1 = sy0 + 1;
+        for (uint32_t x = 0; x < size; x++) {
+            uint32_t sx0 = x * HOT_IMAGE_W / size;
+            uint32_t sx1 = (x + 1) * HOT_IMAGE_W / size;
+            if (sx1 <= sx0) sx1 = sx0 + 1;
+            uint32_t sr = 0, sg = 0, sb = 0, n = 0;
+            for (uint32_t sy = sy0; sy < sy1; sy++) {
+                const uint16_t* rowp = &hot_image_data[sy * HOT_IMAGE_W];
+                for (uint32_t sx = sx0; sx < sx1; sx++) {
+                    uint16_t v = rowp[sx];
+                    sr += (v >> 11) & 0x1F;
+                    sg += (v >> 5) & 0x3F;
+                    sb += v & 0x1F;
+                    n++;
+                }
+            }
+            if (!n) continue;
+            uint32_t r = sr / n, g = sg / n, b = sb / n;
+            draw_pixel(x0 + (int)x, y0 + (int)y,
+                       0xFF000000u | (((r << 3) | (r >> 2)) << 16) |
+                       (((g << 2) | (g >> 4)) << 8) | ((b << 3) | (b >> 2)));
+        }
+    }
+}
+
+void terminal_hot_easter_egg(void) {
+    hot_easter_egg_on = true;
+    if (terminal_capturing()) return;
+
+    uint32_t px_start = col_px(panes[active_pane].col_start);
+    uint32_t px_width = col_px(panes[active_pane].col_end - panes[active_pane].col_start);
+    uint32_t y0 = row_px(content_first_row);
+    uint32_t avail_h = ui_footer_y - y0;
+    if (avail_h <= font_cell_h) return;
+
+    uint32_t max_h = avail_h - font_cell_h;
+    draw_rect((int)px_start, (int)y0, (int)px_width, (int)avail_h, UI_SURFACE);
+    terminal_hot_draw_into((int)px_start, (int)y0, (int)px_width, (int)max_h);
+
+    size_t last_row = term_max_row > content_first_row ? term_max_row - 1 : content_first_row;
+    draw_rect((int)px_start, (int)row_px(last_row), (int)px_width, font_cell_h, UI_SURFACE);
+    panes[active_pane].row = last_row > content_first_row ? last_row - 1 : last_row;
+    panes[active_pane].col = panes[active_pane].col_start;
 }
 
 void terminal_write_char_internal(char c) {

@@ -152,16 +152,23 @@ void app_window_draw_terminal(window_t* w) {
     if (first < 0) first = 0;
 
     int row = 0;
-    for (int li = first; li < total && row < avail; li++, row++) {
-        int start = 0, len = 0;
-        terminal_layout_lines(cols, li, &start, &len);
-        if (len > TERM_MAX_COLS) len = TERM_MAX_COLS;
-        for (int j = 0; j < len; j++) {
-            char c = terminal_output[start + j];
-            uint32_t fg = vga_to_rgb[terminal_output_colors[start + j] & 0x0F];
-            term_put_char_win(c, tx + 4 + j * TERM_CELL_W,
-                              ty + 4 + row * TERM_CELL_H, fg, 0xFF000000,
-                              clipx0, clipy0, clipx1, clipy1);
+    if (terminal_hot_active()) {
+        int img_bottom = ty + 4 + (max_lines - 1) * TERM_CELL_H - 2;
+        int img_h = img_bottom > ty + 2 ? img_bottom - (ty + 2) : 0;
+        terminal_hot_draw_into(tx + 2, ty + 2, tw - 4, img_h);
+        row = max_lines - 1;
+    } else {
+        for (int li = first; li < total && row < avail; li++, row++) {
+            int start = 0, len = 0;
+            terminal_layout_lines(cols, li, &start, &len);
+            if (len > TERM_MAX_COLS) len = TERM_MAX_COLS;
+            for (int j = 0; j < len; j++) {
+                char c = terminal_output[start + j];
+                uint32_t fg = vga_to_rgb[terminal_output_colors[start + j] & 0x0F];
+                term_put_char_win(c, tx + 4 + j * TERM_CELL_W,
+                                  ty + 4 + row * TERM_CELL_H, fg, 0xFF000000,
+                                  clipx0, clipy0, clipx1, clipy1);
+            }
         }
     }
 
