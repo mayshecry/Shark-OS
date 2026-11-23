@@ -24,5 +24,5 @@ void pcspkr_beep(uint32_t freq_hz, uint32_t ms) {
     outb(0x61, tmp & ~0x03);
 }
 
- 
+
 void pcspkr_tick(void) {}

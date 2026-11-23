@@ -1,0 +1,11 @@
+net/drivers/
+server32-build/
+isodir/
+isodir-server/
+isodir-server32/
+tools/__pycache__/
+*.o
+*.iso
+*.bin
+*.plg
+*.elf

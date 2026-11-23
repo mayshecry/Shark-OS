@@ -74,80 +74,77 @@ const desktop_theme_t theme_modern = {
     12
 };
 
-                                                                  
-                                                                   
-                                                                    
-                             
+
 const desktop_theme_t theme_kawaii = {
     "Kawaii theme",
-    0xFFF3C1D3u,                                         
-    0xFFEDADC2u,                                         
-    0xFFFDF0F5u,                                         
-    0xFFFFFFFFu,                                         
-    0xFFF9D8E4u,                                         
-    0xFFD885B1u,                                         
-    0xFF91355Eu,                                         
-    0xFF4A2038u,                                         
-    0xFFB98CA6u,                                         
-    0xFFD25D89u,                                         
-    0xFFCE75A1u,                                         
-    0xFFF3C1D3u,                                         
-    0xFFF9D8E4u,                                         
-    0xFFFFFFFFu,                                         
-    0xFFA6688Cu,                                         
-    0xFFD25D89u,                                         
-    0xFFFFFFFFu,                                         
-    0xFFFFF7FAu,                                         
-    0xFF4A2038u,                                         
-    0xFFCE75A1u,                                         
-    0xFFD25D89u,                                         
-    0xFFFDF0F5u,                                         
-    0xFFFFFFFFu,                                         
-    0xFFD25D89u,                                         
-    true,                                                
-    false,                                               
-    true,                                                
-    true,                                                
-    false,                                               
-    true,                                                
-    false,                                               
+    0xFFF3C1D3u,
+    0xFFEDADC2u,
+    0xFFFDF0F5u,
+    0xFFFFFFFFu,
+    0xFFF9D8E4u,
+    0xFFD885B1u,
+    0xFF91355Eu,
+    0xFF4A2038u,
+    0xFFB98CA6u,
+    0xFFD25D89u,
+    0xFFCE75A1u,
+    0xFFF3C1D3u,
+    0xFFF9D8E4u,
+    0xFFFFFFFFu,
+    0xFFA6688Cu,
+    0xFFD25D89u,
+    0xFFFFFFFFu,
+    0xFFFFF7FAu,
+    0xFF4A2038u,
+    0xFFCE75A1u,
+    0xFFD25D89u,
+    0xFFFDF0F5u,
+    0xFFFFFFFFu,
+    0xFFD25D89u,
+    true,
+    false,
+    true,
+    true,
+    false,
+    true,
+    false,
     0
 };
 
 const desktop_theme_t theme_windowmaker = {
     "WindowMaker",
-    0xFF5B5E82u,   
-    0xFF4A4E6Au,   
-    0xFFBFBFBFu,   
-    0xFFE8E8E8u,   
-    0xFFC8C8C8u,   
-    0xFF808080u,   
-    0xFF000000u,   
-    0xFF000000u,   
-    0xFF808080u,   
-    0xFF000000u,   
-    0xFF000000u,   
-    0xFF4A4A4Au,   
-    0xFF4A4A4Au,   
-    0xFFFFFFFFu,   
-    0xFFC8C8C8u,   
-    0xFF000000u,   
-    0xFFFFFFFFu,  
-    0xFFC8C8C8u,   
-    0xFF000000u,   
-    0xFF000000u,   
-    0xFF000000u,   
-    0xFFC8C8C8u,   
-    0xFFFFFFFFu,   
-    0xFF000000u,   
-    false,        
-    true,         
-    false,        
-    false,        
-    true,         
-    false,        
-    false,        
-    0             
+    0xFF5B5E82u,
+    0xFF4A4E6Au,
+    0xFFBFBFBFu,
+    0xFFE8E8E8u,
+    0xFFC8C8C8u,
+    0xFF808080u,
+    0xFF000000u,
+    0xFF000000u,
+    0xFF808080u,
+    0xFF000000u,
+    0xFF000000u,
+    0xFF4A4A4Au,
+    0xFF4A4A4Au,
+    0xFFFFFFFFu,
+    0xFFC8C8C8u,
+    0xFF000000u,
+    0xFFFFFFFFu,
+    0xFFC8C8C8u,
+    0xFF000000u,
+    0xFF000000u,
+    0xFF000000u,
+    0xFFC8C8C8u,
+    0xFFFFFFFFu,
+    0xFF000000u,
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    0
 };
 
 const desktop_theme_t* theme_current = &theme_win98;
@@ -176,9 +173,8 @@ void theme_set(int id) {
     else theme_current = &theme_win98;
     window_title_icons_invalidate();
     if (desktop.initialized) desktop_icons_load();
-                                                                      
-                                                                    
-                                                                        
+
+
     if (id == THEME_ID_KAWAII) {
         kawaii_saved_wallpaper = desktop.wallpaper_id;
         desktop_set_wallpaper(WP_ID_KAWAII);

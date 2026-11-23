@@ -87,9 +87,8 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
                 }
                 legacy_pos++;
             }
-                                                                               
-                                                                             
-                                                                             
+
+
             for (char* up = cmdline; *up; up++) {
                 if ((up == cmdline || up[-1] == ' ') && up[0] == 'u' && up[1] == 'r' && up[2] == 'l' && up[3] == '=') {
                     int o = 0;
@@ -140,7 +139,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         }
     }
 
-     
+
     if (total_system_memory > 137438953472ULL) {
         total_system_memory = 137438953472ULL;
     }
@@ -166,12 +165,10 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         lite_kmain();
     }
 
-                                                                      
-                                            
+
     if (kawaii_mode) theme_set(THEME_ID_KAWAII);
 
-                                                                    
-                                                                 
+
     boot_trace("boot screen begin");
     boot_screen_show();
     boot_trace("boot screen ready");
@@ -536,8 +533,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
 
         browser_tick();
 
-                                                                   
-                                                                       
+
         diskmgmt_tick();
 
         if (desktop.dirty) {

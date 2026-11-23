@@ -21,7 +21,7 @@ uint32_t* desktop_icon_get_pixels(int idx) {
 
 uint32_t* desktop_icon_pixels_for_type(window_type_t type) {
     int tid = theme_get_id();
-     
+
     if (tid == THEME_ID_WIN98) {
         switch (type) {
         case WINDOW_TYPE_TERMINAL:    return (uint32_t*)icon_data_terminal;
@@ -30,7 +30,7 @@ uint32_t* desktop_icon_pixels_for_type(window_type_t type) {
         case WINDOW_TYPE_PONG:        return (uint32_t*)icon_data_pong;
         case WINDOW_TYPE_GDASH:       return (uint32_t*)icon_data_gdash;
         case WINDOW_TYPE_SHARKCRAFT:  return (uint32_t*)icon_data_sharkcraft_w98;
-        case WINDOW_TYPE_SHARKCUBE:   return (uint32_t*)icon_data_sharkcraft_w98;  
+        case WINDOW_TYPE_SHARKCUBE:   return (uint32_t*)icon_data_sharkcraft_w98;
         case WINDOW_TYPE_SMB:         return (uint32_t*)icon_data_smb;
         case WINDOW_TYPE_FNAF:        return (uint32_t*)icon_data_fnaf;
         case WINDOW_TYPE_SETTINGS:    return (uint32_t*)icon_data_settings;
@@ -39,14 +39,14 @@ uint32_t* desktop_icon_pixels_for_type(window_type_t type) {
         case WINDOW_TYPE_NETWORK:     return (uint32_t*)icon_data_network;
         case WINDOW_TYPE_TASKMANAGER: return (uint32_t*)icon_data_taskmanager;
         case WINDOW_TYPE_BROWSER:     return (uint32_t*)icon_data_browser;
-        case WINDOW_TYPE_DISKMGMT:    return (uint32_t*)icon_data_folder;  
+        case WINDOW_TYPE_DISKMGMT:    return (uint32_t*)icon_data_folder;
         case WINDOW_TYPE_FAQ:
         case WINDOW_TYPE_FASTFETCH:
         case WINDOW_TYPE_ABOUT:
         default:                      return (uint32_t*)icon_data_info;
         }
     }
-     
+
     if (tid == THEME_ID_MODERN) {
         switch (type) {
         case WINDOW_TYPE_TERMINAL:    return (uint32_t*)micon_terminal;
@@ -71,7 +71,7 @@ uint32_t* desktop_icon_pixels_for_type(window_type_t type) {
         default:                      return (uint32_t*)micon_info;
         }
     }
-     
+
     if (tid == THEME_ID_KAWAII) {
         switch (type) {
         case WINDOW_TYPE_TERMINAL:    return (uint32_t*)kawaii_icon_data_terminal;
@@ -96,7 +96,7 @@ uint32_t* desktop_icon_pixels_for_type(window_type_t type) {
         default:                      return (uint32_t*)kawaii_icon_data_info;
         }
     }
-     
+
     if (tid == THEME_ID_WINDOWMAKER) {
         switch (type) {
         case WINDOW_TYPE_TERMINAL:    return (uint32_t*)wm_icon_data_terminal;
@@ -121,7 +121,7 @@ uint32_t* desktop_icon_pixels_for_type(window_type_t type) {
         default:                      return (uint32_t*)wm_icon_data_info;
         }
     }
-     
+
     return (uint32_t*)icon_data_info;
 }
 

@@ -14,7 +14,7 @@ const char* audio_backend_name(void){
     return "none";
 }
 
- 
+
 bool pci_find_audio_device(uint8_t* bus, uint8_t* slot, uint8_t* func, uint16_t* vendor, uint16_t* device, uint32_t* classcode){
     for (uint32_t b=0;b<256;b++){
         for (uint32_t s=0;s<32;s++){
@@ -56,7 +56,7 @@ void pic_unmask_irq(uint8_t irq){
         uint8_t mask = inb(0xA1);
         mask &= ~(1u << irq);
         outb(0xA1, mask);
-         
+
         uint8_t m = inb(0x21);
         m &= ~(1u << 2);
         outb(0x21, m);
@@ -67,7 +67,7 @@ void pic_mask_irq(uint8_t irq){
     else { irq-=8; uint8_t m=inb(0xA1); m|=1u<<irq; outb(0xA1,m);}
 }
 
- 
+
 static uint64_t audio_read_tsc(void){
     uint32_t lo;
     uint32_t hi;
@@ -164,15 +164,15 @@ void audio_delay_ms(uint32_t ms){
 
 void audio_init(void){
     memset(&g_audio, 0, sizeof(g_audio));
-    g_audio.master_volume = 200;  
+    g_audio.master_volume = 200;
     g_audio.next_id = 1;
 
     serial_puts("[audio] init: probing PCI\n");
-     
+
     pcspkr_init();
     g_audio.has_pcspkr = true;
 
-     
+
     if (!audio_probe_pci()){
         g_audio.initialized = true;
         serial_puts("[audio] init done, PC speaker fallback only\n");
@@ -180,13 +180,12 @@ void audio_init(void){
     }
     serial_puts("[audio] PCI scan complete\n");
 
-     
-     
+
     serial_puts("[audio] HDA init begin\n");
     if (hda_init()){
         g_audio.has_hda = true;
         g_audio_backend = NULL;
-         
+
         extern audio_backend_t hda_backend;
         g_audio_backend = &hda_backend;
         serial_puts("[audio] using HDA backend\n");
@@ -212,16 +211,16 @@ void audio_init(void){
 }
 
 void audio_tick(void){
-     
-     
+
+
     if (!g_audio.initialized) return;
-     
-     
+
+
     int16_t tmp[AUDIO_BUFFER_FRAMES * AUDIO_CHANNELS];
     audio_mix_frames(tmp, AUDIO_BUFFER_FRAMES);
-     
+
     if (g_audio_backend && g_audio_backend->submit){
-         
+
         bool any=false;
         for (int i=0;i<AUDIO_MAX_CHANNELS;i++) if (g_audio.channels[i].active) { any=true; break; }
         if (any){
@@ -229,13 +228,13 @@ void audio_tick(void){
                 g_audio.underruns++;
             }
         } else {
-             
-             
+
+
         }
     }
-     
+
     if (g_audio_backend && g_audio_backend->tick) g_audio_backend->tick();
-     
+
 }
 
 

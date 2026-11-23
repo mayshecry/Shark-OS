@@ -8,28 +8,28 @@
 #include "browser.h"
 #include "font.h"
 
-#define BR_MAX_NODES      3000                                                
+#define BR_MAX_NODES      3000
 #define BR_TEXT_POOL      (512 * 1024)
 #define BR_MAX_ATTRS      16
 #define BR_MAX_DEPTH      48
 #define BR_MAX_TEXT_RUN   4096
-#define BR_MAX_RULES      8000                                                  
-#define BR_MAX_SELPARTS   5                                                   
-#define BR_MAX_DECLS      24                                                  
-#define BR_MAX_DECL_POOL  40000                                               
-#define BR_MAX_PART_POOL  16000                                               
-#define BR_MAX_FONTFACES  6                                                   
-#define BR_CSS_BUF        (256 * 1024)                                          
-#define BR_MAX_BOXES      6000                                                
-#define BR_PAGE_MAX       (512 * 1024)                                                 
-#define BR_URL_MAX        512                                           
+#define BR_MAX_RULES      8000
+#define BR_MAX_SELPARTS   5
+#define BR_MAX_DECLS      24
+#define BR_MAX_DECL_POOL  40000
+#define BR_MAX_PART_POOL  16000
+#define BR_MAX_FONTFACES  6
+#define BR_CSS_BUF        (256 * 1024)
+#define BR_MAX_BOXES      6000
+#define BR_PAGE_MAX       (512 * 1024)
+#define BR_URL_MAX        512
 #define BR_HISTORY_MAX    24
 #define BR_MAX_IMAGES     32
-#define BR_MAX_VARS       1024                                               
-#define BR_MAX_SHEETS     12                                                 
+#define BR_MAX_VARS       1024
+#define BR_MAX_SHEETS     12
 #define BR_IMG_MAX_BYTES  (256 * 1024)
-#define BR_IMG_ARENA_PIXELS (640 * 1024)                                           
-#define BR_IMG_SCRATCH_BYTES (640 * 1024)                                        
+#define BR_IMG_ARENA_PIXELS (640 * 1024)
+#define BR_IMG_SCRATCH_BYTES (640 * 1024)
 
 enum { BR_NODE_DOCUMENT = 0, BR_NODE_ELEMENT, BR_NODE_TEXT };
 
@@ -150,7 +150,7 @@ typedef struct {
     int specificity;
     int order;
 } br_rule_t;
-#define BR_MAX_VAR_DECLS 4096                                                  
+#define BR_MAX_VAR_DECLS 4096
 
 enum { BR_BOX_TEXT = 0, BR_BOX_RECT, BR_BOX_IMAGE, BR_BOX_HR, BR_BOX_BULLET, BR_BOX_INPUT, BR_BOX_BUTTON, BR_BOX_CHECKBOX };
 

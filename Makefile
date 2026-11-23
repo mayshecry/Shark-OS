@@ -76,6 +76,38 @@ drivers/audio/wav.o: src/drivers/audio/wav.c include/kernel.h include/audio.h | 
 net/net.o: src/net/net.c include/kernel.h include/net.h include/tls.h include/firewall.h | net
 	@printf "  CC  %s\n" "$<"; $(CC) -c src/net/net.c -o net/net.o $(CFLAGS)
 
+
+NET_DRIVER_OBJS = net/drivers/drivers.o net/drivers/rtl8139.o net/drivers/pcnet.o \
+                  net/drivers/e1000.o net/drivers/r8169.o net/drivers/ne2000.o \
+                  net/drivers/virtio_net.o
+
+net/drivers:
+	mkdir -p net/drivers
+
+net/drivers/drivers.o: src/net/drivers/drivers.c include/kernel.h include/net.h include/netdev.h \
+                       include/drivers/rtl8139.h include/drivers/pcnet.h \
+                       include/drivers/e1000.h include/drivers/r8169.h \
+                       include/drivers/ne2000.h include/drivers/virtio_net.h | net/drivers
+	@printf "  CC  %s\n" "$<"; $(CC) -c src/net/drivers/drivers.c -o net/drivers/drivers.o $(CFLAGS)
+
+net/drivers/rtl8139.o: src/net/drivers/rtl8139.c include/kernel.h include/net.h include/netdev.h include/drivers/rtl8139.h | net/drivers
+	@printf "  CC  %s\n" "$<"; $(CC) -c src/net/drivers/rtl8139.c -o net/drivers/rtl8139.o $(CFLAGS)
+
+net/drivers/pcnet.o: src/net/drivers/pcnet.c include/kernel.h include/net.h include/netdev.h include/drivers/pcnet.h | net/drivers
+	@printf "  CC  %s\n" "$<"; $(CC) -c src/net/drivers/pcnet.c -o net/drivers/pcnet.o $(CFLAGS)
+
+net/drivers/e1000.o: src/net/drivers/e1000.c include/kernel.h include/net.h include/netdev.h include/drivers/e1000.h | net/drivers
+	@printf "  CC  %s\n" "$<"; $(CC) -c src/net/drivers/e1000.c -o net/drivers/e1000.o $(CFLAGS)
+
+net/drivers/r8169.o: src/net/drivers/r8169.c include/kernel.h include/net.h include/netdev.h include/drivers/r8169.h | net/drivers
+	@printf "  CC  %s\n" "$<"; $(CC) -c src/net/drivers/r8169.c -o net/drivers/r8169.o $(CFLAGS)
+
+net/drivers/ne2000.o: src/net/drivers/ne2000.c include/kernel.h include/net.h include/netdev.h include/drivers/ne2000.h | net/drivers
+	@printf "  CC  %s\n" "$<"; $(CC) -c src/net/drivers/ne2000.c -o net/drivers/ne2000.o $(CFLAGS)
+
+net/drivers/virtio_net.o: src/net/drivers/virtio_net.c include/kernel.h include/net.h include/netdev.h include/drivers/virtio_net.h | net/drivers
+	@printf "  CC  %s\n" "$<"; $(CC) -c src/net/drivers/virtio_net.c -o net/drivers/virtio_net.o $(CFLAGS)
+
 net/vnic.o: src/net/vnic.c include/kernel.h include/net.h | net
 	@printf "  CC  %s\n" "$<"; $(CC) -c src/net/vnic.c -o net/vnic.o $(CFLAGS)
 
@@ -339,19 +371,19 @@ sharkos.bin: Makefile boot.o arch/early.o arch/io.o arch/interrupts.o arch/cpu.o
              shell/commands.o shell/spkg.o shell/main.o shell/lite.o \
              lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o \
              plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o plugins/sharkcube/sharkcube_plugin.o plugins/sharkcraft/sharkcraft_plugin.o plugins/fnaf/fnaf_plugin.o sharkscript/shs.o $(DOOM_OBJECTS) flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o fnaf/fnaf.o \
-             desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/theme.o desktop/diskmgmt.o desktop/png.o desktop/gif.o desktop/jpeg.o desktop/webp.o browser/svg.o net/net.o net/vnic.o net/firewall.o net/router.o net/router_http.o net/router_cli.o net/crypto.o net/tls.o \
+             desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/theme.o desktop/diskmgmt.o desktop/png.o desktop/gif.o desktop/jpeg.o desktop/webp.o browser/svg.o net/net.o $(NET_DRIVER_OBJS) net/vnic.o net/firewall.o net/router.o net/router_http.o net/router_cli.o net/crypto.o net/tls.o \
              browser/html.o browser/css.o browser/layout.o browser/js.o browser/browser.o browser/font.o linker.ld
 	@printf "  LD  %s\n" "$@"; $(CC) -T linker.ld -o sharkos.bin $(LDFLAGS) boot.o arch/early.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o \
 		drivers/keyboard.o drivers/pci.o drivers/mouse.o drivers/rtc.o drivers/ata.o drivers/audio/audio.o drivers/audio/mixer.o drivers/audio/ac97.o drivers/audio/hda.o drivers/audio/pcspkr.o drivers/audio/wav.o fs/fs.o fs/fat16.o ui/terminal.o ui/ui.o \
 		ui/fastfetch.o ui/mouse.o shell/commands.o shell/spkg.o shell/main.o shell/lite.o lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o plugins/sharkcube/sharkcube_plugin.o plugins/sharkcraft/sharkcraft_plugin.o plugins/fnaf/fnaf_plugin.o sharkscript/shs.o $(DOOM_OBJECTS) flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o fnaf/fnaf.o \
-		desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/theme.o desktop/diskmgmt.o desktop/png.o desktop/gif.o desktop/jpeg.o desktop/webp.o browser/svg.o net/net.o net/vnic.o net/firewall.o net/router.o net/router_http.o net/router_cli.o net/crypto.o net/tls.o \
+		desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/theme.o desktop/diskmgmt.o desktop/png.o desktop/gif.o desktop/jpeg.o desktop/webp.o browser/svg.o net/net.o $(NET_DRIVER_OBJS) net/vnic.o net/firewall.o net/router.o net/router_http.o net/router_cli.o net/crypto.o net/tls.o \
 		browser/html.o browser/css.o browser/layout.o browser/js.o browser/browser.o browser/font.o -lgcc
 
 LIMINE_DIR ?= limine
 LIMINE_BIOS_ASSETS = $(LIMINE_DIR)/limine $(LIMINE_DIR)/limine-bios.sys $(LIMINE_DIR)/limine-bios-cd.bin
 LIMINE_UEFI_ASSETS = $(LIMINE_DIR)/limine-uefi-cd.bin $(LIMINE_DIR)/BOOTX64.EFI $(LIMINE_DIR)/BOOTIA32.EFI
 
-SERVER32_C_SOURCES = src/arch/early.c src/arch/cpu.c src/arch/io32.c src/arch/div64.c src/drivers/pci.c src/fs/fs.c src/lib/pmm.c src/server/main.c src/server/containers.c src/server/globals.c src/server/lib.c src/server/interrupts.c src/server/console.c src/server/command_stubs.c src/shell/commands.c src/net/net.c src/net/crypto.c src/net/tls.c src/net/httpd.c src/net/ed25519.c src/net/ssh.c src/net/sftp.c src/net/vnic.c src/net/firewall.c src/net/router.c src/net/router_http.c src/net/router_cli.c
+SERVER32_C_SOURCES = src/arch/early.c src/arch/cpu.c src/arch/io32.c src/arch/div64.c src/drivers/pci.c src/fs/fs.c src/lib/pmm.c src/server/main.c src/server/containers.c src/server/globals.c src/server/lib.c src/server/interrupts.c src/server/console.c src/server/command_stubs.c src/shell/commands.c src/net/net.c src/net/drivers/drivers.c src/net/drivers/rtl8139.c src/net/drivers/pcnet.c src/net/drivers/e1000.c src/net/drivers/r8169.c src/net/drivers/ne2000.c src/net/drivers/virtio_net.c src/net/crypto.c src/net/tls.c src/net/httpd.c src/net/ed25519.c src/net/ssh.c src/net/sftp.c src/net/vnic.c src/net/firewall.c src/net/router.c src/net/router_http.c src/net/router_cli.c
 SERVER32_OBJECTS = $(patsubst src/%.c,server32-build/%.o,$(SERVER32_C_SOURCES))
 SERVER32_CFLAGS = -m32 -march=i386 -std=gnu99 -ffreestanding -Os -Wall -Wextra -fno-pie -fno-pic -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables -fno-exceptions -fomit-frame-pointer -fno-builtin -mno-sse -mno-mmx -Iinclude -DSERVER_IMAGE -DSHARKOS_32BIT -ffunction-sections -fdata-sections -w
 SERVER32_LDFLAGS = -m32 -ffreestanding -Os -nostdlib -no-pie -Wl,-m,elf_i386 -Wl,-gc-sections -Wl,--strip-all
@@ -365,7 +397,7 @@ server32-build/server/main.o: include/firewall.h include/router.h
 server32-build/shell/commands.o: include/firewall.h include/router.h
 server32-build/net/router.o server32-build/net/router_http.o server32-build/net/router_cli.o: include/router.h
 server32-build/net/router_http.o: src/net/router_ui_html.h
-server32-build/net/net.o: include/firewall.h
+server32-build/net/net.o: include/firewall.h include/netdev.h
 server32-build/server/console.o: include/term_font16_data.h
 
 server32-build/boot.o: boot32.s
@@ -387,8 +419,8 @@ sharkos-server32.iso: sharkos-server32.bin limine-server32.conf Makefile $(LIMIN
 
 server32: sharkos-server32.iso
 
-sharkos-server.bin: Makefile boot.o arch/early.o arch/io.o arch/cpu.o drivers/pci.o fs/fs.o lib/pmm.o server-build/main.o server-build/globals.o server-build/lib.o server-build/interrupts.o server-build/console.o server-build/commands.o server-build/command_stubs.o server-build/containers.o net/net.o net/vnic.o net/firewall.o net/router.o net/router_http.o net/router_cli.o net/crypto.o net/tls.o net/httpd.o net/ed25519.o net/ssh.o net/sftp.o linker.ld
-	@printf "  LD  %s\n" "$@"; $(CC) -T linker.ld -o sharkos-server.bin $(LDFLAGS) boot.o arch/early.o arch/io.o arch/cpu.o drivers/pci.o fs/fs.o lib/pmm.o server-build/main.o server-build/globals.o server-build/lib.o server-build/interrupts.o server-build/console.o server-build/commands.o server-build/command_stubs.o server-build/containers.o net/net.o net/vnic.o net/firewall.o net/router.o net/router_http.o net/router_cli.o net/crypto.o net/tls.o net/httpd.o net/ed25519.o net/ssh.o net/sftp.o -lgcc
+sharkos-server.bin: Makefile boot.o arch/early.o arch/io.o arch/cpu.o drivers/pci.o fs/fs.o lib/pmm.o server-build/main.o server-build/globals.o server-build/lib.o server-build/interrupts.o server-build/console.o server-build/commands.o server-build/command_stubs.o server-build/containers.o net/net.o $(NET_DRIVER_OBJS) net/vnic.o net/firewall.o net/router.o net/router_http.o net/router_cli.o net/crypto.o net/tls.o net/httpd.o net/ed25519.o net/ssh.o net/sftp.o linker.ld
+	@printf "  LD  %s\n" "$@"; $(CC) -T linker.ld -o sharkos-server.bin $(LDFLAGS) boot.o arch/early.o arch/io.o arch/cpu.o drivers/pci.o fs/fs.o lib/pmm.o server-build/main.o server-build/globals.o server-build/lib.o server-build/interrupts.o server-build/console.o server-build/commands.o server-build/command_stubs.o server-build/containers.o net/net.o $(NET_DRIVER_OBJS) net/vnic.o net/firewall.o net/router.o net/router_http.o net/router_cli.o net/crypto.o net/tls.o net/httpd.o net/ed25519.o net/ssh.o net/sftp.o -lgcc
 
 sharkos-server.iso: sharkos-server.bin limine-server.conf Makefile $(LIMINE_BIOS_ASSETS) $(LIMINE_UEFI_ASSETS)
 	mkdir -p isodir-server/boot/limine
@@ -481,6 +513,14 @@ test-sftp:
 	@printf "  TEST %s\n" "$@"; $(HOSTCC) -fno-builtin -std=gnu99 -Iinclude tests/sftp_test.c src/net/sftp.c src/fs/fs.c -o /tmp/sharkos-sftp-test
 	/tmp/sharkos-sftp-test
 	rm -f /tmp/sharkos-sftp-test
+
+test-tcp-recovery:
+	@printf "  TEST %s\n" "$@"; $(HOSTCC) -std=gnu99 tests/tcp_server_recovery_test.c -o /tmp/sharkos-tcp-recovery-test
+	@/tmp/sharkos-tcp-recovery-test
+
+test-tcp-stall:
+	@printf "  TEST %s\n" "$@"; $(HOSTCC) -std=gnu99 tests/tcp_server_stall_repro.c -o /tmp/sharkos-tcp-stall-test
+	@/tmp/sharkos-tcp-stall-test
 
 test-router:
 	@printf "  TEST %s\n" "$@"; $(HOSTCC) -fno-builtin -std=gnu99 -Iinclude tests/router_test.c src/net/router.c src/net/router_cli.c src/net/firewall.c -o /tmp/sharkos-router-test

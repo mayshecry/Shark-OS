@@ -153,7 +153,7 @@ void start_menu_open(void) {
         }
     }
 
-     
+
     if (start_menu_count < STARTMENU_MAX - 1) {
         bool found=false;
         for(int _i=0;_i<start_menu_count;_i++) if(types[_i]==WINDOW_TYPE_FNAF) found=true;

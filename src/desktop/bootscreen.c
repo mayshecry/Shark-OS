@@ -1,10 +1,4 @@
-                                 
-  
-                                                                      
-                                                                       
-                                                                       
-                                                                      
-  
+
 
 #include "kernel.h"
 #include "desktop.h"
@@ -23,17 +17,14 @@
 typedef struct {
     char msg[BOOT_MSG_MAX];
     bool done;
-    bool banner;                                             
-    uint32_t color;                    
+    bool banner;
+    uint32_t color;
 } boot_line_t;
 
 static boot_line_t boot_lines[BOOT_LINE_MAX];
 static int boot_line_count = 0;
 static int boot_spin = 0;
 
-                                                                      
-                                                                      
-                                                                      
 
 static void draw_pixel_safe(int x, int y, uint32_t color) {
     if (x < 0 || y < 0) return;
@@ -68,9 +59,6 @@ void draw_shark_logo(int cx, int cy, int size, uint32_t color) {
     }
 }
 
-                                                                      
-                                                                      
-                                                                      
 
 static int boot_scale(void) {
     return screen_height >= 900 ? 2 : 1;
@@ -143,7 +131,7 @@ static void boot_render(void) {
 }
 
 static void boot_add_line(const char* msg, bool banner, uint32_t color) {
-                                                              
+
     for (int i = 0; i < boot_line_count; i++) boot_lines[i].done = true;
 
     if (boot_line_count >= BOOT_LINE_MAX) {
@@ -160,9 +148,6 @@ static void boot_add_line(const char* msg, bool banner, uint32_t color) {
     boot_spin++;
 }
 
-                                                                      
-                                                                      
-                                                                      
 
 void boot_screen_show(void) {
     boot_line_count = 0;
@@ -190,7 +175,7 @@ void boot_screen_update(const char* message, int progress) {
     if (!message) return;
     boot_add_line(message, false, 0);
     boot_render();
-    boot_wait_ms(220);                                   
+    boot_wait_ms(220);
 }
 
 void boot_screen_info(const char* message) {
@@ -206,8 +191,7 @@ void boot_screen_hide(void) {
     for (int i = 0; i < boot_line_count; i++) boot_lines[i].done = true;
     boot_render();
 
-                                                                      
-                                                                      
+
     boot_wait_ms(250);
     draw_rect(0, 0, (int)screen_width, (int)screen_height, BOOT_BG);
 }

@@ -150,8 +150,7 @@ void app_window_draw_diskmgmt(window_t* w) {
         dm_refresh_install();
     }
 
-                                                                     
-                                                    
+
     if (!dm_first_refresh && dm_state == DM_IDLE && n > 0) {
         dm_first_refresh = true;
         dm_refresh_install();
@@ -285,7 +284,7 @@ void app_window_mouse_diskmgmt(window_t* w, int mx, int my, int buttons) {
     (void)det_y;
     (void)bar_y;
 
-                                                                       
+
     bool busy = (dm_state == DM_WRITING || dm_state == DM_VERIFYING);
     if (busy) return;
 
@@ -356,7 +355,7 @@ static void dm_sum_verify(uint32_t words) {
 
 void diskmgmt_tick(void) {
     if (dm_state != DM_WRITING && dm_state != DM_VERIFYING) return;
-    desktop.dirty = true;                                               
+    desktop.dirty = true;
     const ata_drive_t* d = ata_drive_get(dm_selected);
     if (!d) {
         dm_state = DM_ERR;

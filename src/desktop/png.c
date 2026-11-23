@@ -200,9 +200,7 @@ static long zlib_inflate(const uint8_t* in, size_t in_len, uint8_t* out, size_t 
     return (long)s.out_pos;
 }
 
-                                                                        
-                                                                    
-                                                                            
+
 long inflate_raw(const uint8_t* in, size_t in_len, uint8_t* out, size_t out_len) {
     inf_t s;
     s.in = in; s.in_len = in_len; s.in_pos = 0;
@@ -224,7 +222,7 @@ long inflate_raw(const uint8_t* in, size_t in_len, uint8_t* out, size_t out_len)
     return (long)s.out_pos;
 }
 
-                                                                       
+
 long inflate_zlib(const uint8_t* in, size_t in_len, uint8_t* out, size_t out_len) {
     if (in_len < 2) return -1;
     if ((in[0] & 0x0F) != 8) return -1;
@@ -232,7 +230,7 @@ long inflate_zlib(const uint8_t* in, size_t in_len, uint8_t* out, size_t out_len
     return inflate_raw(in + 2, in_len - 2, out, out_len);
 }
 
-                                                                 
+
 long inflate_gzip(const uint8_t* in, size_t in_len, uint8_t* out, size_t out_len) {
     if (in_len < 18 || in[0] != 0x1F || in[1] != 0x8B || in[2] != 8) return -1;
     uint8_t flg = in[3];

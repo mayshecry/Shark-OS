@@ -4,8 +4,6 @@
 #include <stdint.h>
 #include "net.h"
 
-/* SharkOS Server basic router: DHCP server, DNS resolver/forwarder, WAN
- * management, NAT with port forwards and the port-69 management console. */
 
 #define ROUTER_DEFAULT_HTTP_PORT   69u
 #define ROUTER_LEASE_LIMIT         64
@@ -48,9 +46,9 @@ typedef struct {
     uint8_t  nat_enabled;
     uint8_t  running;
     uint8_t  http_running;
-    uint8_t  wan_port;         /* index into net_port inventory (uplink) */
-    uint8_t  lan_port;         /* index into net_port inventory (LAN) */
-    uint8_t  lan_shared;       /* 1 = one NIC, WAN and LAN share the adapter */
+    uint8_t  wan_port;
+    uint8_t  lan_port;
+    uint8_t  lan_shared;
     uint32_t started_at;
 } router_config_t;
 
@@ -121,7 +119,7 @@ typedef struct {
     uint32_t http_requests;
 } router_stats_t;
 
-/* lifecycle */
+
 void router_init(void);
 int  router_start(uint16_t http_port);
 void router_stop(void);
@@ -132,22 +130,22 @@ const router_config_t* router_get_config(void);
 const router_stats_t* router_get_stats(void);
 void router_note_http_request(void);
 
-/* physical interfaces: uplink adapter and auto-assigned LAN port */
+
 #define ROUTER_PORT_AUTO  0xFFu
 int      router_port_assign(void);
 int      router_set_ports(int wan_index, int lan_index);
 uint32_t router_port_count(void);
 int      router_port_get(uint32_t index, net_port_t* out);
-uint32_t router_port_role(uint32_t index);   /* 1 = WAN, 2 = LAN, 0 = unused */
+uint32_t router_port_role(uint32_t index);
 
-/* WAN */
+
 int  router_wan_set_dhcp(void);
 int  router_wan_set_static(const uint8_t* ip, const uint8_t* mask,
                            const uint8_t* gw, const uint8_t* dns);
 int  router_wan_set_down(void);
 void router_wan_refresh(void);
 
-/* LAN / DHCP */
+
 int  router_lan_set(const uint8_t* ip, const uint8_t* mask);
 int  router_dhcp_pool(const uint8_t* start, const uint8_t* end);
 int  router_dhcp_set_lease(uint32_t seconds);
@@ -159,7 +157,7 @@ const router_lease_t* router_get_lease(uint32_t index);
 const router_reservation_t* router_get_reservation(uint32_t index);
 uint32_t router_lease_count(void);
 
-/* DNS */
+
 int  router_dns_set_enabled(int enabled);
 int  router_dns_set_upstream(const uint8_t* primary, const uint8_t* secondary);
 int  router_dns_set_domain(const char* domain);
@@ -169,7 +167,7 @@ void router_dns_flush_cache(void);
 const router_dns_entry_t* router_get_dns_entry(uint32_t index);
 uint32_t router_dns_cache_count(void);
 
-/* NAT / port forwards */
+
 int  router_nat_set_enabled(int enabled);
 int  router_forward_add(uint8_t protocol, uint16_t wan_port,
                         const uint8_t* lan_ip, uint16_t lan_port, const char* comment);
@@ -177,12 +175,12 @@ int  router_forward_remove(uint32_t id);
 const router_forward_t* router_get_forward(uint32_t index);
 const router_nat_entry_t* router_get_nat(uint32_t index);
 
-/* firewall integration */
+
 int  router_firewall_profile(void);
 int  router_set_token(const char* token);
 int  router_set_http_port(uint16_t port);
 
-/* formatting helpers shared with CLI and HTTP */
+
 void router_format_ip(char* out, uint32_t cap, const uint8_t* ip);
 void router_format_mac(char* out, uint32_t cap, const uint8_t* mac);
 int  router_parse_mac(const char* text, uint8_t* mac);
@@ -191,12 +189,12 @@ uint32_t router_build_status(char* out, uint32_t cap);
 uint32_t router_build_firewall_status(char* out, uint32_t cap);
 uint32_t router_build_log(char* out, uint32_t cap);
 
-/* CLI (src/net/router_cli.c) */
+
 int  router_cli_exec(const char* command, const char* args, char* out, uint32_t cap);
 void router_command(const char* args);
 void fw_command(const char* args);
 
-/* HTTP management server (src/net/router_http.c) */
+
 int  router_http_start(uint16_t port);
 void router_http_stop(void);
 void router_http_poll(void);

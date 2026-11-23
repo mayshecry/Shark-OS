@@ -63,21 +63,18 @@ static firewall_connection_t firewall_connections[FIREWALL_CONNECTION_LIMIT];
 static firewall_rate_source_t firewall_rate_sources[FIREWALL_RATE_SOURCE_LIMIT];
 static firewall_rule_rate_t firewall_rule_rates[FIREWALL_RULE_RATE_LIMIT];
 static firewall_service_t firewall_services[FIREWALL_SERVICE_LIMIT];
-static uint8_t firewall_default[3] = {   /* IN, OUT, FORWARD */
+static uint8_t firewall_default[3] = {
     FIREWALL_ACTION_ALLOW, FIREWALL_ACTION_ALLOW, FIREWALL_ACTION_ALLOW
 };
 static uint16_t firewall_rate_limit;
 static uint32_t firewall_rate_drops;
-static uint32_t firewall_counters[3][2]; /* [direction][action] */
+static uint32_t firewall_counters[3][2];
 static int firewall_drop_logging = 1;
 static uint32_t firewall_last_drop_log;
 static char firewall_log[FIREWALL_LOG_LIMIT][FIREWALL_LOG_ENTRY_SIZE];
 static uint32_t firewall_log_head;
 static uint32_t firewall_log_used;
 
-/* ------------------------------------------------------------------ */
-/* small self-contained helpers (no libc calls beyond kernel.h)        */
-/* ------------------------------------------------------------------ */
 
 static uint16_t fw_get16(const uint8_t* value) {
     return (uint16_t)(((uint16_t)value[0] << 8) | value[1]);
@@ -158,9 +155,6 @@ static void fw_log_event(uint8_t direction, uint8_t action, const fw_packet_t* p
     if (firewall_log_used < FIREWALL_LOG_LIMIT) firewall_log_used++;
 }
 
-/* ------------------------------------------------------------------ */
-/* packet parsing                                                      */
-/* ------------------------------------------------------------------ */
 
 static int fw_is_fragmented(const uint8_t* ip) {
     return (ip[6] & 0xBF) != 0 || ip[7] != 0;
@@ -172,8 +166,8 @@ static int fw_parse(const uint8_t* frame, uint32_t length, fw_packet_t* p) {
     p->frame = frame;
     p->length = length;
     p->ether_type = fw_get16(frame + 12);
-    if (p->ether_type == 0x0806) return 1;               /* ARP always allowed */
-    if (p->ether_type != 0x0800) return 2;               /* unknown ethertype  */
+    if (p->ether_type == 0x0806) return 1;
+    if (p->ether_type != 0x0800) return 2;
     if (length < 34 || (frame[14] >> 4) != 4) return 0;
     p->ihl = (uint32_t)(frame[14] & 0x0F) * 4;
     p->total = fw_get16(frame + 16);
@@ -202,7 +196,7 @@ static int fw_parse(const uint8_t* frame, uint32_t length, fw_packet_t* p) {
     } else if (p->protocol == FIREWALL_PROTOCOL_ICMP) {
         if (payload_length < 8) return 0;
         p->icmp_type = transport[0];
-        p->source_port = fw_get16(transport + 4);   /* echo id */
+        p->source_port = fw_get16(transport + 4);
     }
     return 1;
 }
@@ -218,9 +212,6 @@ static int fw_cidr_match(const uint8_t* address, const uint8_t* network, uint8_t
     return 1;
 }
 
-/* ------------------------------------------------------------------ */
-/* connection state                                                    */
-/* ------------------------------------------------------------------ */
 
 static void fw_expire_connections(void) {
     for (uint32_t i = 0; i < FIREWALL_CONNECTION_LIMIT; i++) {
@@ -319,9 +310,6 @@ void firewall_track_outbound(const uint8_t* frame, uint32_t length) {
     slot->expires = uptime_ticks + FIREWALL_CONNECTION_TTL;
 }
 
-/* ------------------------------------------------------------------ */
-/* rate limiting                                                       */
-/* ------------------------------------------------------------------ */
 
 static int fw_rate_consume(const uint8_t* source) {
     if (!firewall_rate_limit) return 0;
@@ -377,9 +365,6 @@ static int fw_is_new_traffic(const fw_packet_t* p) {
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* rules & services                                                    */
-/* ------------------------------------------------------------------ */
 
 static int fw_rule_match(const firewall_rule_t* rule, const fw_packet_t* p,
                          uint8_t direction, int established) {
@@ -416,7 +401,7 @@ static void fw_rule_defaults(firewall_rule_t* rule) {
     rule->state = FIREWALL_STATE_ANY;
 }
 
-/* central decision engine */
+
 static int fw_check(const uint8_t* frame, uint32_t length, uint8_t direction) {
     fw_packet_t p;
     int parsed = fw_parse(frame, length, &p);

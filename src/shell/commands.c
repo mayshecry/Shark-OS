@@ -1649,14 +1649,10 @@ static void cmd_netstat(const char* args) {
     net_cmd_netstat();
 }
 
-                                                                          
-                                                                        
-                                                                           
-
 
 #include "audio.h"
 static void cmd_audio(const char* args){
-    char buf0[64];  
+    char buf0[64];
     if (strlen(args)==0 || strcmp(args,"status")==0){
         terminal_writestring("Audio backend: "); terminal_writestring((char*)audio_backend_name()); terminal_writestring("\n");
         terminal_writestring("Available: "); terminal_writestring(audio_available() ? "yes" : "no"); terminal_writestring("\n");
@@ -1713,7 +1709,7 @@ static void cmd_audio(const char* args){
         return;
     }
     if (strcmp(args,"test")==0){
-         
+
         int16_t* buf=(int16_t*)kmalloc(48000/2*4);
         if(!buf){ terminal_writestring("oom\n"); return; }
         int period=48000/440;

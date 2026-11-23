@@ -15,5 +15,7 @@ void httpd_stop(void);
 int httpd_is_active(void);
 uint16_t httpd_listen_port(void);
 void httpd_poll(void);
+int  httpd_rearm(void);
+void httpd_stats(uint32_t* accepted, uint32_t* dropped, uint32_t* slow);
 
 #endif

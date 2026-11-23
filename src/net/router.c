@@ -3,16 +3,6 @@
 #include "firewall.h"
 #include "router.h"
 
-/* ==================================================================
- * SharkOS Router
- *
- * A small, single-NIC IPv4 router for the SharkOS Server image:
- *   - DHCP server (DISCOVER/OFFER/REQUEST/ACK/NAK/RELEASE/INFORM)
- *   - DNS server with local records, lease names, cache and forwarding
- *   - WAN management (upstream DHCP client or static configuration)
- *   - basic NAT44 with port forwards and ICMP echo identifier mapping
- *   - hooks into net.c so no extra thread or second NIC is required
- * ================================================================== */
 
 #define ROUTER_DHCP_PACKET_SIZE   300
 #define ROUTER_DNS_PACKET_SIZE    512
@@ -56,9 +46,6 @@ static int                    rtr_dns_custom_upstream;
 static int                    rtr_poll_busy;
 static char                   rtr_wan_status[64] = "down";
 
-/* ------------------------------------------------------------------ */
-/* generic helpers                                                     */
-/* ------------------------------------------------------------------ */
 
 static uint16_t rtr_get16(const uint8_t* p) { return (uint16_t)(((uint16_t)p[0] << 8) | p[1]); }
 static void rtr_put16(uint8_t* p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
@@ -225,9 +212,6 @@ static uint16_t rtr_csum(const uint8_t* data, uint32_t len) {
     return (uint16_t)(~sum & 0xFFFFu);
 }
 
-/* ------------------------------------------------------------------ */
-/* configuration / lifecycle                                          */
-/* ------------------------------------------------------------------ */
 
 static int rtr_service_hook(const uint8_t* frame, uint32_t frame_len,
                             const uint8_t* src_ip, const uint8_t* dst_ip,
@@ -282,9 +266,6 @@ void router_init(void) {
     router_port_assign();
 }
 
-/* ------------------------------------------------------------------ */
-/* physical interfaces (uplink adapter / LAN port)                    */
-/* ------------------------------------------------------------------ */
 
 int router_port_assign(void) {
     uint32_t count = net_port_count();
@@ -372,8 +353,8 @@ int router_set_http_port(uint16_t port) {
     router_http_stop();
     rtr_cfg.http_port = port;
     firewall_service_add(FIREWALL_PROTOCOL_TCP, port);
-    /* Keep the WAN-side console deny rule (when the router profile is in
-     * use) pointed at the new port. */
+
+
     for (uint32_t i = 0; i < firewall_rule_count(); i++) {
         const firewall_rule_t* rule = firewall_get_rule(i);
         if (rule && strcmp(rule->comment, "wan console blocked") == 0) {
@@ -396,9 +377,6 @@ int router_set_token(const char* token) {
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* WAN                                                                 */
-/* ------------------------------------------------------------------ */
 
 int router_wan_set_dhcp(void) {
     rtr_cfg.wan_mode = ROUTER_WAN_DHCP;
@@ -457,9 +435,6 @@ void router_wan_refresh(void) {
     }
 }
 
-/* ------------------------------------------------------------------ */
-/* LAN / DHCP server                                                   */
-/* ------------------------------------------------------------------ */
 
 int router_lan_set(const uint8_t* ip, const uint8_t* mask) {
     if (!ip || !mask || rtr_is_zero4(ip) || rtr_is_zero4(mask)) return -1;
@@ -604,7 +579,7 @@ static router_lease_t* rtr_dhcp_allocate(const uint8_t* mac) {
             if (!rtr_leases[i].active) { slot = &rtr_leases[i]; break; }
     }
     if (!slot) return 0;
-    /* Free any other slot that holds the chosen address. */
+
     for (uint32_t i = 0; i < ROUTER_LEASE_LIMIT; i++) {
         if (&rtr_leases[i] != slot && rtr_leases[i].active && rtr_equal4(rtr_leases[i].ip, chosen))
             memset(&rtr_leases[i], 0, sizeof(rtr_leases[i]));
@@ -644,7 +619,7 @@ static void rtr_dhcp_send(uint8_t type, router_lease_t* lease, uint32_t xid, uin
     rtr_put16(d + 10, flags);
     if (ciaddr) memcpy(d + 12, ciaddr, 4);
     if (lease && type != 6) memcpy(d + 16, lease->ip, 4);
-    memcpy(d + 20, rtr_cfg.ip, 4);                 /* siaddr: next server */
+    memcpy(d + 20, rtr_cfg.ip, 4);
     if (giaddr) memcpy(d + 24, giaddr, 4);
     if (client_mac) memcpy(d + 28, client_mac, 6);
     rtr_copy((char*)d + 44, 64, "SharkOS");
@@ -653,7 +628,7 @@ static void rtr_dhcp_send(uint8_t type, router_lease_t* lease, uint32_t xid, uin
     uint8_t one = (uint8_t)type;
     o = rtr_dhcp_option(d, ROUTER_DHCP_PACKET_SIZE, o, 53, &one, 1);
     o = rtr_dhcp_option(d, ROUTER_DHCP_PACKET_SIZE, o, 54, rtr_cfg.ip, 4);
-    if (type == 6) {                                /* NAK */
+    if (type == 6) {
         const char* message = "address unavailable";
         o = rtr_dhcp_option(d, ROUTER_DHCP_PACKET_SIZE, o, 56,
                             (const uint8_t*)message, (uint8_t)strlen(message));
@@ -728,7 +703,7 @@ static void rtr_dhcp_input(const uint8_t* frame, const uint8_t* udp, uint32_t ud
     }
     if (!message_type) return;
     if (!rtr_is_zero4(giaddr)) {
-        /* DHCP relay agents are not supported by this basic server. */
+
         rtr_stats.dropped_frames++;
         return;
     }
@@ -739,7 +714,7 @@ static void rtr_dhcp_input(const uint8_t* frame, const uint8_t* udp, uint32_t ud
     }
     const uint8_t* client_mac = frame + 6;
     switch (message_type) {
-    case 1: {  /* DISCOVER */
+    case 1: {
         rtr_stats.dhcp_discover++;
         router_lease_t* lease = rtr_dhcp_allocate(mac);
         if (!lease) { rtr_stats.dropped_frames++; return; }
@@ -750,7 +725,7 @@ static void rtr_dhcp_input(const uint8_t* frame, const uint8_t* udp, uint32_t ud
         rtr_stats.dhcp_offer++;
         break;
     }
-    case 3: {  /* REQUEST */
+    case 3: {
         rtr_stats.dhcp_request++;
         uint8_t wanted[4];
         if (!rtr_is_zero4(requested)) memcpy(wanted, requested, 4);
@@ -791,14 +766,14 @@ static void rtr_dhcp_input(const uint8_t* frame, const uint8_t* udp, uint32_t ud
         rtr_stats.dhcp_ack++;
         break;
     }
-    case 4:    /* DECLINE */
-    case 7: {  /* RELEASE */
+    case 4:
+    case 7: {
         router_lease_t* lease = rtr_lease_by_mac(mac);
         if (lease && rtr_equal6(lease->mac, mac)) memset(lease, 0, sizeof(*lease));
         rtr_stats.dhcp_release++;
         break;
     }
-    case 8:    /* INFORM */
+    case 8:
         rtr_dhcp_send(5, 0, xid, flags, client_mac, ciaddr, 0, "inform");
         rtr_stats.dhcp_ack++;
         break;
@@ -807,9 +782,6 @@ static void rtr_dhcp_input(const uint8_t* frame, const uint8_t* udp, uint32_t ud
     }
 }
 
-/* ------------------------------------------------------------------ */
-/* DNS server, cache and forwarder                                     */
-/* ------------------------------------------------------------------ */
 
 int router_dns_set_enabled(int enabled) {
     if (!rtr_cfg.running) return -1;
@@ -954,7 +926,7 @@ static void rtr_dns_send(const uint8_t* client_mac, const uint8_t* local_ip,
         rtr_put16(out + used, 1); used += 2;
         rtr_put32(out + used, 60); used += 4;
         if (ptr_name) {
-            /* Encode the PTR target as DNS labels. */
+
             const char* p = ptr_name;
             uint32_t cursor = used + 2;
             p = ptr_name;
@@ -1058,7 +1030,7 @@ static void rtr_dns_send_query(router_dns_pending_t* slot) {
     uint32_t total = 12 + slot->question_len;
     const uint8_t* upstream = rtr_cfg.dns_upstream;
     uint8_t mac[6];
-    if (!net_route_mac(upstream, mac)) return;   /* ARP pending, retried in poll */
+    if (!net_route_mac(upstream, mac)) return;
     const uint8_t* source = net_configured ? net_ip : rtr_cfg.ip;
     net_send_udp(mac, source, upstream, slot->query_port, 53, out, total);
     slot->attempts++;
@@ -1188,9 +1160,6 @@ static void rtr_poll_dns(void) {
     }
 }
 
-/* ------------------------------------------------------------------ */
-/* NAT / port forwarding                                               */
-/* ------------------------------------------------------------------ */
 
 int router_nat_set_enabled(int enabled) {
     rtr_cfg.nat_enabled = enabled ? 1 : 0;
@@ -1328,7 +1297,7 @@ static int rtr_rewrite(const uint8_t* frame, uint32_t len, const uint8_t* new_sr
     if (ihl < 20 || len < 14 + ihl) return 0;
     uint32_t total = rtr_get16(ip + 2);
     if (total < ihl || total > len - 14) return 0;
-    if (!ip[8] || ip[8] == 1) return 0;   /* TTL exhausted */
+    if (!ip[8] || ip[8] == 1) return 0;
     if (new_src) memcpy(ip + 12, new_src, 4);
     if (new_dst) memcpy(ip + 16, new_dst, 4);
     ip[8]--;
@@ -1447,7 +1416,7 @@ static int rtr_nat_inbound(const uint8_t* frame, uint32_t len, const uint8_t* sr
     rtr_stats.nat_hits++;
     uint8_t client_mac[6];
     if (!rtr_client_mac(entry->lan_ip, client_mac)) { rtr_stats.dropped_frames++; return 0; }
-    /* ICMP echo uses the identifier field instead of a destination port. */
+
     uint16_t new_sport = (protocol == 1) ? entry->lan_port : 0;
     uint16_t new_dport = (protocol == 1) ? 0 : entry->lan_port;
     return rtr_rewrite(frame, len, 0, entry->lan_ip, new_sport, new_dport,
@@ -1538,9 +1507,6 @@ static int rtr_service_hook(const uint8_t* frame, uint32_t frame_len,
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* firewall profile                                                    */
-/* ------------------------------------------------------------------ */
 
 static int rtr_profile_deny_service(uint8_t protocol, uint16_t port, const char* comment) {
     firewall_rule_t rule;
@@ -1595,9 +1561,8 @@ int router_firewall_profile(void) {
     rule.source_port_end = 0xFFFFu;
     rtr_copy(rule.comment, sizeof(rule.comment), "lan to router");
     if (firewall_rule_add(&rule) < 0) return -1;
-    /* Anything not from the LAN subnet is stopped before implicit service
-     * ports are consulted, so the WAN side cannot reach DHCP, DNS or the
-     * management console. */
+
+
     if (rtr_profile_deny_service(FIREWALL_PROTOCOL_UDP, 67, "wan dhcp blocked") < 0) return -1;
     if (rtr_profile_deny_service(FIREWALL_PROTOCOL_UDP, 53, "wan dns blocked") < 0) return -1;
     if (rtr_profile_deny_service(FIREWALL_PROTOCOL_TCP, rtr_cfg.http_port, "wan console blocked") < 0) return -1;
@@ -1607,9 +1572,6 @@ int router_firewall_profile(void) {
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* poll                                                                */
-/* ------------------------------------------------------------------ */
 
 void router_poll(void) {
     if (rtr_poll_busy) return;
@@ -1628,9 +1590,6 @@ void router_poll(void) {
     rtr_poll_busy = 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* JSON status                                                         */
-/* ------------------------------------------------------------------ */
 
 static void rtr_json_str(char* out, uint32_t cap, uint32_t* used, const char* value) {
     rtr_append(out, cap, used, "\"");

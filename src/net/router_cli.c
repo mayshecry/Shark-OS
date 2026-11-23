@@ -3,12 +3,6 @@
 #include "firewall.h"
 #include "router.h"
 
-/* One CLI implementation serves three front ends:
- *   - `rtr ...` / `fw ...` in the SharkOS shell and server console
- *   - `POST /api/cli` on the port-69 management server
- *   - the SSH remote command path (server_execute_remote)
- * Output is captured into a buffer when requested, otherwise printed to the
- * terminal. No libc snprintf is used because this runs freestanding. */
 
 #define CLI_LINE_MAX      512
 #define CLI_CONFIG_PATH  "/System/Config/router.conf"
@@ -120,9 +114,6 @@ static int cli_port_range(const char* text, uint16_t* start, uint16_t* end) {
     return 1;
 }
 
-/* ------------------------------------------------------------------ */
-/* help                                                               */
-/* ------------------------------------------------------------------ */
 
 static void cli_rtr_help(void) {
     cli_p("SharkOS Router (basic IPv4 router for the Server image)\n");
@@ -163,9 +154,6 @@ static void cli_fw_help(void) {
     cli_p("ports are supported. Explicit rules always win over implicit service ports.\n");
 }
 
-/* ------------------------------------------------------------------ */
-/* status printers                                                     */
-/* ------------------------------------------------------------------ */
 
 static void cli_fw_status(int verbose) {
     cli_p("policies in=");
@@ -344,9 +332,6 @@ static void cli_rtr_stats(void) {
     cli_p("  http requests  "); cli_num(s->http_requests); cli_p("\n");
 }
 
-/* ------------------------------------------------------------------ */
-/* config persistence                                                 */
-/* ------------------------------------------------------------------ */
 
 static int cli_save(const char* path) {
     const router_config_t* c = router_get_config();
@@ -507,9 +492,6 @@ static int cli_load(const char* path) {
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* rtr command tree                                                    */
-/* ------------------------------------------------------------------ */
 
 static void cli_rtr_dhcp(char** cursor) {
     char* action = cli_next(cursor);
@@ -877,9 +859,6 @@ static void cli_rtr(char** cursor) {
     cli_p("unknown rtr command; try 'rtr help'\n");
 }
 
-/* ------------------------------------------------------------------ */
-/* fw command tree                                                     */
-/* ------------------------------------------------------------------ */
 
 static int cli_fw_add_extended(char** cursor, int action) {
     firewall_rule_t rule;
@@ -1155,9 +1134,6 @@ static void cli_fw(char** cursor) {
     cli_p("unknown fw command; try 'fw docs'\n");
 }
 
-/* ------------------------------------------------------------------ */
-/* public entry points                                                 */
-/* ------------------------------------------------------------------ */
 
 int router_cli_exec(const char* command, const char* args, char* out, uint32_t cap) {
     char line[CLI_LINE_MAX];

@@ -1,15 +1,5 @@
 #include "kernel.h"
 
-                                                                    
-  
-                                                                   
-                                                                
-                                                                  
-                                                                 
-                                                                     
-                                                               
-                                                                   
-                                                                    
 
 #define COM1_BASE 0x3F8
 
@@ -17,13 +7,13 @@ extern void server_console_putchar(char c) __attribute__((weak));
 extern int server_output_capture_char(char c) __attribute__((weak));
 
 void serial_init(void) {
-    outb(COM1_BASE + 1, 0x00);                 
-    outb(COM1_BASE + 3, 0x80);            
-    outb(COM1_BASE + 0, 0x01);                
     outb(COM1_BASE + 1, 0x00);
-    outb(COM1_BASE + 3, 0x03);        
-    outb(COM1_BASE + 2, 0xC7);            
-    outb(COM1_BASE + 4, 0x0B);            
+    outb(COM1_BASE + 3, 0x80);
+    outb(COM1_BASE + 0, 0x01);
+    outb(COM1_BASE + 1, 0x00);
+    outb(COM1_BASE + 3, 0x03);
+    outb(COM1_BASE + 2, 0xC7);
+    outb(COM1_BASE + 4, 0x0B);
 }
 
 static int serial_tx_ready(void) {
@@ -67,8 +57,7 @@ void serial_putdec(uint32_t v) {
     serial_puts(t);
 }
 
-                                                                 
-                                                         
+
 static void early_delay(void) {
     for (volatile unsigned i = 0; i < 4000000u; i++) {
         asm volatile("" ::: "memory");
@@ -76,8 +65,8 @@ static void early_delay(void) {
 }
 
 static void speaker_on(void) {
-    uint16_t div = 1193182 / 880;       
-    outb(0x43, 0xB6);                                     
+    uint16_t div = 1193182 / 880;
+    outb(0x43, 0xB6);
     outb(0x42, div & 0xFF);
     outb(0x42, (div >> 8) & 0xFF);
     outb(0x61, inb(0x61) | 0x03);
@@ -108,6 +97,6 @@ void early_panic(int code, const char* msg) {
     serial_puts(msg);
     serial_puts("\nSystem halted.\n");
     if (code > 0) speaker_beeps(code);
-                                                               
+
     for (;;) asm volatile("cli; hlt");
 }

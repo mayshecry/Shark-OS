@@ -44,9 +44,6 @@ void desktop_set_wallpaper_mode(int mode) {
     desktop.dirty = true;
 }
 
-                                                                      
-                                                                       
-                                                                      
 
 typedef struct {
     const char* name;
@@ -181,7 +178,7 @@ void desktop_set_show_icons(bool show) {
 }
 
 void desktop_icon_launch_offset(window_type_t type, const char* title) {
-     
+
     if (type == WINDOW_TYPE_FNAF) {
         plugin_t* pf = plugin_get_by_name("fnaf");
         if (!pf || !pf->loaded) {
@@ -217,9 +214,8 @@ void desktop_icon_launch_offset(window_type_t type, const char* title) {
                 return;
             }
         }
-                                                                          
-                                                                          
-                                                                          
+
+
         int sw = (int)screen_width, sh = (int)screen_height - TASKBAR_HEIGHT;
         win_w = sw - 100; if (win_w > 1400) win_w = 1400; if (win_w < 660) win_w = sw - 8;
         win_h = sh - 70;  if (win_h > 1000) win_h = 1000; if (win_h < 500) win_h = sh - 8;
@@ -327,19 +323,19 @@ static void desktop_wallpaper_rebuild_cache(int w, int h) {
         fit = W98_WALLFIT_FILL;
     }
 
-                                                              
+
     uint64_t step_x = ((uint64_t)sw << 16) / (uint64_t)w;
     uint64_t step_y = ((uint64_t)sh << 16) / (uint64_t)h;
     uint64_t step = 0, off_x = 0, off_y = 0;
     int bx0 = 0, by0 = 0, bx1 = w, by1 = h;
 
     if (fit == W98_WALLFIT_FILL) {
-                                                                  
+
         step = (step_x < step_y) ? step_x : step_y;
         off_x = (((uint64_t)sw << 16) - step * (uint64_t)w) / 2;
         off_y = (((uint64_t)sh << 16) - step * (uint64_t)h) / 2;
     } else if (fit == W98_WALLFIT_FIT) {
-                                                                   
+
         step = (step_x > step_y) ? step_x : step_y;
         int dw = (int)(((uint64_t)sw << 16) / step);
         int dh = (int)(((uint64_t)sh << 16) / step);
@@ -386,7 +382,7 @@ static void desktop_wallpaper_rebuild_cache(int w, int h) {
     }
 }
 
-                                                                     
+
 static uint32_t wp_bilerp(const uint32_t* s, int sw, int sh, int sxf, int syf) {
     int x0 = sxf >> 16;
     int y0 = syf >> 16;
@@ -519,7 +515,7 @@ void desktop_draw_icons(void) {
     }
 }
 
- 
+
 #define CTX_ITEM_H 18
 #define CTX_PAD_X 8
 #define CTX_W 180
@@ -558,12 +554,12 @@ static void desktop_context_menu_build(int mx, int my, int icon_idx) {
         strcpy(m->items[p], "Properties"); m->enabled[p]=false; p++;
     }
     m->item_count = p;
-     
+
     int h = 6;
     for (int i=0;i<p;i++) h += m->is_sep[i] ? 6 : CTX_ITEM_H;
     m->w = CTX_W;
     m->h = h;
-     
+
     if (m->x + m->w > (int)screen_width - 4) m->x = (int)screen_width - m->w - 4;
     if (m->x < 2) m->x = 2;
     if (m->y + m->h > (int)screen_height - TASKBAR_HEIGHT - 4) m->y = (int)screen_height - TASKBAR_HEIGHT - m->h - 4;
@@ -574,7 +570,7 @@ void desktop_context_menu_open(int mx, int my, int icon_idx) {
     desktop_context_menu_build(mx, my, icon_idx);
     desktop.ctx_menu.visible = true;
     desktop.dirty = true;
-     
+
     if (desktop.start_menu.visible) {
         desktop.start_menu.visible = false;
         desktop.start_menu.active = false;
@@ -619,7 +615,7 @@ void desktop_context_menu_handle_action(int item) {
     if (!m->enabled[item] || m->is_sep[item]) return;
     const char* label = m->items[item];
     int target = m->target_icon;
-     
+
     desktop_context_menu_close();
     if (strcmp(label, "Open")==0 && target>=0) {
         desktop_icon_launch(target);
@@ -645,7 +641,7 @@ void desktop_context_menu_handle_action(int item) {
         return;
     }
     if (strcmp(label, "Arrange Icons")==0) {
-         
+
         for (int i=0;i<desktop.icon_count;i++) desktop.icons[i].visible = true;
         desktop.show_desktop_icons = true;
         desktop_layout_icons();
@@ -656,7 +652,7 @@ void desktop_context_menu_handle_action(int item) {
     if (strcmp(label, "Refresh")==0) {
         desktop.dirty = true;
         desktop.icons_dirty = true;
-         
+
         desktop_icons_load();
         return;
     }
@@ -683,11 +679,11 @@ void desktop_context_menu_draw(void) {
     desktop_context_menu_t* m = &desktop.ctx_menu;
     if (!m->visible) return;
     int x = m->x, y = m->y, w = m->w, h = m->h;
-     
+
     w98_fill(x, y, w, h, W98_BTNFACE);
     w98_bevel(x, y, w, h, W98_BEVEL_RAISED);
-     
-     
+
+
     int cur_y = y + 3;
     for (int i=0;i<m->item_count;i++) {
         if (m->is_sep[i]) {
@@ -703,14 +699,14 @@ void desktop_context_menu_draw(void) {
             w98_fill(x+2, cur_y, w-4, CTX_ITEM_H, W98_HIGHLIGHT);
         }
         uint32_t tc = (!en) ? W98_GRAYTEXT : (hov ? W98_HIGHLIGHTTEXT : W98_BTNTEXT);
-         
+
         if (m->checked[i]) {
-             
+
             w98_text("x", x+6, cur_y+5, tc, hov?W98_HIGHLIGHT:W98_BTNFACE, 1, NULL);
         }
-         
+
         w98_text(m->items[i], x+CTX_PAD_X+10, cur_y+5, tc, hov?W98_HIGHLIGHT:W98_BTNFACE, 1, NULL);
-         
+
         cur_y += CTX_ITEM_H;
     }
 }
@@ -997,31 +993,31 @@ void desktop_handle_mouse(int mx, int my, int buttons, int wheel) {
         start_menu_scroll(wheel);
         return;
     }
-     
+
     static bool right_down = false;
     if (buttons & 2) {
         if (!right_down) {
             right_down = true;
-             
+
             if (desktop.ctx_menu.visible) {
                 int hit = desktop_context_menu_hit_test(mx, my);
                 if (hit >= 0) {
-                     
+
                     desktop_context_menu_handle_action(hit);
                     return;
                 } else {
                     desktop_context_menu_close();
-                     
+
                 }
             }
-             
+
             int taskbar_hit = desktop_get_taskbar_hover(mx, my);
             if (taskbar_hit != -1) {
-                 
+
                 if (desktop.ctx_menu.visible) desktop_context_menu_close();
                 return;
             }
-             
+
             bool over_window = false;
             for (int i = desktop.window_count - 1; i >= 0; i--) {
                 window_t* wc = &desktop.windows[i];
@@ -1033,17 +1029,17 @@ void desktop_handle_mouse(int mx, int my, int buttons, int wheel) {
                 }
             }
             if (over_window) {
-                 
+
                 if (desktop.ctx_menu.visible) desktop_context_menu_close();
                 return;
             }
-             
+
             int icon_idx = desktop_icon_hit_test(mx, my);
-             
+
             if (icon_idx < 0 && !desktop.show_desktop_icons) icon_idx = -1;
-             
+
             desktop_context_menu_open(mx, my, icon_idx);
-             
+
             if (icon_idx >= 0) {
                 desktop_icons_clear_selection();
                 desktop.icons[icon_idx].selected = true;
@@ -1052,7 +1048,7 @@ void desktop_handle_mouse(int mx, int my, int buttons, int wheel) {
             }
             return;
         } else {
-             
+
             if (desktop.ctx_menu.visible) {
                 desktop_context_menu_handle_hover(mx, my);
             }
@@ -1060,27 +1056,26 @@ void desktop_handle_mouse(int mx, int my, int buttons, int wheel) {
         }
     } else {
         if (right_down) right_down = false;
-         
+
         if (desktop.ctx_menu.visible) {
             if (buttons & 1) {
-                 
-                 
+
+
                 int hit = desktop_context_menu_hit_test(mx, my);
                 if (hit >= 0) {
                     desktop_context_menu_handle_action(hit);
-                    desktop_mouse_down = true;  
+                    desktop_mouse_down = true;
                     return;
                 } else {
-                     
-                     
-                     
+
+
                     desktop_context_menu_close();
                     return;
                 }
             } else {
-                 
+
                 desktop_context_menu_handle_hover(mx, my);
-                 
+
             }
         }
     }

@@ -5,14 +5,21 @@
 
 #define HTTPD_CLIENTS 8
 #define HTTPD_REQUEST_SIZE 4096
+#define HTTPD_HEADER_TIMEOUT_MS 5000u
+#define HTTPD_STREAM_CHUNK 1024
 
 typedef struct {
     int handle;
     uint8_t active;
     uint8_t server;
     uint32_t used;
+    uint32_t opened;
     char request[HTTPD_REQUEST_SIZE];
 } httpd_client_t;
+
+static uint32_t httpd_accepted;
+static uint32_t httpd_dropped;
+static uint32_t httpd_slow;
 
 typedef struct {
     uint16_t port;
@@ -69,7 +76,14 @@ static void httpd_send_response(httpd_client_t* client, int status, const char* 
     httpd_append(header, sizeof(header), &used, number);
     httpd_append(header, sizeof(header), &used, "\r\nConnection: close\r\nServer: SharkOS\r\n\r\n");
     if (net_tcp_server_send(client->handle, (const uint8_t*)header, used) != (int)used) return;
-    if (!head_only && body_len) net_tcp_server_send(client->handle, body, body_len);
+    if (head_only || !body_len || !body) return;
+    uint32_t sent = 0;
+    while (sent < body_len) {
+        uint32_t chunk = body_len - sent;
+        if (chunk > HTTPD_STREAM_CHUNK) chunk = HTTPD_STREAM_CHUNK;
+        if (net_tcp_server_send(client->handle, body + sent, chunk) != (int)chunk) return;
+        sent += chunk;
+    }
 }
 
 static int httpd_finish_request(httpd_client_t* client) {
@@ -251,9 +265,24 @@ uint16_t httpd_listen_port(void) {
     return 0;
 }
 
+void httpd_stats(uint32_t* accepted, uint32_t* dropped, uint32_t* slow) {
+    if (accepted) *accepted = httpd_accepted;
+    if (dropped) *dropped = httpd_dropped;
+    if (slow) *slow = httpd_slow;
+}
+
+static void httpd_relisten(uint32_t slot) {
+    httpd_server_t* server = &httpd_servers[slot];
+    if (!server->active || !net_has_nic()) return;
+    if (net_tcp_is_listening(server->port)) return;
+    if (ssh_server_is_active() && ssh_server_listen_port() == server->port) return;
+    net_tcp_listen(server->port);
+}
+
 void httpd_poll(void) {
     for (uint32_t server = 0; server < HTTPD_SERVER_LIMIT; server++) {
         if (!httpd_servers[server].active) continue;
+        httpd_relisten(server);
         for (;;) {
             int handle = net_tcp_server_accept(httpd_servers[server].port);
             if (handle < 0) break;
@@ -263,22 +292,38 @@ void httpd_poll(void) {
                     httpd_clients[i].handle = handle;
                     httpd_clients[i].server = (uint8_t)server;
                     httpd_clients[i].used = 0;
+                    httpd_clients[i].opened = uptime_ticks;
                     httpd_clients[i].request[0] = 0;
                     httpd_clients[i].active = 1;
+                    httpd_accepted++;
                     stored = 1;
                     break;
                 }
             }
-            if (!stored) net_tcp_server_close(handle);
+            if (!stored) {
+                httpd_dropped++;
+                net_tcp_server_close(handle);
+            }
         }
     }
     uint8_t temp[512];
     for (int i = 0; i < HTTPD_CLIENTS; i++) {
         httpd_client_t* client = &httpd_clients[i];
         if (!client->active) continue;
+
+        if (uptime_ticks - client->opened > HTTPD_HEADER_TIMEOUT_MS) {
+            httpd_slow++;
+            net_tcp_server_close(client->handle);
+            client->active = 0;
+            continue;
+        }
+
         int got = net_tcp_server_recv(client->handle, temp, sizeof(temp), 0);
         if (got > 0) {
             if ((uint32_t)got > sizeof(client->request) - 1 - client->used) {
+                static const uint8_t too_big[] = "Request Header Fields Too Large\n";
+                httpd_send_response(client, 431, "Request Header Fields Too Large",
+                                    "text/plain; charset=utf-8", too_big, sizeof(too_big) - 1, 0);
                 net_tcp_server_close(client->handle);
                 client->active = 0;
                 continue;

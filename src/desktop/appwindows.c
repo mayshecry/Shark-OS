@@ -45,7 +45,7 @@ static int terminal_blink = 0;
 static int terminal_history_pos = 0;
 int desktop_terminal_cols = 46;
 
-                                                             
+
 static void terminal_output_append(const char* text, const uint8_t* colors, int len) {
     if (len <= 0) return;
     if (len >= TERM_SCROLLBACK - 1) {
@@ -1805,8 +1805,7 @@ void app_window_draw_about(window_t* w) {
     w98_text("Created by Mayshecry", cx + cw / 2 - 66, cy + 128,
              W98_GRAYTEXT, W98_BTNFACE, 1, NULL);
 
-                                                                    
-                                                                  
+
     draw_shark_logo(cx + cw / 2, cy + 200, 46, W98_BTNDKSHADOW);
     draw_shark_logo(cx + cw / 2, cy + 200, 43, W98_LOGO);
 }

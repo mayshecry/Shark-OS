@@ -190,4 +190,3 @@ void flush_rows_to_hw(int y0, int y1) {
     memcpy(&hw_lfbptr[(uint32_t)y0 * stride], &lfbptr[(uint32_t)y0 * stride],
            (size_t)(y1 - y0) * screen_pitch);
 }
-

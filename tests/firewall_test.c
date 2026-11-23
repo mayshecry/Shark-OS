@@ -150,7 +150,7 @@ int main(void) {
     if (firewall_input_allowed(frame, sizeof(frame))) return 30;
     if (firewall_set_rate_limit(0) != 0 || firewall_get_rate_limit() != 0) return 31;
 
-    /* ---- extended rule engine: CIDR, port ranges, direction policies ---- */
+
     firewall_init();
     firewall_rule_t spec;
     memset(&spec, 0, sizeof(spec));
@@ -196,7 +196,7 @@ int main(void) {
     firewall_set_policy(FIREWALL_DIR_OUT, FIREWALL_ACTION_ALLOW);
     if (!firewall_output_allowed(frame, sizeof(frame))) return 49;
 
-    /* ---- implicit service ports and explicit-rule precedence ---- */
+
     firewall_init();
     firewall_set_policy(FIREWALL_DIR_IN, FIREWALL_ACTION_DENY);
     if (firewall_service_add(FIREWALL_PROTOCOL_UDP, 5353) < 0) return 50;
@@ -207,7 +207,7 @@ int main(void) {
     if (firewall_service_remove(FIREWALL_PROTOCOL_UDP, 5353) != 0) return 54;
     if (firewall_service_count() != 0) return 55;
 
-    /* ---- enable/disable and rule ordering ---- */
+
     firewall_init();
     if (firewall_add_rule(FIREWALL_ACTION_DENY, FIREWALL_PROTOCOL_TCP, 0, NULL) != 1) return 56;
     if (firewall_add_rule(FIREWALL_ACTION_ALLOW, FIREWALL_PROTOCOL_TCP, 22, NULL) != 2) return 57;
@@ -220,7 +220,7 @@ int main(void) {
     if (!firewall_input_allowed(frame, sizeof(frame))) return 63;
     if (firewall_hit_count(1) < 1) return 64;
 
-    /* ---- presets, counters and drop logging ---- */
+
     firewall_init();
     if (firewall_apply_preset(FIREWALL_PRESET_SERVER) != 0) return 65;
     if (firewall_get_policy(FIREWALL_DIR_IN) != FIREWALL_ACTION_DENY) return 66;

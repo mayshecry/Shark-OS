@@ -4,6 +4,7 @@
 #include "net.h"
 #include "tls.h"
 #include "firewall.h"
+#include "netdev.h"
 #include <stdint.h>
 
 uint8_t net_mac[6] = {0,0,0,0,0,0};
@@ -67,7 +68,7 @@ uint8_t net_gw[4] = {0,0,0,0};
 uint8_t net_dns[4] = {0,0,0,0};
 int net_configured = 0;
 
-/* PCI address of the adapter that net_init() actually brought up. */
+
 static uint8_t net_active_bus = 0, net_active_slot = 0, net_active_func = 0;
 static int net_active_known = 0;
 static void net_mark_active(uint8_t bus, uint8_t slot, uint8_t func) {
@@ -137,930 +138,79 @@ static int net_snprintf(char* buf, int size, const char* fmt, ...) {
 #define ARP_REQ  1
 #define ARP_REP  2
 
-static uint32_t rtl_base = 0;
-static uint8_t* rtl_rx_buf = NULL;
-static uint32_t rtl_rx_pos = 0;
-static uint32_t rtl_tx_next = 0;
-static bool rtl_present = false;
-#define RTL_RX_SIZE 8192
-#define RTL_TX_N 4
-
-static uint8_t rtl_tx_buf[1800] __attribute__((aligned(16)));
-
-#define RTL_IDR0    0x00
-#define RTL_TSD0    0x10
-#define RTL_TSAD0   0x20
-#define RTL_RBSTART 0x30
-#define RTL_CR      0x37
-#define RTL_CAPR    0x38
-#define RTL_CBR     0x3A
-#define RTL_IMR     0x3C
-#define RTL_ISR     0x3E
-#define RTL_TCR     0x40
-#define RTL_RCR     0x44
-#define RTL_9346CR  0x50
-#define RTL_CONFIG1 0x52
-#define RTL_MSR     0x58
-#define RTL_BMCR    0x62
-#define RTL_BMSR    0x64
-
-#define RTL_CR_RST  0x10
-#define RTL_CR_RE   0x08
-#define RTL_CR_TE   0x04
-#define RTL_CR_BUFE 0x01                                   
-
-#define RTL_ISR_ROK  0x0001
-#define RTL_ISR_RER  0x0002
-#define RTL_ISR_TOK  0x0004
-#define RTL_ISR_TER  0x0008
-#define RTL_ISR_RXOVW 0x0010
-#define RTL_ISR_FOVW  0x0040
-
-#define RTL_RCR_VALUE (0x0000000Fu | (1u << 7) | (7u << 8) | (7u << 13))
-
-#define RTL_TCR_VALUE ((7u << 8) | (3u << 24))
-
-static void rtl_reset(void) {
-
-    outb(rtl_base + RTL_CONFIG1, 0x00);
-    outb(rtl_base + RTL_CR, RTL_CR_RST);
-    for (int i = 0; i < 1000; i++) {
-        if ((inb(rtl_base + RTL_CR) & RTL_CR_RST) == 0) break;
-        delay_ms(1);
-    }
-}
-
-static void rtl_read_link(void) {
-
-    uint8_t msr = inb(rtl_base + RTL_MSR);
-    net_link_set_raw((msr & 0x04) ? 0 : 1);
-}
-
-static void rtl_init_chip(void) {
-
-    rtl_rx_buf = (uint8_t*)kmalloc(RTL_RX_SIZE + 16 + 1536);
-    memset(rtl_rx_buf, 0, RTL_RX_SIZE + 16 + 1536);
-    rtl_rx_pos = 0;
-    rtl_tx_next = 0;
-
-    for (int i = 0; i < 6; i++) net_mac[i] = inb(rtl_base + RTL_IDR0 + i);
-
-    outl(rtl_base + RTL_RBSTART, (uint32_t)virt_to_phys(rtl_rx_buf));
-
-
-    outb(rtl_base + RTL_CR, RTL_CR_RE | RTL_CR_TE);
-    outl(rtl_base + RTL_RCR, RTL_RCR_VALUE);
-    outl(rtl_base + RTL_TCR, RTL_TCR_VALUE);
-
-
-    outw(rtl_base + RTL_ISR, 0xFFFF);
-    outw(rtl_base + RTL_IMR, 0);
-    outw(rtl_base + RTL_CAPR, (uint16_t)(0 - 16));
-
-
-    rtl_read_link();
-}
-
-static void rtl_send(const uint8_t* data, uint32_t len) {
-    if (len > 1792) len = 1792;
-    uint32_t tsd = rtl_base + RTL_TSD0 + rtl_tx_next * 4;
-
-
-    for (int i = 0; i < 20 && !(inl(tsd) & 0x2000); i++) delay_ms(1);
-
-    memcpy(rtl_tx_buf, data, len);
-
-    while (len < 60) rtl_tx_buf[len++] = 0;
-
-    outl(rtl_base + RTL_TSAD0 + rtl_tx_next * 4, (uint32_t)virt_to_phys(rtl_tx_buf));
-    outl(tsd, len & 0x1FFF);
-    rtl_tx_next = (rtl_tx_next + 1) % RTL_TX_N;
-
-
-    for (int i = 0; i < 100000 && !(inl(tsd) & 0x2000); i++) { }
-}
-
-static void rtl_poll(void) {
-
-    uint16_t isr = inw(rtl_base + RTL_ISR);
-    if (isr) outw(rtl_base + RTL_ISR, isr);
-
-    if (isr & (RTL_ISR_RXOVW | RTL_ISR_FOVW)) {
-
-        outb(rtl_base + RTL_CR, RTL_CR_TE);
-        outb(rtl_base + RTL_CR, RTL_CR_RE | RTL_CR_TE);
-        outl(rtl_base + RTL_RCR, RTL_RCR_VALUE);
-        rtl_rx_pos = 0;
-        outw(rtl_base + RTL_CAPR, (uint16_t)(0 - 16));
-        return;
-    }
-
-    int guard = 0;
-    while (!(inb(rtl_base + RTL_CR) & RTL_CR_BUFE) && guard++ < 64) {
-
-        const uint8_t* hdr = rtl_rx_buf + rtl_rx_pos;
-        uint16_t status = (uint16_t)(hdr[0] | (hdr[1] << 8));
-        uint16_t flen   = (uint16_t)(hdr[2] | (hdr[3] << 8));
-
-        if (flen == 0xFFF0) break;
-
-
-        if ((status & 0x0001) && flen >= 4 + 14 && flen <= 4 + 1514) {
-            uint32_t framelen = flen - 4;
-            if (net_rx_cb) net_rx_cb(hdr + 4, framelen);
-        } else if (flen < 4 || flen > 4 + 1514) {
-
-            outb(rtl_base + RTL_CR, RTL_CR_TE);
-            outb(rtl_base + RTL_CR, RTL_CR_RE | RTL_CR_TE);
-            outl(rtl_base + RTL_RCR, RTL_RCR_VALUE);
-            rtl_rx_pos = 0;
-            outw(rtl_base + RTL_CAPR, (uint16_t)(0 - 16));
-            return;
-        }
-
-        rtl_rx_pos = (rtl_rx_pos + 4 + flen + 3) & ~3u;
-        if (rtl_rx_pos >= RTL_RX_SIZE) rtl_rx_pos -= RTL_RX_SIZE;
-
-        outw(rtl_base + RTL_CAPR, (uint16_t)(rtl_rx_pos - 16));
-    }
-
-    rtl_read_link();
-}
-
-#define PN_RDP      0x10                      
-#define PN_RAP      0x14
-#define PN_RESET    0x18
-#define PN_BDP      0x1C
-#define PN_WIO_RESET 0x14                               
-
-#define CSR0_INIT   0x0001
-#define CSR0_STRT   0x0002
-#define CSR0_STOP   0x0004
-#define CSR0_TDMD   0x0008
-#define CSR0_IENA   0x0040
-#define CSR0_IDON   0x0100
-#define CSR0_TINT   0x0200
-#define CSR0_RINT   0x0400
-#define CSR0_MISS   0x1000
-
-#define PD_OWN      0x80000000u
-#define PD_ERR      0x40000000u
-#define PD_STP      0x02000000u
-#define PD_ENP      0x01000000u
-#define PD_ONES     0x0000F000u
-#define PD_BCNT(n)  (((uint32_t)(-(int32_t)(n))) & 0x0FFFu)
-
-#define PN_TX  8
-#define PN_RX  16
-#define PN_BUF 1536
-#define PN_LOG2_TX 3
-#define PN_LOG2_RX 4
-
-struct pn_desc {
-    uint32_t addr;
-    uint32_t status;
-    uint32_t misc;
-    uint32_t user;
-} __attribute__((packed));
-
-struct pn_initblk {
-    uint16_t mode;
-    uint8_t  rlen;
-    uint8_t  tlen;
-    uint8_t  padr[6];
-    uint16_t reserved;
-    uint8_t  ladrf[8];
-    uint32_t rdra;
-    uint32_t tdra;
-} __attribute__((packed));
-
-static uint32_t  pcnet_io = 0;
-static uintptr_t pcnet_mmio = 0;
-static bool      pcnet_present = false;
-static struct pn_desc* pn_tx = NULL;
-static struct pn_desc* pn_rx = NULL;
-static uint8_t*  pn_txb[PN_TX];
-static uint8_t*  pn_rxb[PN_RX];
-static struct pn_initblk* pn_ib = NULL;
-static int pn_rx_next = 0;
-static int pn_tx_next = 0;
-
-static void pn_w32(uint32_t off, uint32_t v) {
-    if (pcnet_mmio) *(volatile uint32_t*)(pcnet_mmio + off) = v;
-    else outl(pcnet_io + off, v);
-}
-static uint32_t pn_r32(uint32_t off) {
-    if (pcnet_mmio) return *(volatile uint32_t*)(pcnet_mmio + off);
-    return inl(pcnet_io + off);
-}
-static void     pn_csrw(int c, uint32_t v) { pn_w32(PN_RAP, (uint32_t)c); pn_w32(PN_RDP, v); }
-static uint32_t pn_csrr(int c)             { pn_w32(PN_RAP, (uint32_t)c); return pn_r32(PN_RDP) & 0xFFFF; }
-static void     pn_bcrw(int c, uint32_t v) { pn_w32(PN_RAP, (uint32_t)c); pn_w32(PN_BDP, v); }
-static uint32_t pn_bcrr(int c)             { pn_w32(PN_RAP, (uint32_t)c); return pn_r32(PN_BDP) & 0xFFFF; }
-
-static void* pn_alloc16(uint32_t size) {
-    uint8_t* m = (uint8_t*)kmalloc(size + 16);
-    if (!m) return NULL;
-    uintptr_t a = ((uintptr_t)m + 15) & ~(uintptr_t)15;
-    memset((void*)a, 0, size);
-    return (void*)a;
-}
-
-static void pn_read_link(void) {
-
-    uint32_t bcr4 = pn_bcrr(4);
-    net_link_set_raw((bcr4 & 0x0040) ? ((bcr4 & 0x8000) ? 1 : 0) : 1);
-}
-
-static void pn_init_chip(void) {
-
-    (void)pn_r32(PN_RESET);
-    if (pcnet_mmio) (void)*(volatile uint16_t*)(pcnet_mmio + PN_WIO_RESET);
-    else (void)inw(pcnet_io + PN_WIO_RESET);
-    delay_ms(2);
-
-
-    pn_w32(PN_RDP, 0);
-
-
-    for (int i = 0; i < 6; i++) {
-        if (pcnet_mmio) net_mac[i] = *(volatile uint8_t*)(pcnet_mmio + i);
-        else net_mac[i] = inb(pcnet_io + i);
-    }
-
-
-    pn_bcrw(20, 0x0002);
-
-    pn_ib = (struct pn_initblk*)pn_alloc16(sizeof(*pn_ib));
-    pn_tx = (struct pn_desc*)pn_alloc16(sizeof(struct pn_desc) * PN_TX);
-    pn_rx = (struct pn_desc*)pn_alloc16(sizeof(struct pn_desc) * PN_RX);
-    if (!pn_ib || !pn_tx || !pn_rx) { pcnet_present = false; return; }
-
-    for (int i = 0; i < PN_TX; i++) {
-        pn_txb[i] = (uint8_t*)pn_alloc16(PN_BUF);
-        pn_tx[i].addr = (uint32_t)virt_to_phys(pn_txb[i]);
-        pn_tx[i].status = PD_ONES;
-        pn_tx[i].misc = 0;
-    }
-    for (int i = 0; i < PN_RX; i++) {
-        pn_rxb[i] = (uint8_t*)pn_alloc16(PN_BUF);
-        pn_rx[i].addr = (uint32_t)virt_to_phys(pn_rxb[i]);
-        pn_rx[i].status = PD_OWN | PD_ONES | PD_BCNT(PN_BUF);
-        pn_rx[i].misc = 0;
-    }
-    pn_rx_next = 0;
-    pn_tx_next = 0;
-
-    pn_ib->mode = 0x8000;
-    pn_ib->rlen = (uint8_t)(PN_LOG2_RX << 4);
-    pn_ib->tlen = (uint8_t)(PN_LOG2_TX << 4);
-    for (int i = 0; i < 6; i++) pn_ib->padr[i] = net_mac[i];
-    for (int i = 0; i < 8; i++) pn_ib->ladrf[i] = 0;
-    pn_ib->rdra = (uint32_t)virt_to_phys(pn_rx);
-    pn_ib->tdra = (uint32_t)virt_to_phys(pn_tx);
-
-    uint32_t ib = (uint32_t)virt_to_phys(pn_ib);
-    pn_csrw(1, ib & 0xFFFF);
-    pn_csrw(2, ib >> 16);
-
-    pn_csrw(3, 0x5F00);
-
-    pn_csrw(4, 0x0915);
-
-    pn_csrw(0, CSR0_INIT);
-    int ok = 0;
-    for (int t = 0; t < 1000; t++) {
-        if (pn_csrr(0) & CSR0_IDON) { ok = 1; break; }
-        delay_ms(1);
-    }
-    if (!ok) { pcnet_present = false; strcpy(net_driver_name, "AMD PCnet (init failed)"); return; }
-    pn_csrw(0, CSR0_IDON | CSR0_STRT);
-    pn_read_link();
-}
-
-static void pn_send(const uint8_t* data, uint32_t len) {
-    struct pn_desc* d = &pn_tx[pn_tx_next];
-
-    for (int i = 0; i < 20 && (d->status & PD_OWN); i++) delay_ms(1);
-    if (d->status & PD_OWN) return;
-    if (len > PN_BUF) len = PN_BUF;
-    memcpy(pn_txb[pn_tx_next], data, len);
-    if (len < 60) { memset(pn_txb[pn_tx_next] + len, 0, 60 - len); len = 60; }
-    d->misc = 0;
-    d->status = PD_OWN | PD_STP | PD_ENP | PD_ONES | PD_BCNT(len);
-    pn_csrw(0, CSR0_TDMD);
-    pn_tx_next = (pn_tx_next + 1) % PN_TX;
-}
-
-static void pn_poll(void) {
-
-    uint32_t csr0 = pn_csrr(0);
-    if (csr0 & 0x7F00) pn_csrw(0, csr0 & 0x7F00);
-
-    for (int n = 0; n < PN_RX; n++) {
-        struct pn_desc* d = &pn_rx[pn_rx_next];
-        if (d->status & PD_OWN) break;
-        uint32_t st = d->status;
-        uint32_t mcnt = d->misc & 0x0FFF;
-        if (!(st & PD_ERR) && (st & PD_STP) && (st & PD_ENP) && mcnt > 18 && mcnt <= PN_BUF) {
-            if (net_rx_cb) net_rx_cb(pn_rxb[pn_rx_next], mcnt - 4);
-        }
-        d->misc = 0;
-        d->status = PD_OWN | PD_ONES | PD_BCNT(PN_BUF);
-        pn_rx_next = (pn_rx_next + 1) % PN_RX;
-    }
-
-    static uint32_t last_link_tick = 0;
-    if (uptime_ticks - last_link_tick >= 500) {
-        last_link_tick = uptime_ticks;
-        pn_read_link();
-    }
-}
-
-#define E1000_CTRL     0x0000
-#define E1000_STATUS   0x0008
-#define E1000_EERD     0x0014
-#define E1000_ICR      0x00C0
-#define E1000_IMS      0x00D0
-#define E1000_IMC      0x00D8
-#define E1000_RCTL     0x0100
-#define E1000_TCTL     0x0400
-#define E1000_TIPG     0x0410
-#define E1000_RDBAL    0x2800
-#define E1000_RDBAH    0x2804
-#define E1000_RDLEN    0x2808
-#define E1000_RDH      0x2810
-#define E1000_RDT      0x2818
-#define E1000_TDBAL    0x3800
-#define E1000_TDBAH    0x3804
-#define E1000_TDLEN    0x3808
-#define E1000_TDH      0x3810
-#define E1000_TDT      0x3818
-#define E1000_MTA      0x5200
-#define E1000_RAL0     0x5400
-#define E1000_RAH0     0x5404
-
-#define E1000_CTRL_ASDE   (1u << 5)
-#define E1000_CTRL_SLU    (1u << 6)
-#define E1000_CTRL_ILOS   (1u << 7)
-#define E1000_CTRL_RST    (1u << 26)
-#define E1000_CTRL_PHYRST (1u << 31)
-#define E1000_CTRL_LRST   (1u << 3)
-
-#define E1000_RCTL_EN     (1u << 1)
-#define E1000_RCTL_UPE    (1u << 3)
-#define E1000_RCTL_BAM    (1u << 15)
-#define E1000_RCTL_SECRC  (1u << 26)
-#define E1000_TCTL_EN     (1u << 1)
-#define E1000_TCTL_PSP    (1u << 3)
-
-                                                                         
-                                                                        
-                                                                           
-                                                                      
-                                                                       
-                                                                     
-                                               
-                                                                      
-  
-#define E1000_MDIC        0x0020
-#define E1000_FWSM        0x5B54
-#define E1000_FEXTNVM3    0x003C
-#define E1000_EXTCNF_CTRL 0x0F00
-
-#define E1000_CTRL_LANPHYPC_OVERRIDE (1u << 16)
-#define E1000_CTRL_LANPHYPC_VALUE    (1u << 17)
-#define E1000_EXTCNF_GATE_PHY_CFG    (1u << 7)
-#define E1000_FWSM_PHY_RESET_EN      (1u << 6)                       
-
-#define E1000_MDIC_PHY_ADDR   1u
-#define E1000_MDIC_ADDR_SHIFT 16
-#define E1000_MDIC_READY      (1u << 28)
-#define E1000_MDIC_ERROR      (1u << 30)
-
-                                       
-#define E1000_MII_BMCR       0
-#define E1000_MII_PHYSID1    2
-#define E1000_MII_PHYSID2    3
-#define E1000_MII_ADVERTISE  4
-#define E1000_BMCR_RESET     0x8000
-#define E1000_BMCR_POWERDOWN 0x0800
-#define E1000_BMCR_ANE       0x1000
-#define E1000_BMCR_RESTART_AN 0x0200
-#define E1000_BMCR_SPEED_MASK 0x2040
-#define E1000_ADV_10_100     0x01E1                                      
-#define E1000_ADV_PAUSE      0x0C00                                  
-
-#define E1000_NRX 32
-#define E1000_NTX 32
-#define E1000_BUF 2048
-
-struct e1000_rxd {
-    uint32_t addr_lo, addr_hi;
-    uint16_t length;
-    uint16_t csum;
-    uint8_t  status;
-    uint8_t  errors;
-    uint16_t special;
-} __attribute__((packed));
-
-struct e1000_txd {
-    uint32_t addr_lo, addr_hi;
-    uint16_t length;
-    uint8_t  cso;
-    uint8_t  cmd;
-    uint8_t  status;
-    uint8_t  css;
-    uint16_t special;
-} __attribute__((packed));
-
-static uintptr_t e1000_mmio = 0;
-static bool e1000_present = false;
-static struct e1000_rxd* e1000_rx = NULL;
-static struct e1000_txd* e1000_tx = NULL;
-static uint8_t* e1000_rxb[E1000_NRX];
-static uint8_t* e1000_txb[E1000_NTX];
-static int e1000_rx_head = 0;
-static int e1000_tx_tail = 0;
-static bool e1000_pch2 = false;                                          
-
-static inline void e1000_w(uint32_t reg, uint32_t v) { *(volatile uint32_t*)(e1000_mmio + reg) = v; }
-static inline uint32_t e1000_r(uint32_t reg) { return *(volatile uint32_t*)(e1000_mmio + reg); }
-
-static int e1000_eeprom_read(uint8_t addr, uint16_t* out) {
-
-    e1000_w(E1000_EERD, ((uint32_t)addr << 8) | 1);
-    for (int i = 0; i < 100000; i++) {
-        uint32_t v = e1000_r(E1000_EERD);
-        if (v & (1u << 4)) { *out = (uint16_t)(v >> 16); return 1; }
-    }
-
-    e1000_w(E1000_EERD, ((uint32_t)addr << 2) | 1);
-    for (int i = 0; i < 100000; i++) {
-        uint32_t v = e1000_r(E1000_EERD);
-        if (v & (1u << 1)) { *out = (uint16_t)(v >> 16); return 1; }
-    }
-    return 0;
-}
-
-static void e1000_read_link(void) {
-    net_link_set_raw((e1000_r(E1000_STATUS) & 0x2) ? 1 : 0);
-}
-
-                                                                           
-
-static int e1000_mdic_read(uint8_t reg, uint16_t* out) {
-    e1000_w(E1000_MDIC, (uint32_t)reg |
-            ((uint32_t)E1000_MDIC_PHY_ADDR << E1000_MDIC_ADDR_SHIFT) |
-            (2u << 26));                                       
-    for (int i = 0; i < 5000; i++) {
-        uint32_t v = e1000_r(E1000_MDIC);
-        if (v & E1000_MDIC_ERROR) return 0;
-        if (v & E1000_MDIC_READY) { *out = (uint16_t)(v & 0xFFFFu); return 1; }
-    }
-    return 0;
-}
-
-static int e1000_mdic_write(uint8_t reg, uint16_t val) {
-    e1000_w(E1000_MDIC, (uint32_t)val | (uint32_t)reg |
-            ((uint32_t)E1000_MDIC_PHY_ADDR << E1000_MDIC_ADDR_SHIFT) |
-            (1u << 26));                                        
-    for (int i = 0; i < 5000; i++) {
-        uint32_t v = e1000_r(E1000_MDIC);
-        if (v & E1000_MDIC_ERROR) return 0;
-        if (v & E1000_MDIC_READY) return 1;
-    }
-    return 0;
-}
-
-static int e1000_phy_is_accessible(void) {
-    uint16_t id = 0;
-    for (int retry = 0; retry < 2; retry++) {
-        if (!e1000_mdic_read(E1000_MII_PHYSID1, &id) || id == 0xFFFF) continue;
-        if (!e1000_mdic_read(E1000_MII_PHYSID2, &id) || id == 0xFFFF) continue;
-        return 1;
-    }
-    return 0;
-}
-
-                                                                  
-                                                             
-static void e1000_toggle_lanphypc(void) {
-    uint32_t v = e1000_r(E1000_FEXTNVM3);
-    v = (v & ~0x0C000000u) | 0x08000000u;                                   
-    e1000_w(E1000_FEXTNVM3, v);
-
-    v = e1000_r(E1000_CTRL);
-    v |=  E1000_CTRL_LANPHYPC_OVERRIDE;
-    v &= ~E1000_CTRL_LANPHYPC_VALUE;
-    e1000_w(E1000_CTRL, v);
-    (void)e1000_r(E1000_CTRL);                                    
-    for (volatile int i = 0; i < 2000; i++) { }             
-    v &= ~E1000_CTRL_LANPHYPC_OVERRIDE;
-    e1000_w(E1000_CTRL, v);
-    (void)e1000_r(E1000_CTRL);
-    delay_ms(50);
-}
-
-                                                                     
-                                                                      
-               
-static void e1000_pch2_phy_wake(void) {
-                                                                     
-    e1000_w(E1000_EXTCNF_CTRL,
-            e1000_r(E1000_EXTCNF_CTRL) | E1000_EXTCNF_GATE_PHY_CFG);
-
-                                                                    
-    for (int i = 0; i < 30; i++) {
-        if (e1000_r(E1000_FWSM) & E1000_FWSM_PHY_RESET_EN) break;
-        delay_ms(10);
-    }
-
-                                                                       
-                                                           
-    if (!e1000_phy_is_accessible()) e1000_toggle_lanphypc();
-
-                                                   
-    uint16_t bmcr = 0;
-    if (e1000_mdic_read(E1000_MII_BMCR, &bmcr)) {
-        bmcr &= (uint16_t)~(E1000_BMCR_POWERDOWN | E1000_BMCR_SPEED_MASK);
-        e1000_mdic_write(E1000_MII_BMCR, (uint16_t)(bmcr | E1000_BMCR_RESET));
-        delay_ms(1);
-        for (int i = 0; i < 100; i++) {
-            uint16_t r = 0;
-            if (!e1000_mdic_read(E1000_MII_BMCR, &r)) break;
-            if (!(r & E1000_BMCR_RESET)) break;
-            delay_ms(1);
-        }
-    }
-
-                                                                     
-                                     
-    e1000_mdic_write(E1000_MII_ADVERTISE,
-                     (uint16_t)(E1000_ADV_10_100 | E1000_ADV_PAUSE));
-    if (e1000_mdic_read(E1000_MII_BMCR, &bmcr)) {
-        bmcr &= (uint16_t)~(E1000_BMCR_POWERDOWN | E1000_BMCR_RESET);
-        e1000_mdic_write(E1000_MII_BMCR,
-                         (uint16_t)(bmcr | E1000_BMCR_ANE | E1000_BMCR_RESTART_AN));
-    }
-
-                                                                     
-    delay_ms(10);
-    e1000_w(E1000_EXTCNF_CTRL,
-            e1000_r(E1000_EXTCNF_CTRL) & ~E1000_EXTCNF_GATE_PHY_CFG);
-}
-
-static void e1000_init_chip(void) {
-
-    e1000_w(E1000_IMC, 0xFFFFFFFFu);
-    e1000_w(E1000_CTRL, e1000_r(E1000_CTRL) | E1000_CTRL_RST);
-    delay_ms(10);
-    int rst_wait = e1000_pch2 ? 100 : 1000;
-    for (int i = 0; i < rst_wait && (e1000_r(E1000_CTRL) & E1000_CTRL_RST); i++) delay_ms(1);
-    e1000_w(E1000_IMC, 0xFFFFFFFFu);
-    (void)e1000_r(E1000_ICR);
-
-    if (e1000_pch2) e1000_pch2_phy_wake();
-
-    uint32_t ctrl = e1000_r(E1000_CTRL);
-    ctrl |= E1000_CTRL_SLU | E1000_CTRL_ASDE;
-    ctrl &= ~(E1000_CTRL_LRST | E1000_CTRL_ILOS | E1000_CTRL_PHYRST);
-    e1000_w(E1000_CTRL, ctrl);
-
-
-    uint32_t ral = e1000_r(E1000_RAL0), rah = e1000_r(E1000_RAH0);
-    if (ral == 0 && (rah & 0xFFFF) == 0) {
-        uint16_t w0, w1, w2;
-        if (e1000_eeprom_read(0, &w0) && e1000_eeprom_read(1, &w1) && e1000_eeprom_read(2, &w2)) {
-            ral = (uint32_t)w0 | ((uint32_t)w1 << 16);
-            rah = w2;
-        }
-    }
-    net_mac[0] = ral & 0xFF; net_mac[1] = (ral >> 8) & 0xFF;
-    net_mac[2] = (ral >> 16) & 0xFF; net_mac[3] = (ral >> 24) & 0xFF;
-    net_mac[4] = rah & 0xFF; net_mac[5] = (rah >> 8) & 0xFF;
-    e1000_w(E1000_RAL0, ral);
-    e1000_w(E1000_RAH0, (rah & 0xFFFF) | (1u << 31));
-    for (int i = 0; i < 128; i++) e1000_w(E1000_MTA + i * 4, 0);
-
-
-    e1000_rx = (struct e1000_rxd*)pn_alloc16(sizeof(struct e1000_rxd) * E1000_NRX);
-    e1000_tx = (struct e1000_txd*)pn_alloc16(sizeof(struct e1000_txd) * E1000_NTX);
-    if (!e1000_rx || !e1000_tx) { e1000_present = false; return; }
-    for (int i = 0; i < E1000_NRX; i++) {
-        e1000_rxb[i] = (uint8_t*)pn_alloc16(E1000_BUF);
-        e1000_rx[i].addr_lo = (uint32_t)virt_to_phys(e1000_rxb[i]);
-        e1000_rx[i].addr_hi = 0;
-        e1000_rx[i].status = 0;
-    }
-    e1000_w(E1000_RDBAL, (uint32_t)virt_to_phys(e1000_rx));
-    e1000_w(E1000_RDBAH, 0);
-    e1000_w(E1000_RDLEN, sizeof(struct e1000_rxd) * E1000_NRX);
-    e1000_w(E1000_RDH, 0);
-    e1000_w(E1000_RDT, E1000_NRX - 1);
-    e1000_rx_head = 0;
-
-    e1000_w(E1000_RCTL, E1000_RCTL_EN | E1000_RCTL_UPE | E1000_RCTL_BAM | E1000_RCTL_SECRC);
-
-
-    for (int i = 0; i < E1000_NTX; i++) {
-        e1000_txb[i] = (uint8_t*)pn_alloc16(E1000_BUF);
-        e1000_tx[i].addr_lo = (uint32_t)virt_to_phys(e1000_txb[i]);
-        e1000_tx[i].addr_hi = 0;
-        e1000_tx[i].cmd = 0;
-        e1000_tx[i].status = 1;
-    }
-    e1000_w(E1000_TDBAL, (uint32_t)virt_to_phys(e1000_tx));
-    e1000_w(E1000_TDBAH, 0);
-    e1000_w(E1000_TDLEN, sizeof(struct e1000_txd) * E1000_NTX);
-    e1000_w(E1000_TDH, 0);
-    e1000_w(E1000_TDT, 0);
-    e1000_tx_tail = 0;
-
-    e1000_w(E1000_TCTL, E1000_TCTL_EN | E1000_TCTL_PSP | (15u << 4) | (64u << 12));
-    e1000_w(E1000_TIPG, 10 | (8u << 10) | (6u << 20));
-
-    e1000_read_link();
-}
-
-static void e1000_send(const uint8_t* data, uint32_t len) {
-    struct e1000_txd* d = &e1000_tx[e1000_tx_tail];
-    for (int i = 0; i < 20 && !(d->status & 1); i++) delay_ms(1);
-    if (!(d->status & 1)) return;
-    if (len > E1000_BUF) len = E1000_BUF;
-    memcpy(e1000_txb[e1000_tx_tail], data, len);
-    if (len < 60) { memset(e1000_txb[e1000_tx_tail] + len, 0, 60 - len); len = 60; }
-    d->length = (uint16_t)len;
-    d->cso = 0; d->css = 0; d->special = 0;
-    d->status = 0;
-    d->cmd = 0x01 | 0x02 | 0x08;
-    e1000_tx_tail = (e1000_tx_tail + 1) % E1000_NTX;
-    e1000_w(E1000_TDT, (uint32_t)e1000_tx_tail);
-
-    for (int i = 0; i < 100000 && !(d->status & 1); i++) { }
-}
-
-static void e1000_poll(void) {
-    (void)e1000_r(E1000_ICR);
-    for (int n = 0; n < E1000_NRX; n++) {
-        struct e1000_rxd* d = &e1000_rx[e1000_rx_head];
-        if (!(d->status & 1)) break;
-        uint32_t len = d->length;
-        if ((d->status & 2) && !d->errors && len >= 14 && len <= 1514) {
-            if (net_rx_cb) net_rx_cb(e1000_rxb[e1000_rx_head], len);
-        }
-        d->status = 0;
-        e1000_w(E1000_RDT, (uint32_t)e1000_rx_head);
-        e1000_rx_head = (e1000_rx_head + 1) % E1000_NRX;
-    }
-    static uint32_t last_link_tick = 0;
-    if (uptime_ticks - last_link_tick >= 250) {
-        last_link_tick = uptime_ticks;
-        e1000_read_link();
-    }
-}
-
-static int e1000_is_supported(uint16_t did) {
-    static const uint16_t ids[] = {
-        0x100E, 0x100F, 0x1010, 0x1011, 0x1012, 0x1013, 0x1015, 0x1016, 0x1017,
-        0x1018, 0x1019, 0x101A, 0x101D, 0x101E, 0x1026, 0x1027, 0x1028, 0x1075,
-        0x1076, 0x1077, 0x1078, 0x1079, 0x107A, 0x107B, 0x107C, 0x108A, 0x1099,
-        0x10B5, 0x10D3,
-        0x1502, 0x1503,                                                    
-    };
-    for (unsigned i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) if (ids[i] == did) return 1;
-    return 0;
-}
-
 void net_set_rx_callback(net_rx_cb_t cb) { net_rx_cb = cb; }
 
 
-#define R8169_NRX 64
-#define R8169_NTX 32
-#define R8169_BUF 2048
-#define R8169_DESC_OWN 0x80000000u
-#define R8169_DESC_EOR 0x40000000u
-#define R8169_DESC_FS 0x20000000u
-#define R8169_DESC_LS 0x10000000u
-#define R8169_CMD 0x37
-#define R8169_TCR 0x40
-#define R8169_RCR 0x44
-#define R8169_TPPOLL 0x38
-#define R8169_RDSAR 0xE4
-#define R8169_TNPDS 0x20
-#define R8169_IMR 0x3C
-#define R8169_ISR 0x3E
-#define R8169_CMD_RST 0x10
-#define R8169_CMD_RE 0x08
-#define R8169_CMD_TE 0x04
-
-typedef struct { uint32_t status; uint32_t vlan; uint32_t addr_lo; uint32_t addr_hi; } __attribute__((packed)) r8169_desc_t;
-
-static uintptr_t r8169_mmio;
-static uint32_t r8169_io;
-static r8169_desc_t* r8169_rx;
-static r8169_desc_t* r8169_tx;
-static uint8_t* r8169_rxb[R8169_NRX];
-static uint8_t* r8169_txb[R8169_NTX];
-static uint32_t r8169_rx_head;
-static uint32_t r8169_tx_head;
-static bool r8169_present;
-
-static void r8169_w8(uint32_t off, uint8_t value) { if (r8169_mmio) *(volatile uint8_t*)(r8169_mmio + off) = value; else outb((uint16_t)(r8169_io + off), value); }
-static uint8_t r8169_r8(uint32_t off) { return r8169_mmio ? *(volatile uint8_t*)(r8169_mmio + off) : inb((uint16_t)(r8169_io + off)); }
-static void r8169_w16(uint32_t off, uint16_t value) { if (r8169_mmio) *(volatile uint16_t*)(r8169_mmio + off) = value; else outw((uint16_t)(r8169_io + off), value); }
-static void r8169_w32(uint32_t off, uint32_t value) { if (r8169_mmio) *(volatile uint32_t*)(r8169_mmio + off) = value; else outl((uint16_t)(r8169_io + off), value); }
-
-static void r8169_send(const uint8_t* data, uint32_t len) {
-    if (!r8169_present || !data || !len) return;
-    uint32_t idx = r8169_tx_head;
-    volatile r8169_desc_t* d = &r8169_tx[idx];
-    for (int i = 0; i < 20 && (d->status & R8169_DESC_OWN); i++) delay_ms(1);
-    if (d->status & R8169_DESC_OWN) return;
-    if (len > R8169_BUF) len = R8169_BUF;
-    memcpy(r8169_txb[idx], data, len);
-    if (len < 60) { memset(r8169_txb[idx] + len, 0, 60 - len); len = 60; }
-    d->addr_lo = (uint32_t)virt_to_phys(r8169_txb[idx]);
-    d->addr_hi = 0;
-    d->vlan = 0;
-    d->status = R8169_DESC_OWN | R8169_DESC_FS | R8169_DESC_LS | len | (idx == R8169_NTX - 1 ? R8169_DESC_EOR : 0);
-    r8169_tx_head = (idx + 1) & (R8169_NTX - 1);
-    asm volatile("" ::: "memory");
-    r8169_w8(R8169_TPPOLL, 0x40);
-}
-
-static void r8169_poll(void) {
-    if (!r8169_present) return;
-    for (int n = 0; n < R8169_NRX; n++) {
-        uint32_t idx = r8169_rx_head;
-        volatile r8169_desc_t* d = &r8169_rx[idx];
-        if (d->status & R8169_DESC_OWN) break;
-        uint32_t status = d->status;
-        uint32_t len = status & 0x3FFF;
-        if ((status & (R8169_DESC_FS | R8169_DESC_LS)) == (R8169_DESC_FS | R8169_DESC_LS) && len >= 18 && len <= R8169_BUF) if (net_rx_cb) net_rx_cb(r8169_rxb[idx], len - 4);
-        d->status = R8169_DESC_OWN | R8169_BUF | (idx == R8169_NRX - 1 ? R8169_DESC_EOR : 0);
-        r8169_rx_head = (idx + 1) & (R8169_NRX - 1);
-    }
-}
-
-static int r8169_init(uint8_t bus, uint8_t slot, uint8_t func, uint16_t did) {
-    uint32_t bar0 = pci_config_read(bus, slot, func, 0x10);
-    uint32_t bar1 = pci_config_read(bus, slot, func, 0x14);
-    uint32_t command = pci_config_read(bus, slot, func, 0x04);
-    command |= 0x7;
-    pci_config_write(bus, slot, func, 0x04, command);
-    r8169_mmio = 0;
-    r8169_io = 0;
-    if (bar0 & 1) r8169_io = bar0 & 0xFFFFFFFC;
-    else {
-        uint64_t address = bar0 & 0xFFFFFFF0;
-        if ((bar0 & 6) == 4) address |= (uint64_t)bar1 << 32;
-        if (!address || address >= 137438953472ULL) return 0;
-#ifdef SHARKOS_32BIT
-        if (address > 0xFFFFFFFFULL) return 0;
-#endif
-        r8169_mmio = (uintptr_t)address;
-    }
-    r8169_w8(R8169_CMD, R8169_CMD_RST);
-    for (int i = 0; i < 100 && (r8169_r8(R8169_CMD) & R8169_CMD_RST); i++) delay_ms(1);
-    if (r8169_r8(R8169_CMD) & R8169_CMD_RST) return 0;
-    for (int i = 0; i < 6; i++) net_mac[i] = r8169_r8((uint32_t)i);
-    r8169_rx = (r8169_desc_t*)kmalloc(sizeof(r8169_desc_t) * R8169_NRX + 256);
-    r8169_tx = (r8169_desc_t*)kmalloc(sizeof(r8169_desc_t) * R8169_NTX + 256);
-    if (!r8169_rx || !r8169_tx) return 0;
-    r8169_rx = (r8169_desc_t*)(((uintptr_t)r8169_rx + 255) & ~(uintptr_t)255);
-    r8169_tx = (r8169_desc_t*)(((uintptr_t)r8169_tx + 255) & ~(uintptr_t)255);
-    memset(r8169_rx, 0, sizeof(r8169_desc_t) * R8169_NRX);
-    memset(r8169_tx, 0, sizeof(r8169_desc_t) * R8169_NTX);
-    if (virt_to_phys(r8169_rx) > 0xFFFFFFFFu || virt_to_phys(r8169_tx) > 0xFFFFFFFFu) return 0;
-    for (int i = 0; i < R8169_NRX; i++) {
-        r8169_rxb[i] = (uint8_t*)kmalloc(R8169_BUF);
-        if (!r8169_rxb[i] || virt_to_phys(r8169_rxb[i]) > 0xFFFFFFFFu) return 0;
-        r8169_rx[i].addr_lo = (uint32_t)virt_to_phys(r8169_rxb[i]);
-        r8169_rx[i].status = R8169_DESC_OWN | R8169_BUF | (i == R8169_NRX - 1 ? R8169_DESC_EOR : 0);
-    }
-    for (int i = 0; i < R8169_NTX; i++) {
-        r8169_txb[i] = (uint8_t*)kmalloc(R8169_BUF);
-        if (!r8169_txb[i] || virt_to_phys(r8169_txb[i]) > 0xFFFFFFFFu) return 0;
-        r8169_tx[i].addr_lo = (uint32_t)virt_to_phys(r8169_txb[i]);
-    }
-    r8169_rx_head = r8169_tx_head = 0;
-    uint32_t rx_phys = (uint32_t)virt_to_phys(r8169_rx);
-    uint32_t tx_phys = (uint32_t)virt_to_phys(r8169_tx);
-    r8169_w32(R8169_RDSAR, rx_phys);
-    r8169_w32(R8169_RDSAR + 4, 0);
-    r8169_w32(R8169_TNPDS, tx_phys);
-    r8169_w32(R8169_TNPDS + 4, 0);
-    r8169_w16(R8169_IMR, 0);
-    r8169_w16(R8169_ISR, 0xFFFF);
-    r8169_w32(R8169_RCR, 0x0000E70F);
-    r8169_w32(R8169_TCR, 0x03000700);
-    r8169_w8(R8169_CMD, R8169_CMD_RE | R8169_CMD_TE);
-    r8169_present = true;
-    net_link_set_raw(1);
-    strcpy(net_driver_name, did == 0x8169 ? "Realtek RTL8169" : "Realtek RTL8111/8168/8211/8411");
-    return 1;
-}
-
 void net_send_raw(const uint8_t* data, uint32_t len) {
+    const net_dev_t* drv = net_dev_active();
+    if (!drv || !drv->send) return;
     if (!firewall_output_allowed(data, len)) return;
     firewall_track_outbound(data, len);
-    if (r8169_present) r8169_send(data, len);
-    else if (rtl_present) rtl_send(data, len);
-    else if (pcnet_present) pn_send(data, len);
-    else if (e1000_present) e1000_send(data, len);
+    drv->send(data, len);
+}
+
+void netdev_rx_submit(const uint8_t* frame, uint32_t len) {
+    if (net_rx_cb) net_rx_cb(frame, len);
+}
+
+void netdev_set_mac(const uint8_t mac[6]) {
+    for (int i = 0; i < 6; i++) net_mac[i] = mac[i];
+}
+
+void netdev_report_link(int up) { net_link_set_raw(up); }
+
+void netdev_set_name(const char* name) {
+    if (name) strcpy(net_driver_name, name);
 }
 
 static void dhcp_tick(void);
 
 void net_poll(void) {
-    if (net_poll_cb_hook) net_poll_cb_hook();
-    if (r8169_present) r8169_poll();
-    else if (rtl_present) rtl_poll();
-    else if (pcnet_present) pn_poll();
-    else if (e1000_present) e1000_poll();
-    else return;
+    const net_dev_t* drv = net_dev_active();
+    if (!drv || !drv->poll) return;
+    drv->poll();
     net_vnic_poll();
+    net_tcp_server_reap();
+    if (net_poll_cb_hook) net_poll_cb_hook();
     dhcp_tick();
 }
 
-int net_has_nic(void) { return r8169_present || rtl_present || pcnet_present || e1000_present; }
+int net_has_nic(void) { return net_dev_active() != NULL; }
+
+
+void net_pci_enable(uint8_t bus, uint8_t slot, uint8_t func, uint8_t bits) {
+    uint32_t command = pci_config_read(bus, slot, func, 0x04);
+    pci_config_write(bus, slot, func, 0x04, command | bits);
+}
 
 void net_init(void) {
+    net_drivers_init();
+
     for (uint32_t bus = 0; bus < 256; bus++) {
         for (uint32_t slot = 0; slot < 32; slot++) {
             for (uint32_t func = 0; func < 8; func++) {
-                uint32_t d = pci_config_read(bus, slot, func, 0);
-                if (d == 0xFFFFFFFF) { if (func == 0) break; else continue; }
-                uint16_t vid = d & 0xFFFF, did = (d >> 16) & 0xFFFF;
-                uint32_t hdr = pci_config_read(bus, slot, func, 0x0C);
+                uint32_t id = pci_config_read((uint8_t)bus, (uint8_t)slot, (uint8_t)func, 0);
+                if (id == 0xFFFFFFFF) { if (func == 0) break; else continue; }
 
-                if (vid == 0x10EC && (did == 0x8168 || did == 0x8169)) {
-                    if (r8169_init((uint8_t)bus, (uint8_t)slot, (uint8_t)func, did)) {
-                        net_mark_active((uint8_t)bus, (uint8_t)slot, (uint8_t)func);
-                        return;
-                    }
-                }
-                if (vid == 0x10EC && did == 0x8139) {
-                    uint32_t bar0 = pci_config_read(bus, slot, func, 0x10);
-                    rtl_base = bar0 & 0xFFFFFFFC;
-                    uint32_t cmd = pci_config_read(bus, slot, func, 0x04);
-                    cmd |= 0x5;
-                    pci_config_write(bus, slot, func, 0x04, cmd);
-                    strcpy(net_driver_name, "Realtek RTL8139");
-                    rtl_present = true;
-                    rtl_reset();
-                    rtl_init_chip();
+                uint16_t vendor = id & 0xFFFF;
+                uint16_t device = (id >> 16) & 0xFFFF;
+                uint8_t  header = (uint8_t)(pci_config_read((uint8_t)bus, (uint8_t)slot, (uint8_t)func, 0x0C) >> 16);
+
+                const net_dev_t* drv = net_dev_probe((uint8_t)bus, (uint8_t)slot,
+                                                     (uint8_t)func, vendor, device);
+                if (drv) {
+                    net_dev_set_active(drv);
+                    strcpy(net_driver_name, drv->name);
                     net_mark_active((uint8_t)bus, (uint8_t)slot, (uint8_t)func);
                     return;
                 }
-                if (vid == 0x1022 && (did == 0x2000 || did == 0x2001)) {
-                    uint32_t bar0 = pci_config_read(bus, slot, func, 0x10);
-                    int isio = (bar0 & 0x1) != 0;
-                    uint32_t cmd = pci_config_read(bus, slot, func, 0x04);
-                    cmd |= 0x7;
-                    pci_config_write(bus, slot, func, 0x04, cmd);
-                    if (isio) { pcnet_io = bar0 & 0xFFFFFFFC; pcnet_mmio = 0; }
-                    else { pcnet_mmio = (uintptr_t)(bar0 & 0xFFFFFFF0); pcnet_io = 0; }
-                    strcpy(net_driver_name, did == 0x2001 ? "AMD PCnet-Home" : "AMD PCnet-PCI II/FAST III");
-                    pcnet_present = true;
-                    pn_init_chip();
-                    if (pcnet_present) {
-                        net_mark_active((uint8_t)bus, (uint8_t)slot, (uint8_t)func);
-                        return;
-                    }
-                }
-                if (vid == 0x8086 && e1000_is_supported(did)) {
-                    uint32_t bar0 = pci_config_read(bus, slot, func, 0x10);
-                    if (!(bar0 & 1)) {
-                        uint32_t cmd = pci_config_read(bus, slot, func, 0x04);
-                        cmd |= 0x6;
-                        pci_config_write(bus, slot, func, 0x04, cmd);
-                        e1000_mmio = (uintptr_t)(bar0 & 0xFFFFFFF0);
-                        e1000_pch2 = (did == 0x1502 || did == 0x1503);
-                        strcpy(net_driver_name,
-                               did == 0x10D3 ? "Intel 82574L"          :
-                               did == 0x1502 ? "Intel 82579LM (e1000)" :
-                               did == 0x1503 ? "Intel 82579V (e1000)"  :
-                                               "Intel 8254x (e1000)");
-                        e1000_present = true;
-                        e1000_init_chip();
-                        if (e1000_present) {
-                            net_mark_active((uint8_t)bus, (uint8_t)slot, (uint8_t)func);
-                            return;
-                        }
-                    }
-                }
-                if (func == 0 && (hdr & 0x00800000) == 0) break;
+                if (func == 0 && (header & 0x80) == 0) break;
             }
         }
     }
     strcpy(net_driver_name, "none");
 }
 
-/* ------------------------------------------------------------------ */
-/* physical adapter inventory                                         */
-/* ------------------------------------------------------------------ */
 
 static net_port_t net_ports[NET_PORT_LIMIT];
 static uint32_t net_port_num = 0;
@@ -1086,7 +236,14 @@ static const char* net_port_label(uint16_t vid, uint16_t did) {
         if (did == 0x8029) return "Realtek RTL8029 (NE2000)";
     }
     if (vid == 0x1022 && (did == 0x2000 || did == 0x2001)) return "AMD PCnet";
-    if (vid == 0x8086 && e1000_is_supported(did)) return "Intel PRO/1000 (e1000)";
+    if (vid == 0x8086) {
+        for (uint32_t i = 0; i < net_dev_count(); i++) {
+            const net_dev_t* drv = net_dev_get(i);
+            if (drv && drv->vendor == 0x8086 && drv->device == did)
+                return "Intel 8254x (e1000)";
+        }
+        if (did >= 0x1000 && did <= 0x10FF) return "Intel 8254x (e1000)";
+    }
     if ((vid == 0x1AF4 && did == 0x1000)) return "virtio-net";
     if (did == 0x0940) return "NE2000-compatible";
     return 0;
@@ -1185,7 +342,7 @@ static uint32_t build_eth(uint8_t* pkt, const uint8_t* dstmac, uint16_t ethertyp
     return 14;
 }
 
-/* Full UDP checksum (IPv4 pseudo header + UDP header + payload). */
+
 static uint16_t net_udp_checksum(const uint8_t* src, const uint8_t* dst,
                                  const uint8_t* udp, uint32_t udp_len) {
     uint32_t sum = 0;
@@ -1426,11 +583,11 @@ static void net_on_frame(const uint8_t* frame, uint32_t len) {
     net_vnic_rx_frame(frame, len);
     uint16_t et = (uint16_t)((frame[12] << 8) | frame[13]);
 
-    /* Frames not addressed to this host are handed to the router's
-     * forwarding hook (if any) instead of the INPUT firewall. */
+
     if (et == ETH_IP && len >= 14 + 20 && (frame[14] >> 4) == 4) {
         uint32_t early_ihl = (uint32_t)((frame[14] & 0x0F) * 4);
         if (early_ihl >= 20 && len >= 14 + early_ihl && !ip_is_for_us(&frame[14 + 16])) {
+            net_vnic_rx_frame(frame, len);
             if (net_forward_cb_hook && firewall_forward_allowed(frame, len))
                 net_forward_cb_hook(frame, len);
             return;
@@ -1742,7 +899,7 @@ int net_dns_lookup(const char* hostname, uint8_t* ip_out) {
     for (int w = 0; w < 3000; w++) {
         delay_ms(1); net_poll();
         if (dns_got) break;
-        if (w == 1000 || w == 2000) net_send_raw(pkt, off + 20 + udplen);                 
+        if (w == 1000 || w == 2000) net_send_raw(pkt, off + 20 + udplen);
     }
     udp_cb = NULL;
     if (dns_got) { for (int k = 0; k < 4; k++) ip_out[k] = dns_resp_ip[k]; dns_cache_put(hostname, ip_out); return 1; }
@@ -1764,7 +921,12 @@ static uint32_t tcp_rx_rd = 0;
 
 #define TCP_SERVER_CONNECTIONS 8
 #define TCP_SERVER_LISTENERS 8
-#define TCP_SERVER_RX_SIZE 16384
+#define TCP_SERVER_RX_SIZE 4096
+#define TCP_SERVER_SYN_TIMEOUT_MS   4000u
+#define TCP_SERVER_IDLE_TIMEOUT_MS  30000u
+#define TCP_SERVER_SEND_TIMEOUT_MS  8000u
+#define TCP_SERVER_KEEPALIVE_MS     3000u
+#define TCP_SERVER_KEEPALIVE_TRIES  3
 #define TCP_SERVER_MSS 1200
 #define TCP_SERVER_SEND_BURST 65535
 
@@ -1782,7 +944,12 @@ typedef struct {
     uint32_t send_acked;
     uint32_t recv_seq;
     uint16_t peer_window;
-    uint8_t rx[TCP_SERVER_RX_SIZE];
+    uint32_t last_rx;
+    uint32_t last_tx;
+    uint8_t  retries;
+    uint8_t  keepalive;
+    uint8_t  busy;
+    uint8_t  rx[TCP_SERVER_RX_SIZE];
     uint32_t rx_len;
     uint32_t rx_rd;
 } tcp_server_conn_t;
@@ -1930,8 +1097,7 @@ static void tcp_server_emit(tcp_server_conn_t* c, uint32_t seq, uint8_t flags, c
     tcp[4] = (uint8_t)(seq >> 24); tcp[5] = (uint8_t)(seq >> 16); tcp[6] = (uint8_t)(seq >> 8); tcp[7] = (uint8_t)seq;
     tcp[8] = (uint8_t)(c->recv_seq >> 24); tcp[9] = (uint8_t)(c->recv_seq >> 16); tcp[10] = (uint8_t)(c->recv_seq >> 8); tcp[11] = (uint8_t)c->recv_seq;
     tcp[12] = (uint8_t)((tcp_header_length / 4) << 4); tcp[13] = flags;
-    uint32_t used = c->rx_len - c->rx_rd;
-    uint32_t window = sizeof(c->rx) > used ? (uint32_t)sizeof(c->rx) - used : 0;
+    uint32_t window = c->rx_rd ? 0 : (uint32_t)(sizeof(c->rx) - c->rx_len);
     if (window > 65535) window = 65535;
     tcp[14] = (uint8_t)(window >> 8); tcp[15] = (uint8_t)window;
     tcp[16] = tcp[17] = tcp[18] = tcp[19] = 0;
@@ -1942,6 +1108,7 @@ static void tcp_server_emit(tcp_server_conn_t* c, uint32_t seq, uint8_t flags, c
     if (dlen) memcpy(tcp + tcp_header_length, data, dlen);
     uint16_t tc = tcp_csum(ip, tcp, tcp_header_length + dlen);
     tcp[16] = (uint8_t)(tc >> 8); tcp[17] = (uint8_t)tc;
+    c->last_tx = uptime_ticks;
     net_send_raw(pkt, off + 20 + tcp_header_length + dlen);
 }
 
@@ -1963,6 +1130,69 @@ static uint16_t tcp_server_mss_from_options(const uint8_t* tcp, uint32_t header_
     return 536u;
 }
 
+static void tcp_server_emit(tcp_server_conn_t* c, uint32_t seq, uint8_t flags, const uint8_t* data, uint32_t dlen);
+
+
+static void tcp_server_reap(tcp_server_conn_t* c, int send_reset) {
+    if (c->state) {
+        if (send_reset) {
+            if (c->state == 2) tcp_server_emit(c, c->send_seq, 0x14, NULL, 0);
+            else tcp_server_emit(c, c->recv_seq, 0x14, NULL, 0);
+        } else if (c->state == 2 && !c->local_closed) {
+            tcp_server_emit(c, c->send_seq, 0x11, NULL, 0);
+            c->send_seq++;
+        }
+    }
+    memset(c, 0, sizeof(*c));
+}
+
+
+void net_tcp_server_reap(void) {
+    for (int i = 0; i < TCP_SERVER_CONNECTIONS; i++) {
+        tcp_server_conn_t* c = &tcp_server_connections[i];
+        if (!c->state || c->busy) continue;
+
+        if (c->state == 1) {
+            if (uptime_ticks - c->last_rx >= TCP_SERVER_SYN_TIMEOUT_MS) {
+                memset(c, 0, sizeof(*c));
+                continue;
+            }
+            continue;
+        }
+
+        if (c->peer_closed) {
+            if (c->rx_rd == c->rx_len && uptime_ticks - c->last_rx >= 1000) memset(c, 0, sizeof(*c));
+            continue;
+        }
+
+        if (uptime_ticks - c->last_rx >= TCP_SERVER_IDLE_TIMEOUT_MS) {
+            tcp_server_reap(c, 1);
+            continue;
+        }
+
+        if (uptime_ticks - c->last_tx >= TCP_SERVER_KEEPALIVE_MS) {
+            if (c->retries >= TCP_SERVER_KEEPALIVE_TRIES) {
+                tcp_server_reap(c, 1);
+                continue;
+            }
+            c->retries++;
+            c->keepalive++;
+            tcp_server_emit(c, c->send_seq - 1, 0x10, NULL, 0);
+        }
+    }
+}
+
+uint32_t net_tcp_server_stale_count(uint16_t port) {
+    uint32_t n = 0;
+    for (int i = 0; i < TCP_SERVER_CONNECTIONS; i++) {
+        tcp_server_conn_t* c = &tcp_server_connections[i];
+        if (!c->state || (port && c->local_port != port)) continue;
+        if (c->state == 1) n++;
+        else if (!c->peer_closed && uptime_ticks - c->last_rx >= TCP_SERVER_IDLE_TIMEOUT_MS) n++;
+    }
+    return n;
+}
+
 static void tcp_server_on_segment(const uint8_t* payload, uint32_t len, const uint8_t* src_ip) {
     if (len < 20) return;
     uint16_t sport = (uint16_t)((payload[0] << 8) | payload[1]);
@@ -1972,29 +1202,45 @@ static void tcp_server_on_segment(const uint8_t* payload, uint32_t len, const ui
     uint32_t hlen = (uint32_t)(payload[12] >> 4) * 4;
     uint8_t flags = payload[13];
     if (hlen < 20 || hlen > len) return;
+
     tcp_server_conn_t* c = NULL;
     int free_slot = -1;
+    int stale_slot = -1;
     for (int i = 0; i < TCP_SERVER_CONNECTIONS; i++) {
         tcp_server_conn_t* q = &tcp_server_connections[i];
-        if (q->state && q->local_port == dport && q->peer_port == sport && q->peer_ip[0] == src_ip[0] && q->peer_ip[1] == src_ip[1] && q->peer_ip[2] == src_ip[2] && q->peer_ip[3] == src_ip[3]) { c = q; break; }
+        if (q->state && q->local_port == dport && q->peer_port == sport &&
+            q->peer_ip[0] == src_ip[0] && q->peer_ip[1] == src_ip[1] &&
+            q->peer_ip[2] == src_ip[2] && q->peer_ip[3] == src_ip[3]) { c = q; break; }
         if (!q->state && free_slot < 0) free_slot = i;
+        if (q->state == 1 && stale_slot < 0 &&
+            uptime_ticks - q->last_rx >= TCP_SERVER_SYN_TIMEOUT_MS) stale_slot = i;
     }
-    if (!c && (flags & 0x02) && tcp_server_is_listening(dport) && free_slot >= 0) {
+
+    if (!c && (flags & 0x02) && tcp_server_is_listening(dport)) {
+        if (free_slot < 0 && stale_slot >= 0) {
+            memset(&tcp_server_connections[stale_slot], 0, sizeof(tcp_server_conn_t));
+            free_slot = stale_slot;
+        }
+        if (free_slot < 0) return;
         c = &tcp_server_connections[free_slot];
         memset(c, 0, sizeof(*c));
         memcpy(c->peer_ip, src_ip, 4);
         if (!net_arp_resolve(src_ip, c->peer_mac)) { memset(c, 0, sizeof(*c)); return; }
-        c->local_port = dport; c->peer_port = sport;
+        c->local_port = dport;
+        c->peer_port = sport;
         c->peer_mss = tcp_server_mss_from_options(payload, hlen);
         c->recv_seq = seq + 1;
         c->send_seq = 0x6D2B79F5u ^ uptime_ticks ^ rdtsc_lo();
         if (!c->send_seq) c->send_seq = 1;
         c->state = 1;
+        c->last_rx = c->last_tx = uptime_ticks;
         tcp_server_emit(c, c->send_seq, 0x12, NULL, 0);
         c->send_seq++;
         return;
     }
     if (!c) return;
+
+    c->last_rx = uptime_ticks;
     c->peer_window = (uint16_t)((payload[14] << 8) | payload[15]);
     if (flags & 0x04) { memset(c, 0, sizeof(*c)); return; }
     if (flags & 0x02) {
@@ -2010,21 +1256,34 @@ static void tcp_server_on_segment(const uint8_t* payload, uint32_t len, const ui
         return;
     }
     if (c->state != 2) return;
-    if ((flags & 0x10) && (int32_t)(ack - c->send_acked) >= 0 && (int32_t)(c->send_seq - ack) >= 0) c->send_acked = ack;
+
+    if (c->keepalive) {
+        c->keepalive = 0;
+        c->retries = 0;
+    }
+    if ((flags & 0x10) && (int32_t)(ack - c->send_acked) >= 0 && (int32_t)(c->send_seq - ack) >= 0) {
+        c->send_acked = ack;
+        c->retries = 0;
+    }
+
     uint32_t dlen = len - hlen;
     if (dlen && seq == c->recv_seq) {
         if (c->rx_len + dlen > sizeof(c->rx) && c->rx_rd) {
             uint32_t keep = c->rx_len - c->rx_rd;
             for (uint32_t i = 0; i < keep; i++) c->rx[i] = c->rx[c->rx_rd + i];
-            c->rx_len = keep; c->rx_rd = 0;
+            c->rx_len = keep;
+            c->rx_rd = 0;
         }
         if (dlen <= sizeof(c->rx) - c->rx_len) {
             memcpy(c->rx + c->rx_len, payload + hlen, dlen);
-            c->rx_len += dlen; c->recv_seq += dlen;
+            c->rx_len += dlen;
+            c->recv_seq += dlen;
         }
     }
     if ((flags & 0x01) && seq + dlen == c->recv_seq) { c->recv_seq++; c->peer_closed = 1; }
-    if (dlen || (flags & 0x01)) tcp_server_emit(c, c->send_seq, 0x10, NULL, 0);
+
+    if (dlen || (flags & 0x01) || c->peer_closed || !(flags & 0x10))
+        tcp_server_emit(c, c->send_seq, 0x10, NULL, 0);
 }
 
 int net_tcp_is_listening(uint16_t port) { return tcp_server_is_listening(port); }
@@ -2044,17 +1303,26 @@ int net_tcp_server_accept(uint16_t port) {
     return -1;
 }
 
+
+static int tcp_server_send_fail(tcp_server_conn_t* c, uint32_t done, int abort_link) {
+    if (abort_link) tcp_server_reap(c, 1);
+    c->busy = 0;
+    return done ? (int)done : -1;
+}
+
 int net_tcp_server_send(int handle, const uint8_t* data, uint32_t len) {
     if (handle < 0 || handle >= TCP_SERVER_CONNECTIONS || (!data && len)) return -1;
     tcp_server_conn_t* c = &tcp_server_connections[handle];
     if (c->state != 2 || c->local_closed) return -1;
+    c->busy = 1;
+    uint32_t started = uptime_ticks;
     uint32_t done = 0;
     while (done < len) {
-        uint32_t window_started = uptime_ticks;
         while (!c->peer_window) {
             net_poll();
-            if (!c->state) return done ? (int)done : -1;
-            if (uptime_ticks - window_started > 3000) return done ? (int)done : -1;
+            if (!c->state) return tcp_server_send_fail(c, done, 0);
+            if (uptime_ticks - started >= TCP_SERVER_SEND_TIMEOUT_MS)
+                return tcp_server_send_fail(c, done, 1);
             delay_ms(1);
         }
         uint32_t batch_length = c->peer_window;
@@ -2073,13 +1341,13 @@ int net_tcp_server_send(int handle, const uint8_t* data, uint32_t len) {
         }
         uint32_t batch_end = c->send_seq;
         uint32_t last_retry = uptime_ticks;
-        uint32_t started = uptime_ticks;
         uint32_t retries = 0;
         while ((int32_t)(c->send_acked - batch_end) < 0) {
             net_poll();
-            if (!c->state) return done ? (int)done : -1;
+            if (!c->state) return tcp_server_send_fail(c, done, 0);
             if (uptime_ticks - last_retry >= 500) {
-                if (retries++ >= 5) return done ? (int)done : -1;
+                if (retries++ >= 5 || uptime_ticks - started >= TCP_SERVER_SEND_TIMEOUT_MS)
+                    return tcp_server_send_fail(c, done, 1);
                 uint32_t offset = (uint32_t)(c->send_acked - batch_seq);
                 if (offset > sent) offset = 0;
                 while (offset < sent) {
@@ -2092,17 +1360,21 @@ int net_tcp_server_send(int handle, const uint8_t* data, uint32_t len) {
                 }
                 last_retry = uptime_ticks;
             }
-            if (uptime_ticks - started > 3000) return done ? (int)done : -1;
+            if (uptime_ticks - started >= TCP_SERVER_SEND_TIMEOUT_MS)
+                return tcp_server_send_fail(c, done, 1);
             delay_ms(1);
         }
         done += batch_length;
     }
+    c->busy = 0;
     return (int)done;
 }
 
 int net_tcp_server_recv(int handle, uint8_t* out, uint32_t max, uint32_t timeout_ms) {
     if (handle < 0 || handle >= TCP_SERVER_CONNECTIONS || !out || !max) return -1;
     tcp_server_conn_t* c = &tcp_server_connections[handle];
+    if (c->state != 2) return -1;
+    c->busy = 1;
     uint32_t start = uptime_ticks;
     for (;;) {
         net_poll();
@@ -2111,10 +1383,11 @@ int net_tcp_server_recv(int handle, uint8_t* out, uint32_t max, uint32_t timeout
             memcpy(out, c->rx + c->rx_rd, n); c->rx_rd += n;
             if (c->rx_rd == c->rx_len) c->rx_rd = c->rx_len = 0;
             tcp_server_emit(c, c->send_seq, 0x10, NULL, 0);
+            c->busy = 0;
             return (int)n;
         }
-        if (!c->state || c->peer_closed) return -1;
-        if (!timeout_ms || uptime_ticks - start >= timeout_ms) return 0;
+        if (!c->state || c->peer_closed) { c->busy = 0; return -1; }
+        if (!timeout_ms || uptime_ticks - start >= timeout_ms) { c->busy = 0; return 0; }
         delay_ms(1);
     }
 }
@@ -2141,13 +1414,19 @@ void net_tcp_server_close(int handle) {
         tcp_server_emit(c, c->send_seq, 0x11, NULL, 0);
         c->send_seq++;
         c->local_closed = 1;
+    } else if (c->state == 1) {
+        tcp_server_emit(c, c->recv_seq, 0x14, NULL, 0);
     }
     memset(c, 0, sizeof(*c));
 }
 
 void net_tcp_server_stop(uint16_t port) {
-    for (int i = 0; i < TCP_SERVER_CONNECTIONS; i++) if (tcp_server_connections[i].state && tcp_server_connections[i].local_port == port) net_tcp_server_close(i);
-    for (int i = 0; i < TCP_SERVER_LISTENERS; i++) if (tcp_server_listeners[i] == port) tcp_server_listeners[i] = 0;
+    for (int i = 0; i < TCP_SERVER_CONNECTIONS; i++) {
+        tcp_server_conn_t* c = &tcp_server_connections[i];
+        if (c->state && c->local_port == port) net_tcp_server_close(i);
+    }
+    for (int i = 0; i < TCP_SERVER_LISTENERS; i++)
+        if (tcp_server_listeners[i] == port) tcp_server_listeners[i] = 0;
 }
 
 static uint32_t rdtsc_lo(void) {
@@ -2249,16 +1528,6 @@ int net_tcp_connect(const uint8_t* ip, uint16_t port,
     return total > 0 ? (int)total : -1;
 }
 
-                                                                      
-                                                                       
-                                                                       
-                                                                       
-                                                                       
-                                                                       
-                                                                       
-                                                                       
-                                                                       
-                                                                      
 
 int  net_http_last_status = 0;
 char net_http_last_location[1024];
@@ -2324,7 +1593,7 @@ static int conn_recv(uint8_t* out, int max, int timeout_ms) {
     return http_conn.secure ? tls_read(&https_tls, out, max, timeout_ms) : net_tcp_recv(out, (uint32_t)max, (uint32_t)timeout_ms);
 }
 
-                                                                              
+
 static int http_connect(const char* host, uint16_t port, int secure) {
     if (http_conn.open && http_conn.secure == secure && http_conn.port == port &&
         my_strncmp_prefix(http_conn.host, host) && strlen(http_conn.host) == strlen(host) && http_conn_alive())
@@ -2391,10 +1660,10 @@ static int value_has_ci(const char* v, const char* word) {
     return 0;
 }
 
-                                         
+
 typedef struct {
-    int state;                                                                
-    int skipping;                                   
+    int state;
+    int skipping;
     uint32_t remain;
     int line_empty;
     int done;
@@ -2521,7 +1790,7 @@ int net_http_request(const char* method, const char* url, const char* extra_head
             return -1;
         }
 
-                                   
+
         int hl = 0, head_end = -1, got_first = 0;
         while (head_end < 0 && hl < HTTP_HDR_MAX - 1) {
             int n = conn_recv(http_hdr + hl, HTTP_HDR_MAX - 1 - hl, got_first ? 10000 : 15000);
@@ -2536,16 +1805,16 @@ int net_http_request(const char* method, const char* url, const char* extra_head
         }
         if (head_end < 0) {
             http_close_conn();
-            if (reused && hl == 0) continue;                                                            
+            if (reused && hl == 0) continue;
             if (hl <= 0) return -1;
-                                                                              
+
             uint32_t n = (uint32_t)hl < out_max ? (uint32_t)hl : out_max;
             for (uint32_t i = 0; i < n; i++) out_buf[i] = http_hdr[i];
             return (int)n;
         }
         http_hdr[hl] = 0;
 
-                                    
+
         int status = 0, http10 = 0;
         uint32_t clen = 0; int have_clen = 0, chunked = 0, enc = 0, close_after = 0;
         {
@@ -2573,13 +1842,13 @@ int net_http_request(const char* method, const char* url, const char* extra_head
         if (close_after < 0) close_after = 0;
         net_http_last_status = status;
 
-                                                         
+
         if (status >= 100 && status < 200) { http_close_conn(); continue; }
 
         int no_body = (status == 204 || status == 304 || !strcmp(method, "HEAD") || !strcmp(method, "head"));
-        if (!chunked && !have_clen && !no_body) close_after = 1;                                 
+        if (!chunked && !have_clen && !no_body) close_after = 1;
 
-                          
+
         uint8_t* dst = enc ? http_zbuf : out_buf;
         uint32_t dst_max = enc ? (uint32_t)HTTP_ZBUF_MAX : out_max;
         uint32_t body_len = 0;
@@ -2608,7 +1877,7 @@ int net_http_request(const char* method, const char* url, const char* extra_head
             while (got < clen) {
                 uint32_t room = dst_max - body_len;
                 if (room == 0) {
-                                                                                                               
+
                     if (clen - got > 65536) { close_after = 1; break; }
                     int n = conn_recv(rbuf, sizeof(rbuf), 10000);
                     if (n <= 0) { close_after = 1; break; }
@@ -2641,7 +1910,7 @@ int net_http_request(const char* method, const char* url, const char* extra_head
             return (int)n;
         }
         if (enc == 3) {
-                                                                                               
+
             return 0;
         }
         return (int)body_len;

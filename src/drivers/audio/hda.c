@@ -1,9 +1,6 @@
 #include "kernel.h"
 #include "audio.h"
 
- 
- 
- 
 
 #define HDA_GCAP    0x00
 #define HDA_VMIN    0x02
@@ -49,13 +46,13 @@
 #define HDA_SD_BDLPL 0x18
 #define HDA_SD_BDLPU 0x1C
 
- 
+
 #define HDA_BDL_COUNT 32
 typedef struct {
     uint32_t addr_lo;
     uint32_t addr_hi;
     uint32_t len;
-    uint32_t flags;  
+    uint32_t flags;
 } __attribute__((packed)) hda_bdle_t;
 
 static uintptr_t hda_mmio = 0;
@@ -69,8 +66,8 @@ static uint32_t* corb = NULL;
 static uint64_t* rirb = NULL;
 static hda_bdle_t* bdl = NULL;
 static int16_t* dma_buffer = NULL;
-static uint8_t cur_stream = 0;  
-static uint8_t sd_offset = 0x80;  
+static uint8_t cur_stream = 0;
+static uint8_t sd_offset = 0x80;
 
 static inline uint8_t mmio_read8(uint32_t off){ return *(volatile uint8_t*)((uintptr_t)hda_regs + off); }
 static inline uint16_t mmio_read16(uint32_t off){ return *(volatile uint16_t*)((uintptr_t)hda_regs + off); }
@@ -85,11 +82,11 @@ bool hda_probe(uint8_t bus, uint8_t slot, uint8_t func){
     if (base!=0x04 || sub!=0x03) return false;
     uint32_t bar0 = pci_config_read(bus,slot,func,0x10);
     uint32_t bar1 = pci_config_read(bus,slot,func,0x14);
-     
+
     bool is_mem = !(bar0 & 1);
     if (!is_mem) return false;
     uint64_t mmio_base = bar0 & 0xFFFFFFF0;
-    if (bar0 & 4){  
+    if (bar0 & 4){
         mmio_base |= ((uint64_t)bar1) << 32;
         mmio_base &= 0xFFFFFFFFFFFFFFF0ULL;
     }
@@ -102,24 +99,24 @@ bool hda_probe(uint8_t bus, uint8_t slot, uint8_t func){
     irq_line = irqreg & 0xFF;
     serial_puts("[hda] probe ok bus "); serial_putdec(bus); serial_puts(" slot "); serial_putdec(slot);
     serial_puts(" MMIO 0x"); serial_puthex32((uint32_t)mmio_base); serial_puts(" IRQ "); serial_putdec(irq_line); serial_puts("\n");
-     
-     
+
+
     uint32_t cmd = pci_config_read(bus,slot,func,0x04);
-    cmd |= 0x02;  
-    cmd |= 0x04;  
-    cmd &= ~0x04000000;  
+    cmd |= 0x02;
+    cmd |= 0x04;
+    cmd &= ~0x04000000;
     pci_config_write(bus,slot,func,0x04, cmd);
     return true;
 }
 
 static bool hda_reset(void){
     if (!hda_regs) return false;
-     
+
     mmio_write32(HDA_GCTL, 0);
     audio_delay_ms(10);
-     
+
     mmio_write32(HDA_GCTL, 1);
-     
+
     for (int i=0;i<100;i++){
         uint32_t gctl = mmio_read32(HDA_GCTL);
         if (gctl & 1) break;
@@ -134,21 +131,21 @@ static bool hda_reset(void){
 }
 
 static void hda_setup_corb_rirb(void){
-     
+
     corb = (uint32_t*)kmalloc(2048);
     rirb = (uint64_t*)kmalloc(2048);
     uintptr_t a = (uintptr_t)corb; if (a & 0x7F) corb = (uint32_t*)(((a+0x7F)&~0x7F));
     a = (uintptr_t)rirb; if (a & 0x7F) rirb = (uint64_t*)(((a+0x7F)&~0x7F));
     memset(corb, 0, 1024);
     memset(rirb, 0, 2048);
-     
+
     uint32_t lo = (uint32_t)(uintptr_t)corb;
     uint32_t hi = (uint32_t)(((uint64_t)(uintptr_t)corb) >> 32);
     mmio_write32(HDA_CORBLBASE, lo);
     mmio_write32(HDA_CORBUBASE, hi);
-     
+
     mmio_write16(HDA_CORBWP, 0);
-     
+
     mmio_write16(HDA_CORBRP, 0x8000);
     for (int i=0;i<10;i++){
         if (mmio_read16(HDA_CORBRP) & 0x8000) break;
@@ -159,34 +156,30 @@ static void hda_setup_corb_rirb(void){
         if (!(mmio_read16(HDA_CORBRP) & 0x8000)) break;
         audio_delay_ms(1);
     }
-     
-    mmio_write8(HDA_CORBCTL, 0x02);  
-     
+
+    mmio_write8(HDA_CORBCTL, 0x02);
+
     lo = (uint32_t)(uintptr_t)rirb;
     hi = (uint32_t)(((uint64_t)(uintptr_t)rirb)>>32);
     mmio_write32(HDA_RIRBLBASE, lo);
     mmio_write32(HDA_RIRBUBASE, hi);
-    mmio_write16(HDA_RIRBWP, 0x8000);  
+    mmio_write16(HDA_RIRBWP, 0x8000);
     mmio_write16(HDA_RIRBWP, 0);
-    mmio_write8(0x5C, 0x02);  
+    mmio_write8(0x5C, 0x02);
     serial_puts("[hda] CORB/RIRB setup done\n");
 }
 
 static uint32_t hda_send_verb(uint32_t verb){
-     
-     
-     
+
+
     mmio_write32(HDA_IC, verb);
-     
-     
-     
-     
-     
+
+
     for (int i=0;i<100;i++){
         uint16_t ics = mmio_read16(HDA_ICS);
-        if (ics & 0x02){  
+        if (ics & 0x02){
             uint32_t resp = mmio_read32(HDA_IR);
-            mmio_write16(HDA_ICS, 0x02);  
+            mmio_write16(HDA_ICS, 0x02);
             return resp;
         }
         audio_delay_ms(1);
@@ -195,101 +188,94 @@ static uint32_t hda_send_verb(uint32_t verb){
 }
 
 static void hda_codec_init(void){
-     
+
     uint16_t statests = mmio_read16(0x0E);
     serial_puts("[hda] STATESTS 0x"); serial_puthex32(statests); serial_puts("\n");
-     
-     
-     
-     
-     
+
+
     uint32_t verb = (0 << 28) | (0 << 20) | (0xF00 << 8) | 0x00;
     uint32_t resp = hda_send_verb(verb);
     serial_puts("[hda] codec vendor resp 0x"); serial_puthex32(resp); serial_puts("\n");
-     
-    verb = (0<<28)|(0x01<<20)|(0xF00<<8)|0x04;  
+
+    verb = (0<<28)|(0x01<<20)|(0xF00<<8)|0x04;
     resp = hda_send_verb(verb);
     serial_puts("[hda] AFG type 0x"); serial_puthex32(resp); serial_puts("\n");
-     
-    verb = (0<<28)|(0x01<<20)|(0x705<<8)|0x00;  
+
+    verb = (0<<28)|(0x01<<20)|(0x705<<8)|0x00;
     resp = hda_send_verb(verb);
-     
-     
+
+
 }
 
 static void hda_setup_dma(void){
-     
-     
+
+
     uint16_t gcap = mmio_read16(HDA_GCAP);
     uint8_t n_out = (gcap >> 12) & 0x0F;
     uint8_t n_in = (gcap >> 8) & 0x0F;
     uint8_t n_bidir = (gcap >> 3) & 0x1F;
     serial_puts("[hda] GCAP 0x"); serial_puthex32(gcap); serial_puts(" out "); serial_putdec(n_out);
     serial_puts(" in "); serial_putdec(n_in); serial_puts(" bidir "); serial_putdec(n_bidir); serial_puts("\n");
-     
-     
-     
+
+
     uint32_t out_base = 0x80 + n_in * 0x20;
     sd_offset = (uint8_t)out_base;
-    cur_stream = 1;  
+    cur_stream = 1;
     serial_puts("[hda] using SD offset 0x"); serial_puthex32(sd_offset); serial_puts("\n");
 
-     
+
     bdl = (hda_bdle_t*)kmalloc(HDA_BDL_COUNT * sizeof(hda_bdle_t) + 128);
     dma_buffer = (int16_t*)kmalloc(AUDIO_BUFFER_FRAMES * 4 * AUDIO_FRAME_BYTES * 2 + 128);
     uintptr_t a = (uintptr_t)bdl; if (a & 0x7F) bdl = (hda_bdle_t*)(((a+0x7F)&~0x7F));
     a = (uintptr_t)dma_buffer; if (a & 0x7F) dma_buffer = (int16_t*)(((a+0x7F)&~0x7F));
     memset(bdl, 0, HDA_BDL_COUNT*sizeof(hda_bdle_t));
-     
+
     for (int i=0;i<HDA_BDL_COUNT;i++){
         uint64_t phys = (uint64_t)(uintptr_t)&dma_buffer[i * AUDIO_BUFFER_FRAMES * AUDIO_CHANNELS];
         bdl[i].addr_lo = (uint32_t)phys;
         bdl[i].addr_hi = (uint32_t)(phys>>32);
-        bdl[i].len = AUDIO_BUFFER_FRAMES * AUDIO_FRAME_BYTES;  
-        bdl[i].flags = 1;  
+        bdl[i].len = AUDIO_BUFFER_FRAMES * AUDIO_FRAME_BYTES;
+        bdl[i].flags = 1;
     }
-     
-     
-    mmio_write8(sd_offset + HDA_SD_CTL, 1);  
+
+
+    mmio_write8(sd_offset + HDA_SD_CTL, 1);
     audio_delay_ms(1);
     mmio_write8(sd_offset + HDA_SD_CTL, 0);
     audio_delay_ms(1);
-     
+
     for (int i=0;i<10;i++){
         if (!(mmio_read8(sd_offset + HDA_SD_CTL) & 1)) break;
         audio_delay_ms(1);
     }
-     
-     
-     
-     
-     
-    uint16_t fmt = 0x0011;  
-     
+
+
+    uint16_t fmt = 0x0011;
+
     mmio_write16(sd_offset + HDA_SD_FMT, fmt);
-     
+
     uint32_t cbl = HDA_BDL_COUNT * AUDIO_BUFFER_FRAMES * AUDIO_FRAME_BYTES;
     mmio_write32(sd_offset + HDA_SD_CBL, cbl);
-     
+
     mmio_write16(sd_offset + HDA_SD_LVI, HDA_BDL_COUNT - 1);
-     
+
     uint32_t lo = (uint32_t)(uintptr_t)bdl;
     uint32_t hi = (uint32_t)(((uint64_t)(uintptr_t)bdl)>>32);
     mmio_write32(sd_offset + HDA_SD_BDLPL, lo);
     mmio_write32(sd_offset + HDA_SD_BDLPU, hi);
-     
-     
+
+
     uint32_t ctl = mmio_read32(sd_offset + HDA_SD_CTL);
     ctl = (ctl & ~0x00F00000) | ((cur_stream & 0xF) << 20);
     mmio_write32(sd_offset + HDA_SD_CTL, ctl);
-     
+
     mmio_write16(sd_offset + HDA_SD_FIFOW, 32);
-     
-     
+
+
     uint32_t intctl = mmio_read32(HDA_INTCTL);
-    intctl |= (1u<<31) | (1u<<30);  
-     
-     
+    intctl |= (1u<<31) | (1u<<30);
+
+
     intctl |= 0xFF;
     mmio_write32(HDA_INTCTL, intctl);
     serial_puts("[hda] DMA BDL setup CBL "); serial_putdec(cbl); serial_puts(" fmt 0x"); serial_puthex32(fmt); serial_puts("\n");
@@ -305,16 +291,16 @@ bool hda_init(void){
     hda_codec_init();
     hda_setup_dma();
 
-     
+
     uint8_t ctl = mmio_read8(sd_offset + HDA_SD_CTL);
     ctl |= HDA_SD_CTL_RUN | HDA_SD_CTL_IOCE;
     mmio_write8(sd_offset + HDA_SD_CTL, ctl);
-     
+
     audio_delay_ms(10);
     uint8_t sts = mmio_read8(sd_offset + HDA_SD_STS);
     serial_puts("[hda] STS after run 0x"); serial_puthex32(sts); serial_puts("\n");
     initialized = true;
-     
+
     if (irq_line < 16) pic_unmask_irq(irq_line);
     else { pic_unmask_irq(10); pic_unmask_irq(11); }
     serial_puts("[hda] DMA started\n");
@@ -329,18 +315,17 @@ void hda_shutdown(void){
 
 bool hda_submit(const int16_t* frames, size_t frame_count){
     if (!initialized || !bdl || !dma_buffer) return false;
-     
+
     static uint8_t write_idx = 0;
     int16_t* dest = &dma_buffer[write_idx * AUDIO_BUFFER_FRAMES * AUDIO_CHANNELS];
     for (size_t i=0;i<frame_count*AUDIO_CHANNELS;i++) dest[i]=frames[i];
-     
-     
-     
+
+
     uint32_t lpib = mmio_read32(sd_offset + HDA_SD_LPIB);
-     
-     
+
+
     write_idx = (write_idx + 1) % HDA_BDL_COUNT;
-     
+
     (void)lpib;
     return true;
 }
@@ -348,10 +333,10 @@ bool hda_submit(const int16_t* frames, size_t frame_count){
 void hda_tick(void){
     if (!initialized) return;
     uint8_t sts = mmio_read8(sd_offset + HDA_SD_STS);
-    if (sts & 0x1C){  
+    if (sts & 0x1C){
         mmio_write8(sd_offset + HDA_SD_STS, sts & 0x1C);
     }
-     
+
     uint32_t intsts = mmio_read32(HDA_INTSTS);
     if (intsts){
         mmio_write32(HDA_INTSTS, intsts);

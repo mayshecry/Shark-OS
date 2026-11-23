@@ -6,9 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Host-side test harness for the SharkOS router. It stubs the small kernel
- * surface that router.c / router_cli.c / firewall.c need, then injects real
- * ethernet/IP/UDP frames into the registered service hooks. */
 
 #define TEST_DHCP_PACKET_SIZE 300
 
@@ -38,7 +35,7 @@ void net_set_rx_callback(net_rx_cb_t cb) { (void)cb; }
 int net_has_nic(void) { return 1; }
 void terminal_writestring(const char* text) { (void)text; }
 
-/* Fake a machine with an uplink adapter and a second NIC for the LAN. */
+
 static net_port_t test_ports[2];
 void net_port_scan(void) {
     memset(test_ports, 0, sizeof(test_ports));
@@ -152,14 +149,14 @@ int net_tcp_server_recv(int handle, uint8_t* out, uint32_t max, uint32_t timeout
 int net_tcp_server_closed(int handle) { (void)handle; return 1; }
 void net_tcp_server_close(int handle) { (void)handle; }
 
-/* router_http.c is not linked into this test; these stubs stand in for it. */
+
 int router_http_start(uint16_t port) { (void)port; return 0; }
 void router_http_stop(void) { }
 void router_http_poll(void) { }
 int router_http_is_active(void) { return router_get_config()->http_running; }
 uint16_t router_http_port(void) { return router_get_config()->http_port; }
 
-/* Minimal in-memory filesystem for `rtr save` / `rtr load`. */
+
 struct fs_node* root;
 static struct fs_node test_root_node;
 static struct fs_node test_dir_node;
@@ -216,9 +213,6 @@ int fs_node_write(struct fs_node* node, uint32_t offset, const void* data, uint3
 int fs_node_sync(struct fs_node* node) { (void)node; return 0; }
 const char* fs_node_data(const struct fs_node* node) { return node ? node->content : 0; }
 
-/* ------------------------------------------------------------------ */
-/* frame helpers                                                       */
-/* ------------------------------------------------------------------ */
 
 static uint16_t checksum16(const uint8_t* data, uint32_t length) {
     uint32_t sum = 0;
@@ -306,7 +300,7 @@ static uint8_t dhcp_msg(uint8_t* buf, uint8_t type, const uint8_t* mac,
                         const uint8_t* server_id, const char* hostname) {
     memset(buf, 0, 300);
     buf[0] = 1; buf[1] = 1; buf[2] = 6;
-    put16(buf + 4, 0); /* xid filled below */
+    put16(buf + 4, 0);
     buf[4] = (uint8_t)(xid >> 24); buf[5] = (uint8_t)(xid >> 16);
     buf[6] = (uint8_t)(xid >> 8); buf[7] = (uint8_t)xid;
     put16(buf + 10, 0x8000);
@@ -402,21 +396,21 @@ int main(void) {
     router_init();
     if (!test_service_hook || !test_arp_hook || !test_local_hook || !test_forward_hook || !test_poll_hook) return 1;
     if (router_get_config()->http_port != ROUTER_DEFAULT_HTTP_PORT) return 2;
-    if (test_local_hook(lan) != 0) return 3;   /* inactive until rtr start */
+    if (test_local_hook(lan) != 0) return 3;
 
     if (router_start(69) != 0) return 4;
     if (test_local_hook(lan) != 1) return 53;
     if (!router_is_running() || !router_get_config()->http_running) return 5;
     if (firewall_service_count() < 3) return 6;
 
-    /* ---- DHCP DISCOVER -> OFFER ---- */
+
     dhcp_msg(payload, 1, client_mac, 0x12345678, 0, 0, "testbox");
     uint32_t frame_len = make_udp_frame(frame, client_mac, zero, broadcast, 68, 67,
                                        payload, TEST_DHCP_PACKET_SIZE);
     sent_count = 0;
     test_service_hook(frame, frame_len, zero, broadcast, 68, 67, 17);
     if (sent_count != 1 || sent_src_port != 67 || sent_dst_port != 68) return 7;
-    if (dhcp_option_type(sent_data, sent_len) != 2) return 8;   /* OFFER */
+    if (dhcp_option_type(sent_data, sent_len) != 2) return 8;
     uint8_t offered[4];
     memcpy(offered, sent_data + 16, 4);
     if (memcmp(offered, pool_ip, 4) != 0) return 9;
@@ -425,7 +419,7 @@ int main(void) {
         !dhcp_has_option(sent_data, sent_len, 6) ||
         !dhcp_has_option(sent_data, sent_len, 51)) return 10;
 
-    /* ---- DHCP REQUEST -> ACK + lease ---- */
+
     dhcp_msg(payload, 3, client_mac, 0x12345678, offered, lan, "laptop");
     frame_len = make_udp_frame(frame, client_mac, zero, broadcast, 68, 67,
                                payload, TEST_DHCP_PACKET_SIZE);
@@ -437,14 +431,14 @@ int main(void) {
     if (strcmp(lease->hostname, "laptop") != 0) return 13;
     if (router_lease_count() != 1) return 14;
 
-    /* ---- RELEASE ---- */
+
     dhcp_msg(payload, 7, client_mac, 0xAABBCCDD, offered, lan, 0);
     frame_len = make_udp_frame(frame, client_mac, offered, lan, 68, 67,
                                payload, TEST_DHCP_PACKET_SIZE);
     test_service_hook(frame, frame_len, offered, lan, 68, 67, 17);
     if (router_lease_count() != 0) return 15;
 
-    /* ---- DNS static record ---- */
+
     uint8_t nas_ip[4] = {192, 168, 10, 10};
     if (router_dns_add_record("nas.lan", nas_ip, 1) != 0) return 16;
     uint32_t qlen = dns_query(payload, 0xBEEF, "nas.lan", 1);
@@ -454,11 +448,11 @@ int main(void) {
     test_service_hook(frame, frame_len, client_ip, lan, 53001, 53, 17);
     if (sent_count != 1 || sent_dst_port != 53001) return 17;
     if (sent_len < 12) return 18;
-    if ((sent_data[3] & 0x0F) != 0) return 19;                  /* rcode = 0 */
-    if (((sent_data[6] << 8) | sent_data[7]) != 1) return 20;  /* one answer */
+    if ((sent_data[3] & 0x0F) != 0) return 19;
+    if (((sent_data[6] << 8) | sent_data[7]) != 1) return 20;
     if (memcmp(sent_data + sent_len - 4, nas_ip, 4) != 0) return 21;
 
-    /* ---- DNS forwarding + upstream response ---- */
+
     uint8_t upstream[4] = {9, 9, 9, 9};
     router_dns_set_upstream(upstream, 0);
     qlen = dns_query(payload, 0xCAFE, "example.com", 1);
@@ -489,13 +483,13 @@ int main(void) {
     if (!cached) return 25;
     (void)upstream_id;
 
-    /* ---- WAN static config via CLI ---- */
+
     buf[0] = 0;
     cli("rtr wan static 10.0.0.5 255.255.255.0 10.0.0.1 1.1.1.1", buf, sizeof(buf));
     if (net_ip[0] != 10 || net_ip[3] != 5 || !net_configured) return 26;
     if (router_get_config()->wan_mode != ROUTER_WAN_STATIC) return 27;
 
-    /* ---- extended firewall rule ---- */
+
     buf[0] = 0;
     cli("fw add deny tcp dir in from 203.0.113.0/24 dport 22 log comment \"no ssh\"", buf, sizeof(buf));
     if (firewall_rule_count() != 1) return 28;
@@ -515,7 +509,7 @@ int main(void) {
     if (firewall_log_count() < 1) return 35;
     if (!strstr(buf, "added firewall rule")) return 36;
 
-    /* ---- policies, services and profiles ---- */
+
     buf[0] = 0;
     cli("fw policy forward deny", buf, sizeof(buf));
     if (firewall_get_policy(FIREWALL_DIR_FORWARD) != FIREWALL_ACTION_DENY) return 37;
@@ -523,7 +517,7 @@ int main(void) {
     if (firewall_rule_count() < 3) return 38;
     cli("fw service add udp 9999", buf, sizeof(buf));
     if (firewall_service_count() < 4) return 39;
-    /* WAN-side DHCP/DNS/console requests must be denied by the profile. */
+
     uint8_t probe_payload[4] = {0};
     uint8_t probe_wan[4] = {10, 0, 0, 99};
     uint8_t probe_lan[4] = {192, 168, 10, 77};
@@ -537,7 +531,7 @@ int main(void) {
     if (firewall_input_allowed(frame, tcp_probe)) return 202;
     tcp_probe = make_tcp_frame(frame, probe_lan, lan, 40000, 69);
     if (!firewall_input_allowed(frame, tcp_probe)) return 203;
-    /* Changing the console port must move the WAN-side deny rule too. */
+
     cli("rtr http port 6969", buf, sizeof(buf));
     int found = 0;
     for (uint32_t i = 0; i < firewall_rule_count(); i++) {
@@ -551,7 +545,7 @@ int main(void) {
     cli("rtr http port 69", buf, sizeof(buf));
     if (router_get_config()->http_port != 69) return 206;
 
-    /* ---- port forward + NAT outbound rewrite ---- */
+
     uint8_t lan_client[4] = {192, 168, 10, 42};
     if (router_forward_add(ROUTER_PROTO_UDP, 8080, lan_client, 80, "web") != 0) return 40;
     uint8_t remote[4] = {8, 8, 4, 4};
@@ -559,15 +553,15 @@ int main(void) {
     memset(nat_payload, 0xAB, sizeof(nat_payload));
     uint32_t nat_len = make_udp_frame(frame, client_mac, lan_client, remote, 40000, 12345,
                                       nat_payload, sizeof(nat_payload));
-    /* forwarded frames reach the forward hook directly in the kernel */
+
     raw_count = 0;
     if (!test_forward_hook(frame, nat_len)) return 41;
     if (raw_count != 1 || raw_len != nat_len) return 42;
-    if (memcmp(raw_frame + 14 + 12, net_ip, 4) != 0) return 43;   /* SNAT applied */
+    if (memcmp(raw_frame + 14 + 12, net_ip, 4) != 0) return 43;
     const router_nat_entry_t* nat = router_get_nat(0);
     if (!nat || nat->lan_port != 40000) return 44;
 
-    /* ---- ICMP echo NAT (identifier translation) ---- */
+
     uint8_t icmp_remote[4] = {8, 8, 8, 8};
     uint8_t icmp_client[4] = {192, 168, 10, 43};
     uint32_t icmp_len = make_icmp_frame(frame, client_mac, icmp_client, icmp_remote, 8, 0x1234);
@@ -582,13 +576,13 @@ int main(void) {
     if (raw_count != 1 || memcmp(raw_frame + 14 + 16, icmp_client, 4) != 0) return 84;
     if (((raw_frame[14 + 20 + 4] << 8) | raw_frame[14 + 20 + 5]) != 0x1234) return 85;
 
-    /* ---- ARP reply for the LAN address ---- */
+
     raw_count = 0;
     if (test_arp_hook(lan, client_mac, client_ip) != 1) return 86;
     if (raw_count != 1 || raw_len != 42 || raw_frame[21] != 2) return 87;
     if (memcmp(raw_frame + 28, lan, 4) != 0) return 88;
 
-    /* ---- interface inventory / uplink + LAN port ---- */
+
     if (router_port_count() != 2) return 300;
     if (router_get_config()->wan_port != 0 || router_get_config()->lan_port != 1) return 301;
     if (router_get_config()->lan_shared) return 302;
@@ -602,7 +596,7 @@ int main(void) {
     cli("rtr port auto", buf, sizeof(buf));
     if (router_get_config()->lan_shared || router_get_config()->lan_port != 1) return 307;
 
-    /* ---- status JSON ---- */
+
     buf[0] = 0;
     uint32_t status_len = router_build_status(buf, sizeof(buf));
     if (!status_len || status_len >= sizeof(buf)) return 45;
@@ -613,7 +607,7 @@ int main(void) {
     FILE* f = fopen("/tmp/sharkos-router-status.json", "w");
     if (f) { fwrite(buf, 1, status_len, f); fclose(f); }
 
-    /* ---- save / load ---- */
+
     buf[0] = 0;
     cli("rtr save", buf, sizeof(buf));
     if (!strstr(buf, "saved")) return 47;
@@ -629,7 +623,7 @@ int main(void) {
     }
     if (!restored) return 49;
 
-    /* ---- CLI help/status and stop ---- */
+
     buf[0] = 0;
     cli("rtr help", buf, sizeof(buf));
     if (!strstr(buf, "rtr start")) return 50;

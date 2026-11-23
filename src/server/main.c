@@ -127,9 +127,13 @@ static void server_prompt(void) {
 }
 
 static void server_net_rearm(void) {
-    httpd_rearm();
-    ssh_server_rearm();
-    terminal_writestring("net: link restored; services re-armed\r\n");
+    int http = httpd_rearm();
+    int ssh = ssh_server_rearm();
+    terminal_writestring("net: link restored; services re-armed (");
+    server_putdec((uint32_t)http);
+    terminal_writestring(" http, ");
+    server_putdec((uint32_t)(ssh > 0 ? ssh : 0));
+    terminal_writestring(" ssh)\r\n");
 }
 
 static void server_service_poll(void) {

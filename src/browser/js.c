@@ -4219,7 +4219,7 @@ void br_js_run_document(br_node_t* doc) {
     }
 }
 
-                                                                                        
+
 static void form_submit_now(br_node_t* form) {
     if (!form) return;
     const char* action = br_attr(form, "action");
@@ -4244,7 +4244,7 @@ static void form_submit_now(br_node_t* form) {
         const char* val = k->value ? k->value : (br_attr(k, "value") ? br_attr(k, "value") : "");
         if (type && (br_strieq(type, "checkbox") || br_strieq(type, "radio"))) val = br_attr(k, "value") ? br_attr(k, "value") : "on";
         if (br_streq(k->tag, "select") && !k->value) {
-                                                            
+
             const char* sel = NULL; const char* firstv = NULL;
             for (br_node_t* o = k->first_child; o; o = o->next) {
                 if (o->type != BR_NODE_ELEMENT || !br_streq(o->tag, "option")) continue;
@@ -4297,7 +4297,7 @@ void br_js_dispatch_click(br_node_t* n) {
     if (!prevented) {
 
         br_node_t* form = NULL;
-                                                                                        
+
         br_node_t* ctl = n;
         for (br_node_t* p = n; p; p = p->parent) {
             if (p->type == BR_NODE_ELEMENT && (br_streq(p->tag, "button") || br_streq(p->tag, "input") || br_streq(p->tag, "a") || br_streq(p->tag, "form"))) { ctl = p; break; }
@@ -4434,9 +4434,8 @@ void br_js_dispatch_key(br_node_t* n, char c) {
     }
     if (obj_window >= 0) dispatch_event_on(obj_window, "keydown", ev, &prevented);
     if (c == '\n' && prevented && brs.needs_layout == 0) {
-                                                                                           
-                                                                                         
-                                       
+
+
         br_js_console("Enter keydown was preventDefault()ed by page script; submitting form natively");
         prevented = 0;
     }

@@ -155,8 +155,8 @@ typedef struct {
     int wallpaper_w;
     int wallpaper_h;
 
-    int wallpaper_id;                                                     
-    int wallpaper_fit;                                                    
+    int wallpaper_id;
+    int wallpaper_fit;
     bool alt_tab_active;
     int alt_tab_index;
     int wallpaper_mode;
@@ -196,7 +196,7 @@ int desktop_get_taskbar_hover(int mx, int my);
 void desktop_set_wallpaper_color(uint32_t top, uint32_t bottom);
 void desktop_set_wallpaper_mode(int mode);
 
-                                                                             
+
 #define WP_ID_CLASSIC 0
 #define WP_ID_KAWAII  1
 #define WP_ID_COTTAGE 2
@@ -359,4 +359,4 @@ extern int desktop_drag_window;
 extern int desktop_resize_window;
 extern int desktop_resize_edge;
 
-#endif 
+#endif

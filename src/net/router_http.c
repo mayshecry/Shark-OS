@@ -3,9 +3,6 @@
 #include "router.h"
 #include "router_ui_html.h"
 
-/* Management HTTP server for the SharkOS router. It uses the kernel's
- * lightweight TCP server API (the same one used by httpd/sshd) and is
- * polled from router_poll(), which is hooked into net_poll(). */
 
 #define RHTTP_CLIENTS        4
 #define RHTTP_REQUEST_MAX    4096
@@ -72,11 +69,11 @@ static uint32_t rhttp_parse_uint(const char* text) {
     return value;
 }
 
-/* Find a header value within the request head (case-insensitive name). */
+
 static int rhttp_header(const char* request, uint32_t head_end, const char* name,
                         char* out, uint32_t cap) {
     uint32_t pos = 0;
-    /* skip request line */
+
     while (pos + 1 < head_end && !(request[pos] == '\r' && request[pos + 1] == '\n')) pos++;
     if (pos + 1 >= head_end) return 0;
     pos += 2;
@@ -239,7 +236,7 @@ static void rhttp_handle(rhttp_client_t* client, uint32_t head_end) {
         return;
     }
 
-    /* POST */
+
     char length_text[16];
     uint32_t content_length = 0;
     if (rhttp_header(request, head_end, "Content-Length", length_text, sizeof(length_text)))
@@ -254,7 +251,7 @@ static void rhttp_handle(rhttp_client_t* client, uint32_t head_end) {
     memcpy(body, request + head_end, body_len);
     body[body_len] = 0;
     if (rhttp_ieq(path, "/api/cli")) {
-        /* Accept plain text commands, or {"cmd":"..."} JSON for clients. */
+
         char command[RHTTP_CLI_BODY_MAX + 1];
         const char* source = body;
         if (body[0] == '{') {
@@ -303,7 +300,7 @@ static void rhttp_handle(rhttp_client_t* client, uint32_t head_end) {
 int router_http_start(uint16_t port) {
     if (!port || !net_has_nic()) return -1;
     if (rhttp_active && rhttp_port == port) return 0;
-    if (net_tcp_is_listening(port)) return -1;   /* httpd/sshd/other listener owns it */
+    if (net_tcp_is_listening(port)) return -1;
     if (rhttp_active) router_http_stop();
     if (net_tcp_listen(port) != 0) return -1;
     rhttp_port = port;

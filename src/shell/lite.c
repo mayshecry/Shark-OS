@@ -91,6 +91,7 @@ void lite_kmain(void) {
         if (uptime_ticks - last_net_tick >= 10) {
             last_net_tick = uptime_ticks;
             net_poll();
+            (void)net_link_recovered();
         }
         char c = keyboard_getchar();
         if (c == 0) { yield(); continue; }

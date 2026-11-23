@@ -220,7 +220,7 @@ void terminal_capture_begin(char* buf, uint8_t* colors, int cap);
 void terminal_capture_end(void);
 
 extern bool terminal_in_desktop_window;
-extern int desktop_terminal_cols;                                              
+extern int desktop_terminal_cols;
 
 #define terminal_row     (panes[active_pane].row)
 #define terminal_column  (panes[active_pane].col)

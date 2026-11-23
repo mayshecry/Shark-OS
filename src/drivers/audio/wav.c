@@ -21,16 +21,16 @@ bool wav_parse(const uint8_t* data, size_t len, wav_info_t* out){
             audio_fmt = le16(data+off+8);
             channels = le16(data+off+10);
             sample_rate = le32(data+off+12);
-             
+
             bits = le16(data+off+22);
-             
+
             if (audio_fmt != 1) return false;
         } else if (tag[0]=='d' && tag[1]=='a' && tag[2]=='t' && tag[3]=='a'){
             pcm = data+off+8;
             pcm_len = sz;
         }
         off += 8 + sz;
-         
+
         if (sz & 1) off++;
     }
     if (!pcm || !sample_rate || !channels || !bits) return false;
@@ -46,14 +46,13 @@ int audio_play_wav(const uint8_t* wav_data, size_t wav_len, uint32_t volume, boo
     wav_info_t wi;
     if (!wav_parse(wav_data, wav_len, &wi)) return -1;
     audio_fmt_t fmt = (wi.bits==8) ? AUDIO_FMT_PCM_U8 : AUDIO_FMT_PCM_S16_LE;
-     
-     
-     
+
+
     return audio_play(wi.pcm_data, wi.pcm_bytes, wi.sample_rate, wi.channels, wi.bits, loop, volume);
 }
 
 int audio_play_wav_mem(const char* name, uint32_t volume){
-     
+
     struct fs_node* n = search_path(name);
     if (!n) n = find_node(root, (char*)name);
     if (!n || n->type != FS_FILE) return -1;
