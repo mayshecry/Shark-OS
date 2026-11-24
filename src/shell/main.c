@@ -87,8 +87,9 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
                 }
                 legacy_pos++;
             }
-
-
+                                                                               
+                                                                             
+                                                                             
             for (char* up = cmdline; *up; up++) {
                 if ((up == cmdline || up[-1] == ' ') && up[0] == 'u' && up[1] == 'r' && up[2] == 'l' && up[3] == '=') {
                     int o = 0;
@@ -139,7 +140,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         }
     }
 
-
+     
     if (total_system_memory > 137438953472ULL) {
         total_system_memory = 137438953472ULL;
     }
@@ -165,10 +166,12 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         lite_kmain();
     }
 
-
+                                                                      
+                                            
     if (kawaii_mode) theme_set(THEME_ID_KAWAII);
 
-
+                                                                    
+                                                                 
     boot_trace("boot screen begin");
     boot_screen_show();
     boot_trace("boot screen ready");
@@ -324,10 +327,15 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     terminal_clear();
     boot_screen_update("Starting desktop environment...", 85);
 
+    boot_setup_run();
+
     current_kernel_mode = KERNEL_MODE_DESKTOP;
     boot_trace("desktop initialization begin");
     rtc_init();
     desktop_init();
+    if (boot_theme_id != theme_get_id()) theme_set(boot_theme_id);
+    if (boot_theme_id == THEME_ID_KAWAII) kawaii_mode = true;
+    apply_theme(selected_theme);
     if (kawaii_mode) desktop_set_wallpaper(WP_ID_KAWAII);
     boot_trace("desktop initialization complete");
     boot_screen_update("Ready!", 100);
@@ -350,7 +358,13 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         }
     }
 
-    desktop_render();
+    if (boot_to_cli) {
+        current_kernel_mode = KERNEL_MODE_CLI;
+        redraw_all_panes();
+        print_prompt();
+    } else {
+        desktop_render();
+    }
 
     uint32_t last_clock_tick = uptime_ticks;
     uint32_t last_blink_tick = uptime_ticks;
@@ -533,7 +547,8 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
 
         browser_tick();
 
-
+                                                                   
+                                                                       
         diskmgmt_tick();
 
         if (desktop.dirty) {
