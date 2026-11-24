@@ -163,6 +163,16 @@ void terminal_clear(void) {
     terminal_writestring("\033[2J\033[H");
 }
 
+void terminal_hot_easter_egg(void) {
+}
+
+bool terminal_hot_active(void) {
+    return false;
+}
+
+void terminal_hot_clear(void) {
+}
+
 void draw_cursor(void) {
 }
 
@@ -179,14 +189,4 @@ long inflate_zlib(const uint8_t* in, size_t in_len, uint8_t* out, size_t out_len
 long inflate_gzip(const uint8_t* in, size_t in_len, uint8_t* out, size_t out_len) {
     (void)in; (void)in_len; (void)out; (void)out_len;
     return -1;
-}
-
-void terminal_hot_easter_egg(void) {
-}
-
-bool terminal_hot_active(void) {
-    return false;
-}
-
-void terminal_hot_clear(void) {
 }
