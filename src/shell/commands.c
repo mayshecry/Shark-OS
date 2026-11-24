@@ -8,6 +8,7 @@
 #include "desktop.h"
 #include "theme.h"
 #include "ata.h"
+#include "imgfetch_data.h"
 #include <stdint.h>
 #ifdef SERVER_IMAGE
 #include "server_console.h"
@@ -702,7 +703,7 @@ static void cmd_help(const char* args) {
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("APPS        - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    terminal_writestring("clear, colors, credits, help, neofetch, sharkfetch, whatis, fortune, cowsay, sl, banner, doom, browser [url]\n");
+    terminal_writestring("clear, colors, credits, help, neofetch, sharkfetch, imgfetch, whatis, fortune, cowsay, sl, banner, doom, browser [url]\n");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("POWER       - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
@@ -1649,10 +1650,14 @@ static void cmd_netstat(const char* args) {
     net_cmd_netstat();
 }
 
+                                                                          
+                                                                        
+                                                                           
+
 
 #include "audio.h"
 static void cmd_audio(const char* args){
-    char buf0[64];
+    char buf0[64];  
     if (strlen(args)==0 || strcmp(args,"status")==0){
         terminal_writestring("Audio backend: "); terminal_writestring((char*)audio_backend_name()); terminal_writestring("\n");
         terminal_writestring("Available: "); terminal_writestring(audio_available() ? "yes" : "no"); terminal_writestring("\n");
@@ -1709,7 +1714,7 @@ static void cmd_audio(const char* args){
         return;
     }
     if (strcmp(args,"test")==0){
-
+         
         int16_t* buf=(int16_t*)kmalloc(48000/2*4);
         if(!buf){ terminal_writestring("oom\n"); return; }
         int period=48000/440;
@@ -1791,16 +1796,15 @@ static void neofetch_write_art_line(const char* line, int compact) {
     }
 }
 
-static void shark_neofetch_show(void) {
-    char info[10][160];
+static void shark_fetch_fill_info(char info[10][160]) {
     for (uint32_t i = 0; i < 10; i++) info[i][0] = 0;
-    fetch_cat(info[0], "\x1b[1;96mroot@sharkos\x1b[0m");
+    fetch_cat(info[0], "\x1b[1;96mroot\x1b[1;97m@\x1b[1;93msharkos\x1b[0m");
     fetch_cat(info[1], "\x1b[94m----------------\x1b[0m");
     fetch_kv(info[2], "OS");
 #ifdef SERVER_IMAGE
-    fetch_cat(info[2], "SharkOS Server");
+    fetch_cat(info[2], "\x1b[1;93mSharkOS\x1b[97m Server\x1b[0m");
 #else
-    fetch_cat(info[2], "SharkOS");
+    fetch_cat(info[2], "\x1b[1;93mSharkOS\x1b[0m");
 #endif
     fetch_kv(info[3], "Kernel");
     fetch_cat(info[3], "Nemo Kernel, freestanding");
@@ -1844,13 +1848,22 @@ static void shark_neofetch_show(void) {
     fetch_kv(info[9], "Firewall");
     fetch_num(info[9], firewall_rule_count());
     fetch_cat(info[9], firewall_rule_count() == 1 ? " rule, default " : " rules, default ");
-    fetch_cat(info[9], firewall_get_default() == FIREWALL_ACTION_ALLOW ? "allow" : "deny");
+    fetch_cat(info[9], firewall_get_default() == FIREWALL_ACTION_ALLOW
+                          ? "\x1b[92mallow\x1b[0m" : "\x1b[91mdeny\x1b[0m");
+}
 
+static int fetch_terminal_columns(void) {
 #ifdef SERVER_IMAGE
-    int columns = desktop_terminal_cols;
+    return desktop_terminal_cols;
 #else
-    int columns = terminal_in_desktop_window ? desktop_terminal_cols : (int)term_cols;
+    return terminal_in_desktop_window ? desktop_terminal_cols : (int)term_cols;
 #endif
+}
+
+static void shark_neofetch_show(void) {
+    char info[10][160];
+    shark_fetch_fill_info(info);
+    int columns = fetch_terminal_columns();
     int compact = columns > 0 && columns < 60;
     int art_width = 0;
     for (uint32_t i = 0; i < NEOFETCH_ART_ROWS; i++) {
@@ -1887,7 +1900,456 @@ static void cmd_sharkfetch(const char* args) {
 }
 #endif
 
+
+
+
+
+
+
+
+
+#define IMGFETCH_INFO_LINES 10
+
+
+#define IMGFETCH_GAP_COLS 5
+
+static int fetch_visible_width(const char* text) {
+    int width = 0;
+    int state = 0; 
+    for (int i = 0; text[i]; i++) {
+        char c = text[i];
+        if (state == 1) {
+            if (c == '[') state = 2;
+            else state = 0;
+            continue;
+        }
+        if (state == 2) {
+            if (c >= 0x40 && c <= 0x7E) state = 0;
+            continue;
+        }
+        if (c == 27) { state = 1; continue; }
+        width++;
+    }
+    return width;
+}
+
+
+static uint8_t imgfetch_vga_to_ansi(uint8_t vga) {
+    static const uint8_t map[16] = {0, 4, 2, 6, 1, 5, 3, 7, 8, 12, 10, 14, 9, 13, 11, 15};
+    return map[vga & 0x0F];
+}
+
+
+static void imgfetch_put_sgr(uint8_t fg, uint8_t bg) {
+    char seq[16];
+    int n = 0;
+    fg = imgfetch_vga_to_ansi(fg);
+    bg = imgfetch_vga_to_ansi(bg);
+    seq[n++] = 27;
+    seq[n++] = '[';
+    if (fg < 8) { seq[n++] = '3'; seq[n++] = (char)('0' + fg); }
+    else { seq[n++] = '9'; seq[n++] = (char)('0' + (fg - 8)); }
+    seq[n++] = ';';
+    if (bg < 8) { seq[n++] = '4'; seq[n++] = (char)('0' + bg); }
+    else { seq[n++] = '1'; seq[n++] = '0'; seq[n++] = (char)('0' + (bg - 8)); }
+    seq[n++] = 'm';
+    seq[n] = 0;
+    terminal_writestring(seq);
+}
+
+#ifndef SERVER_IMAGE
+
+static void imgfetch_draw_pixels(int x0, int y0, int size, int clipx0, int clipy0, int clipx1, int clipy1) {
+    if (!lfbptr || size <= 0) return;
+    
+    const imgfetch_pixel_t* source_art = &imgfetch_pixels[IMGFETCH_PIXEL_COUNT - 1];
+    for (int i = 0; i < IMGFETCH_PIXEL_COUNT; i++) {
+        if ((int)imgfetch_pixels[i].size >= size) { source_art = &imgfetch_pixels[i]; break; }
+    }
+    uint32_t stride = (uint32_t)(screen_pitch / 4);
+    const uint8_t* p = source_art->rle;
+    const uint8_t* end = source_art->rle + source_art->rle_len;
+    const int source = (int)source_art->size;
+    if (size == source) {
+        
+        int y0c = clipy0 > y0 ? clipy0 : y0;
+        int y1c = clipy1 < y0 + size ? clipy1 : y0 + size;
+        int x0c = clipx0 > x0 ? clipx0 : x0;
+        int x1c = clipx1 < x0 + size ? clipx1 : x0 + size;
+        if (x0c < x1c && y0c < y1c) {
+            const uint8_t* p1 = source_art->rle;
+            const uint8_t* end1 = p1 + source_art->rle_len;
+            int sx1 = 0, sy1 = 0;
+            while (p1 + 2 <= end1 && sy1 < source) {
+                int run = p1[0];
+                uint8_t index = p1[1];
+                p1 += 2;
+                if (!run) continue;
+                uint32_t colour1 = imgfetch_pixel_palette[index % IMGFETCH_PIXEL_COLORS];
+                while (run-- > 0 && sy1 < source) {
+                    int py = y0 + sy1;
+                    if (py >= y0c && py < y1c) {
+                        int px = x0 + sx1;
+                        if (px >= x0c && px < x1c) lfbptr[(uint32_t)py * stride + (uint32_t)px] = colour1;
+                    }
+                    if (++sx1 >= source) { sx1 = 0; sy1++; }
+                }
+            }
+            return;
+        }
+    }
+    int sx = 0;
+    int sy = 0;
+    int last_ox = -1;
+    int last_oy = -1;
+    uint32_t colour = 0;
+    while (p + 2 <= end && sy < source) {
+        int run = p[0];
+        uint8_t index = p[1];
+        p += 2;
+        if (!run) continue;
+        colour = imgfetch_pixel_palette[index % IMGFETCH_PIXEL_COLORS];
+        while (run-- > 0 && sy < source) {
+            int ox = sx * size / source;
+            int oy = sy * size / source;
+            if (ox != last_ox || oy != last_oy) {
+                int px = x0 + ox;
+                int py = y0 + oy;
+                if (px >= clipx0 && px < clipx1 && py >= clipy0 && py < clipy1) {
+                    lfbptr[(uint32_t)py * stride + (uint32_t)px] = colour;
+                }
+                last_ox = ox;
+                last_oy = oy;
+            }
+            if (++sx >= source) {
+                sx = 0;
+                sy++;
+            }
+        }
+    }
+}
+
+void imgfetch_blit(int x, int y, int size, int clipx0, int clipy0, int clipx1, int clipy1) {
+    imgfetch_draw_pixels(x, y, size, clipx0, clipy0, clipx1, clipy1);
+}
+
+
+static int imgfetch_overlay_active = 0;
+static int imgfetch_overlay_x = 0;
+static int imgfetch_overlay_y = 0;
+static int imgfetch_overlay_size = 0;
+static int imgfetch_overlay_clipx1 = 0;
+static int imgfetch_overlay_clipy1 = 0;
+
+void imgfetch_overlay_redraw(void) {
+    if (!imgfetch_overlay_active || !lfbptr) return;
+    imgfetch_draw_pixels(imgfetch_overlay_x, imgfetch_overlay_y, imgfetch_overlay_size,
+                         imgfetch_overlay_x, (int)row_px((size_t)content_first_row),
+                         imgfetch_overlay_clipx1, imgfetch_overlay_clipy1);
+}
+
+void imgfetch_overlay_clear(void) {
+    imgfetch_overlay_active = 0;
+}
+
+
+static int imgfetch_pixel_show(char info[10][160], int info_width, int requested) {
+    if (!lfbptr || !screen_width || !screen_height) return 0;
+    if (terminal_in_desktop_window || lite_mode || legacy_mode) return 0;
+
+    int start_row = (int)terminal_row;
+    int pane_x0 = (int)col_px(panes[active_pane].col_start);
+    int cell_w = (int)font_cell_w;
+    int cell_h = (int)font_cell_h;
+    int panel_x = (int)col_px(panes[active_pane].col_end);
+    if (pane_x0 < 0) pane_x0 = 0;
+    if (panel_x > (int)screen_width) panel_x = (int)screen_width;
+    if (pane_x0 >= panel_x) return 0;
+
+    int available_rows = (int)term_max_row - start_row - 1;
+    if (available_rows < 5) return 0;
+
+    
+    int rows_wanted = IMGFETCH_INFO_LINES;
+    if (requested > 0) rows_wanted = available_rows;
+    if (rows_wanted > available_rows) rows_wanted = available_rows;
+
+    int size = panel_x - pane_x0 - (info_width + IMGFETCH_GAP_COLS) * cell_w;
+    int by_height = rows_wanted * cell_h;
+    if (size > by_height) size = by_height;
+    if (requested > 0 && size > requested * cell_w) size = requested * cell_w;
+    if (size > (int)imgfetch_pixels[IMGFETCH_PIXEL_COUNT - 1].size)
+        size = (int)imgfetch_pixels[IMGFETCH_PIXEL_COUNT - 1].size;
+    if (size < 48) return 0;
+
+    int art_cols = (size + cell_w - 1) / cell_w;
+    if (art_cols < 1) art_cols = 1;
+    int art_rows = (size + cell_h - 1) / cell_h;
+    if (art_rows > available_rows) return 0; 
+
+    int info_top = (art_rows - 10) / 2;
+    if (info_top < 0) info_top = 0;
+    int next_info = 0;
+    terminal_writestring("\x1b[0m");
+    for (int r = 0; r < art_rows; r++) {
+        for (int c = 0; c < art_cols + IMGFETCH_GAP_COLS; c++) terminal_putchar(' ');
+        terminal_writestring("\x1b[0m");
+        if (r >= info_top && next_info < 10) {
+            terminal_writestring(info[next_info]);
+            next_info++;
+        }
+        terminal_putchar('\n');
+    }
+    while (next_info < 10) {
+        terminal_writestring(info[next_info]);
+        terminal_putchar('\n');
+        next_info++;
+    }
+    terminal_writestring("\x1b[0m");
+
+    int clipy0 = (int)row_px((size_t)content_first_row);
+    imgfetch_overlay_x = pane_x0;
+    imgfetch_overlay_y = (int)row_px((size_t)start_row);
+    imgfetch_overlay_size = art_cols * cell_w;
+    imgfetch_overlay_clipx1 = panel_x;
+    imgfetch_overlay_clipy1 = (int)screen_height;
+    imgfetch_overlay_active = 1;
+    imgfetch_draw_pixels(pane_x0, (int)row_px((size_t)start_row), art_cols * cell_w,
+                         pane_x0, clipy0, panel_x, (int)screen_height);
+    return 1;
+}
+
+#define IMGFETCH_WIN_CELL_W 8
+#define IMGFETCH_WIN_CELL_H 16
+static int imgfetch_window_show(char info[10][160], int info_width, int requested) {
+    if (!terminal_in_desktop_window || !lfbptr) return 0;
+    int cols = desktop_terminal_cols;
+    if (cols < 12) return 0;
+
+    int art_rows = IMGFETCH_INFO_LINES;
+    if (requested > 0 && requested < art_rows) art_rows = requested;
+    int art_cols = art_rows * (IMGFETCH_WIN_CELL_H / IMGFETCH_WIN_CELL_W);
+    int need_cols = art_cols + IMGFETCH_GAP_COLS + info_width;
+
+    
+    desktop_terminal_widen(need_cols);
+    cols = desktop_terminal_cols;
+
+    if (need_cols <= cols && desktop_terminal_rows_available() >= art_rows + 1) {
+        terminal_writestring("\x1b[0m");
+        for (int r = 0; r < art_rows; r++) {
+            for (int c = 0; c < art_cols + IMGFETCH_GAP_COLS; c++) terminal_putchar(' ');
+            terminal_writestring(info[r]);
+            terminal_putchar('\n');
+        }
+        terminal_writestring("\x1b[0m");
+        desktop_terminal_image_attach(art_rows, 0, art_cols,
+                                      art_rows * IMGFETCH_WIN_CELL_H, 0);
+        return 1;
+    }
+
+    
+    int wanted_rows = art_rows + IMGFETCH_INFO_LINES + 1;
+    desktop_terminal_grow(wanted_rows);
+    int avail = desktop_terminal_rows_available();
+    if (avail < IMGFETCH_INFO_LINES + 4) return 0;
+
+    int room = avail - IMGFETCH_INFO_LINES - 1;
+    if (art_rows > room) art_rows = room;
+    if (art_rows < 4) return 0;
+    art_cols = art_rows * (IMGFETCH_WIN_CELL_H / IMGFETCH_WIN_CELL_W);
+    if (art_cols > cols - 2) {
+        art_cols = cols - 2;
+        art_rows = art_cols / (IMGFETCH_WIN_CELL_H / IMGFETCH_WIN_CELL_W);
+    }
+    if (art_cols < 8 || art_rows < 4) return 0;
+
+    int size = art_rows * IMGFETCH_WIN_CELL_H;
+    int baked = (int)imgfetch_pixels[IMGFETCH_PIXEL_COUNT - 1].size;
+    if (size > baked) size = baked;
+    if (size < 48) return 0;
+
+    terminal_writestring("\x1b[0m");
+    for (int r = 0; r < art_rows; r++) {
+        for (int c = 0; c < art_cols; c++) terminal_putchar(' ');
+        terminal_putchar('\n');
+    }
+    for (int i = 0; i < IMGFETCH_INFO_LINES; i++) {
+        terminal_writestring(info[i]);
+        terminal_putchar('\n');
+    }
+    terminal_writestring("\x1b[0m");
+    desktop_terminal_image_attach(art_rows, IMGFETCH_INFO_LINES, art_cols, size,
+                                  (cols - art_cols) / 2);
+    return 1;
+}
+#endif
+
+static void cmd_imgfetch(const char* args) {
+    char* cursor = (char*)args;
+    char* arg = shell_next_token(&cursor);
+    int requested = arg ? simple_atoi(arg) : 0;
+
+    char info[10][160];
+    shark_fetch_fill_info(info);
+    int info_width = 0;
+    for (uint32_t i = 0; i < 10; i++) {
+        int w = fetch_visible_width(info[i]);
+        if (w > info_width) info_width = w;
+    }
+
+    int columns = fetch_terminal_columns();
+    if (columns < 20) columns = 20;
+    int available_rows = (int)term_max_row - (int)content_first_row;
+    if (available_rows < 6) available_rows = 6;
+
+#ifndef SERVER_IMAGE
+    
+    terminal_hot_clear();
+    desktop_terminal_hot_set(0);
+    if (imgfetch_window_show(info, info_width, requested)) return;
+    if (imgfetch_pixel_show(info, info_width, requested)) return;
+    imgfetch_overlay_clear();
+    desktop_terminal_image_detach();
+#endif
+
+    const imgfetch_art_t* art = NULL;
+    int stacked = 0;
+    if (requested > 0) {
+        
+        for (int i = 0; i < IMGFETCH_ART_COUNT; i++) {
+            if ((int)imgfetch_arts[i].cols <= requested) { art = &imgfetch_arts[i]; break; }
+        }
+        if (!art) art = &imgfetch_arts[IMGFETCH_ART_COUNT - 1];
+        if ((int)art->cols > columns) {
+            for (int i = 0; i < IMGFETCH_ART_COUNT; i++) {
+                if ((int)imgfetch_arts[i].cols <= columns) { art = &imgfetch_arts[i]; break; }
+            }
+        }
+        stacked = (int)art->cols + IMGFETCH_GAP_COLS + info_width > columns;
+    } else {
+        const imgfetch_art_t* width_fit = NULL;
+        for (int i = 0; i < IMGFETCH_ART_COUNT; i++) {
+            const imgfetch_art_t* candidate = &imgfetch_arts[i];
+            if ((int)candidate->cols + IMGFETCH_GAP_COLS + info_width > columns) continue;
+            if (!width_fit) width_fit = candidate;
+            if ((int)candidate->rows <= IMGFETCH_INFO_LINES) { art = candidate; break; }
+        }
+        if (!art) art = width_fit;
+        if (!art) {
+            
+            stacked = 1;
+            for (int i = 0; i < IMGFETCH_ART_COUNT; i++) {
+                if ((int)imgfetch_arts[i].cols <= columns) { art = &imgfetch_arts[i]; break; }
+            }
+            if (!art) art = &imgfetch_arts[IMGFETCH_ART_COUNT - 1];
+        }
+    }
+
+    int info_top = ((int)art->rows - 10) / 2;
+    if (info_top < 0) info_top = 0;
+    int next_info = 0;
+    int row = 0;
+    int col = 0;
+    uint8_t cur_fg = VGA_COLOR_LIGHT_GREY;
+    uint8_t cur_bg = VGA_COLOR_BLACK;
+
+    const uint8_t* p = art->rle;
+    const uint8_t* end = art->rle + art->rle_len;
+    while (p + 4 <= end) {
+        int run = p[0];
+        char glyph = (char)p[1];
+        uint8_t fg = p[2];
+        uint8_t bg = p[3];
+        p += 4;
+        if (run == 0) {
+            if (!stacked) {
+                int padding = (int)art->cols + IMGFETCH_GAP_COLS - col;
+                while (padding-- > 0) terminal_putchar(' ');
+                terminal_writestring("\x1b[0m");
+                cur_fg = VGA_COLOR_LIGHT_GREY;
+                cur_bg = VGA_COLOR_BLACK;
+                if (row >= info_top && next_info < 10) {
+                    terminal_writestring(info[next_info]);
+                    next_info++;
+                }
+            }
+            terminal_putchar('\n');
+            row++;
+            col = 0;
+            continue;
+        }
+        if (fg != cur_fg || bg != cur_bg) {
+            imgfetch_put_sgr(fg, bg);
+            cur_fg = fg;
+            cur_bg = bg;
+        }
+        while (run-- > 0) {
+            terminal_putchar(glyph);
+            col++;
+        }
+    }
+    terminal_writestring("\x1b[0m");
+    if (next_info < 10) {
+        if (stacked) terminal_putchar('\n');
+        while (next_info < 10) {
+            terminal_writestring(info[next_info]);
+            terminal_putchar('\n');
+            next_info++;
+        }
+    }
+}
+
+#ifndef SERVER_IMAGE
+static void cmd_wm(const char* args) {
+    while (*args == ' ') args++;
+    if (!*args || strcmp(args, "status") == 0) {
+        terminal_writestring(tiling_is_enabled() ? "window manager: tiling\n"
+                                                 : "window manager: floating\n");
+        return;
+    }
+    if (strcmp(args, "tiling") == 0 || strcmp(args, "on") == 0) {
+        tiling_set(1);
+        terminal_writestring("window manager: tiling\n");
+        return;
+    }
+    if (strcmp(args, "floating") == 0 || strcmp(args, "off") == 0) {
+        tiling_set(0);
+        terminal_writestring("window manager: floating\n");
+        return;
+    }
+    if (strcmp(args, "toggle") == 0) {
+        tiling_set(!tiling_is_enabled());
+        terminal_writestring(tiling_is_enabled() ? "window manager: tiling\n"
+                                                 : "window manager: floating\n");
+        return;
+    }
+    terminal_writestring("usage: wm [tiling|floating|toggle|status]\n");
+}
+
+static void cmd_setup(const char* args) {
+    (void)args;
+    boot_setup_run();
+    terminal_writestring("setup: settings applied\n");
+}
+
+#endif
+
 static void cmd_rtr(const char* args) { router_command(args); }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 static void cmd_fw(const char* args)  { fw_command(args); }
 
 static const cmd_entry_t cmd_table[] = {
@@ -1933,9 +2395,13 @@ static const cmd_entry_t cmd_table[] = {
 #endif
     {"uptime", cmd_uptime},
     {"neofetch", cmd_neofetch},
+    {"imgfetch", cmd_imgfetch},
+    {"ifetch", cmd_imgfetch},
 #ifndef SERVER_IMAGE
     {"sharkfetch", cmd_sharkfetch},
     {"sfetch", cmd_sharkfetch},
+    {"wm", cmd_wm},
+    {"setup", cmd_setup},
 #endif
     {"poweroff", cmd_poweroff},
     {"reboot", cmd_reboot},
@@ -2013,12 +2479,15 @@ void execute_command(char* cmd) {
     while (*args == ' ') args++;
 
 #ifndef SERVER_IMAGE
+    if (terminal_hot_active()) terminal_hot_clear();
+    desktop_terminal_hot_set(0);
+    imgfetch_overlay_clear();
     if (strcmp(cmd_name, "hot") == 0) {
-        terminal_hot_easter_egg();
+        if (terminal_in_desktop_window) desktop_terminal_hot_set(1);
+        else terminal_hot_easter_egg();
         terminal_set_color(old_color);
         return;
     }
-    if (terminal_hot_active()) terminal_hot_clear();
 #endif
 
     cmd_handler_t handler = find_command(cmd_name);
