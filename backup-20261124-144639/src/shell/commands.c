@@ -1,0 +1,3802 @@
+#include "kernel.h"
+#include "sharkscript.h"
+#include "plugin_manager.h"
+#include "doom.h"
+#include "net.h"
+#include "firewall.h"
+#include "router.h"
+#include "desktop.h"
+#include "theme.h"
+#include "ata.h"
+#include "imgfetch_data.h"
+#include <stdint.h>
+#ifdef SERVER_IMAGE
+#include "server_console.h"
+#include "server_cli.h"
+#include "httpd.h"
+#include "ssh.h"
+#endif
+
+static void shark_neofetch_show(void);
+static char* shell_next_token(char** cursor);
+
+static int simple_atoi(const char* s) {
+    int result = 0;
+    while (*s >= '0' && *s <= '9') {
+        result = result * 10 + (*s - '0');
+        s++;
+    }
+    return result;
+}
+
+void print_prompt() {
+    size_t pane_idx = active_pane;
+    panes[pane_idx].col = panes[pane_idx].col_start;
+    terminal_column = panes[pane_idx].col_start;
+
+    if (terminal_row < content_first_row) {
+        terminal_row = content_first_row;
+    }
+
+    uint8_t ring0_bg = vga_entry_color(VGA_COLOR_BLACK, VGA_COLOR_LIGHT_CYAN);
+    uint8_t sep_color = vga_entry_color(VGA_COLOR_DARK_GREY, VGA_COLOR_BLACK);
+    uint8_t user_color = vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
+    uint8_t path_color = vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);
+    uint8_t prompt_color = vga_entry_color(VGA_COLOR_LIGHT_BROWN, VGA_COLOR_BLACK);
+
+    char path_buf[128];
+    char rev[128];
+    struct fs_node* n = current_dir;
+    int plen = 0;
+    rev[plen++] = '/';
+    while (n && n->parent) {
+        int namelen = strlen(n->name);
+        for (int k = namelen - 1; k >= 0; k--) rev[plen++] = n->name[k];
+        rev[plen++] = '/';
+        n = n->parent;
+    }
+    int j = 0;
+    for (int k = plen - 1; k >= 0; k--) path_buf[j++] = rev[k];
+    if (j > 0 && path_buf[j-1] != '/') path_buf[j++] = '/';
+    path_buf[j] = '\0';
+
+    terminal_set_color(ring0_bg);
+    terminal_write_direct(" RING0 ");
+
+    terminal_set_color(sep_color);
+    terminal_write_direct("│");
+
+    terminal_set_color(user_color);
+    terminal_write_direct(" root@shark ");
+
+    terminal_set_color(sep_color);
+    terminal_write_direct("│");
+
+    terminal_set_color(path_color);
+    terminal_write_direct(path_buf);
+
+    terminal_set_color(prompt_color);
+    terminal_write_direct(" $ ");
+
+    terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
+    panes[pane_idx].prompt_end_col = terminal_column;
+    draw_cursor();
+}
+
+static void print_tree(struct fs_node* node, int depth) {
+    for (int k = 0; k < depth; k++) terminal_writestring("  ");
+    terminal_writestring("|- ");
+    terminal_writestring(node->name);
+    if (node->type == FS_DIRECTORY) terminal_writestring("/");
+    terminal_writestring("\n");
+    if (node->type == FS_DIRECTORY) {
+        for (int k = 0; k < node->num_children; k++) {
+            if (k % 3 == 0) yield();
+            print_tree(node->children[k], depth + 1);
+        }
+    }
+}
+
+typedef void (*cmd_handler_t)(const char* args);
+
+typedef struct {
+    const char* name;
+    cmd_handler_t handler;
+} cmd_entry_t;
+
+static void cmd_ls(const char* args) {
+    int long_format = 0;
+    int show_all = 0;
+    char path[160] = ".";
+    if (strlen(args) >= 160) {
+        terminal_writestring("ls: path too long\n");
+        return;
+    }
+    char copy[160];
+    strcpy(copy, args);
+    char* cursor = copy;
+    char* token;
+    while ((token = shell_next_token(&cursor)) != NULL) {
+        if (strcmp(token, "-l") == 0) long_format = 1;
+        else if (strcmp(token, "-a") == 0) show_all = 1;
+        else if (strcmp(token, "-la") == 0 || strcmp(token, "-al") == 0) { long_format = 1; show_all = 1; }
+        else if (strcmp(path, ".") == 0) strcpy(path, token);
+        else {
+            terminal_writestring("usage: ls [-la] [directory]\n");
+            return;
+        }
+    }
+    struct fs_node* directory = fs_resolve_path(path);
+    if (!directory || directory->type != FS_DIRECTORY) {
+        terminal_writestring("ls: directory not found\n");
+        return;
+    }
+    if (long_format) {
+        terminal_writestring("total ");
+        char buf[16];
+        int_to_string(directory->num_children, buf);
+        terminal_writestring(buf);
+        terminal_writestring("\n");
+    }
+    for (int i = 0; i < directory->num_children; i++) {
+        struct fs_node* entry = directory->children[i];
+        if (!show_all && entry->name[0] == '.') continue;
+        if (long_format) {
+            terminal_writestring(entry->type == FS_DIRECTORY ? "d" : "-");
+            terminal_writestring("rw-r--r--  1 ");
+            terminal_writestring(current_user);
+            terminal_writestring("  ");
+            char sizebuf[16];
+            int_to_string((uint32_t)entry->content_len, sizebuf);
+            terminal_writestring(sizebuf);
+            terminal_putchar(' ');
+        }
+        terminal_writestring(entry->name);
+        if (entry->type == FS_DIRECTORY) terminal_putchar('/');
+        terminal_writestring("  ");
+        if (i % 4 == 0) yield();
+    }
+    terminal_writestring("\n");
+}
+
+static void cmd_cd(const char* args) {
+    if (strcmp(args, "..") == 0) {
+        if (current_dir->parent) current_dir = current_dir->parent;
+    } else if (strcmp(args, "/") == 0 || strcmp(args, "root") == 0) {
+        current_dir = root;
+    } else {
+        struct fs_node* target = fs_resolve_path(args);
+        if (target && target->type == FS_DIRECTORY) current_dir = target;
+        else terminal_writestring("Directory not found.\n");
+    }
+}
+
+static void cmd_pwd(const char* args) {
+    (void)args;
+    char path[256];
+    char rev[256];
+    struct fs_node* n = current_dir;
+    int plen = 0;
+    rev[plen++] = '/';
+    while (n && n->parent) {
+        int namelen = strlen(n->name);
+        for (int k = namelen - 1; k >= 0; k--) rev[plen++] = n->name[k];
+        rev[plen++] = '/';
+        n = n->parent;
+    }
+    int j = 0;
+    for (int k = plen - 1; k >= 0; k--) path[j++] = rev[k];
+    if (j > 0 && path[j-1] != '/') path[j++] = '/';
+    path[j] = '\0';
+    terminal_writestring(path);
+    terminal_writestring("\n");
+}
+
+static void cmd_cat(const char* args) {
+    if (strcasecmp(args, "cpuinfo") == 0 || (strchr(args, '/') && strstr(args, "cpuinfo"))) {
+        char cpu_model[49];
+        get_cpu_model(cpu_model);
+        terminal_writestring("processor\t: 0\n");
+        terminal_writestring("vendor_id\t: GenuineIntel\n");
+        terminal_writestring("cpu family\t: 6\n");
+        terminal_writestring("model\t\t: 42\n");
+        terminal_writestring("model name\t: ");
+        terminal_writestring(cpu_model);
+        terminal_writestring("\n");
+        terminal_writestring("stepping\t: 7\n");
+        terminal_writestring("cpu MHz\t\t: 2394.466\n");
+        terminal_writestring("cache size\t: 6144 KB\n");
+        terminal_writestring("fpu\t\t: yes\n");
+        terminal_writestring("fpu_exception\t: yes\n");
+        terminal_writestring("cpuid level\t: 5\n");
+        terminal_writestring("wp\t\t: yes\n");
+        terminal_writestring("flags\t\t: fpu vme de pse tsc msr pae mce cx8 apic\n");
+    } else if (strcasecmp(args, "meminfo") == 0 || (strchr(args, '/') && strstr(args, "meminfo"))) {
+        char buf[64];
+        uint32_t total_kb = (uint32_t)(total_system_memory / 1024);
+        uint64_t free_bytes = pmm_free_memory_bytes();
+        if (free_bytes > total_system_memory) free_bytes = total_system_memory;
+        uint32_t free_kb = (uint32_t)(free_bytes / 1024);
+        uint32_t avail_kb = free_kb;
+        uint32_t buffers_kb = 0;
+        uint32_t cached_kb = 0;
+        terminal_writestring("MemTotal:\t");
+        int_to_string(total_kb, buf); terminal_writestring(buf); terminal_writestring(" kB\n");
+        terminal_writestring("MemFree:\t");
+        int_to_string(free_kb, buf); terminal_writestring(buf); terminal_writestring(" kB\n");
+        terminal_writestring("MemAvailable:\t");
+        int_to_string(avail_kb, buf); terminal_writestring(buf); terminal_writestring(" kB\n");
+        terminal_writestring("Buffers:\t");
+        int_to_string(buffers_kb, buf); terminal_writestring(buf); terminal_writestring(" kB\n");
+        terminal_writestring("Cached:\t");
+        int_to_string(cached_kb, buf); terminal_writestring(buf); terminal_writestring(" kB\n");
+        terminal_writestring("SwapTotal:\t0 kB\n");
+        terminal_writestring("SwapFree:\t0 kB\n");
+    } else {
+        struct fs_node* target = fs_resolve_path(args);
+        if (target && target->type == FS_FILE) {
+            int yc = 0;
+            for (int idx = 0; idx < target->content_len; idx++) {
+                terminal_putchar(target->content[idx]);
+                if (target->content[idx] == '\n') {
+                    yc++;
+                    if (yc % 4 == 0) yield();
+                }
+            }
+        } else {
+            terminal_writestring("File not found.");
+        }
+    }
+}
+
+static void cmd_clear(const char* args) {
+    (void)args;
+    terminal_clear();
+}
+
+static void cmd_echo(const char* args) {
+    terminal_writestring(args);
+    terminal_writestring("\n");
+}
+
+static char* shell_next_token(char** cursor) {
+    while (**cursor == ' ' || **cursor == '\t') (*cursor)++;
+    if (!**cursor) return NULL;
+    char* token = *cursor;
+    while (**cursor && **cursor != ' ' && **cursor != '\t') (*cursor)++;
+    if (**cursor) *(*cursor)++ = 0;
+    return token;
+}
+
+static int shell_split_parent(const char* path, char* parent_path, uint32_t parent_capacity, char* name) {
+    if (!path || !*path || strlen(path) >= 160) return -1;
+    char normalized[160];
+    strcpy(normalized, path);
+    uint32_t length = (uint32_t)strlen(normalized);
+    while (length > 1 && normalized[length - 1] == '/') normalized[--length] = 0;
+    char* slash = NULL;
+    for (uint32_t i = 0; i < length; i++) if (normalized[i] == '/') slash = normalized + i;
+    const char* base = slash ? slash + 1 : normalized;
+    uint32_t base_length = (uint32_t)strlen(base);
+    if (!base_length || base_length >= 32 || strcmp(base, ".") == 0 || strcmp(base, "..") == 0) return -1;
+    strcpy(name, base);
+    if (!slash) {
+        if (parent_capacity < 2) return -1;
+        strcpy(parent_path, ".");
+        return 0;
+    }
+    if (slash == normalized) {
+        if (parent_capacity < 2) return -1;
+        strcpy(parent_path, "/");
+        return 0;
+    }
+    uint32_t parent_length = (uint32_t)(slash - normalized);
+    if (parent_length + 1 > parent_capacity) return -1;
+    memcpy(parent_path, normalized, parent_length);
+    parent_path[parent_length] = 0;
+    return 0;
+}
+
+static int shell_is_ancestor(struct fs_node* possible_parent, struct fs_node* node) {
+    for (struct fs_node* cursor = node; cursor; cursor = cursor->parent) if (cursor == possible_parent) return 1;
+    return 0;
+}
+
+static struct fs_node* shell_parent_for_path(const char* path, char* name) {
+    char parent_path[160];
+    if (shell_split_parent(path, parent_path, sizeof(parent_path), name) != 0) return NULL;
+    struct fs_node* parent = fs_resolve_path(parent_path);
+    return parent && parent->type == FS_DIRECTORY ? parent : NULL;
+}
+
+static void cmd_mkdir(const char* args) {
+    char path[160];
+    if (strlen(args) >= sizeof(path)) {
+        terminal_writestring("mkdir: path too long\n");
+        return;
+    }
+    strcpy(path, args);
+    char* cursor = path;
+    char* name_arg = shell_next_token(&cursor);
+    if (!name_arg || shell_next_token(&cursor)) {
+        terminal_writestring("usage: mkdir <directory>\n");
+        return;
+    }
+    if (fs_resolve_path(name_arg)) {
+        terminal_writestring("mkdir: path already exists\n");
+        return;
+    }
+    char name[32];
+    struct fs_node* parent = shell_parent_for_path(name_arg, name);
+    if (!parent || !create_node(name, FS_DIRECTORY, parent)) terminal_writestring("mkdir: unable to create directory\n");
+}
+
+static void cmd_touch(const char* args) {
+    char path[160];
+    if (strlen(args) >= sizeof(path)) {
+        terminal_writestring("touch: path too long\n");
+        return;
+    }
+    strcpy(path, args);
+    char* cursor = path;
+    char* name_arg = shell_next_token(&cursor);
+    if (!name_arg || shell_next_token(&cursor)) {
+        terminal_writestring("usage: touch <file>\n");
+        return;
+    }
+    struct fs_node* existing = fs_resolve_path(name_arg);
+    if (existing) {
+        if (existing->type != FS_FILE) terminal_writestring("touch: path is a directory\n");
+        return;
+    }
+    char name[32];
+    struct fs_node* parent = shell_parent_for_path(name_arg, name);
+    if (!parent || !create_node(name, FS_FILE, parent)) terminal_writestring("touch: unable to create file\n");
+}
+
+static void cmd_rm(const char* args) {
+    char path[160];
+    if (strlen(args) >= sizeof(path)) {
+        terminal_writestring("rm: path too long\n");
+        return;
+    }
+    strcpy(path, args);
+    char* cursor = path;
+    char* name_arg = shell_next_token(&cursor);
+    if (name_arg && strcmp(name_arg, "force") == 0) name_arg = shell_next_token(&cursor);
+    if (!name_arg || shell_next_token(&cursor)) {
+        terminal_writestring("usage: rm [force] <file-or-empty-directory>\n");
+        return;
+    }
+    struct fs_node* target = fs_resolve_path(name_arg);
+    if (!target || target == root || shell_is_ancestor(target, current_dir)) {
+        terminal_writestring("rm: path not found or currently in use\n");
+        return;
+    }
+    if (fs_node_remove(target) != 0) terminal_writestring("rm: directory is not empty or removal failed\n");
+}
+
+static void cmd_rmdir(const char* args) {
+    char copy[160];
+    if (strlen(args) >= sizeof(copy)) {
+        terminal_writestring("rmdir: path too long\n");
+        return;
+    }
+    strcpy(copy, args);
+    char* cursor = copy;
+    char* path = shell_next_token(&cursor);
+    if (!path || shell_next_token(&cursor)) {
+        terminal_writestring("usage: rmdir <empty-directory>\n");
+        return;
+    }
+    struct fs_node* target = fs_resolve_path(path);
+    if (!target || target == root || target->type != FS_DIRECTORY || shell_is_ancestor(target, current_dir)) {
+        terminal_writestring("rmdir: directory not found or currently in use\n");
+        return;
+    }
+    if (fs_node_remove(target) != 0) terminal_writestring("rmdir: directory is not empty\n");
+}
+
+static void cmd_cp(const char* args) {
+    char copy[320];
+    if (strlen(args) >= sizeof(copy)) {
+        terminal_writestring("cp: path too long\n");
+        return;
+    }
+    strcpy(copy, args);
+    char* cursor = copy;
+    char* source_path = shell_next_token(&cursor);
+    char* destination_path = shell_next_token(&cursor);
+    if (!source_path || !destination_path || shell_next_token(&cursor)) {
+        terminal_writestring("usage: cp <source-file> <destination>\n");
+        return;
+    }
+    struct fs_node* source = fs_resolve_path(source_path);
+    if (!source || source->type != FS_FILE) {
+        terminal_writestring("cp: source file not found\n");
+        return;
+    }
+    struct fs_node* destination = fs_resolve_path(destination_path);
+    char name[32];
+    struct fs_node* parent;
+    if (destination && destination->type == FS_DIRECTORY) {
+        parent = destination;
+        strcpy(name, source->name);
+        destination = find_node(parent, name);
+    } else if (!destination) {
+        parent = shell_parent_for_path(destination_path, name);
+        if (!parent) {
+            terminal_writestring("cp: destination directory not found\n");
+            return;
+        }
+    } else {
+        parent = destination->parent;
+        strcpy(name, destination->name);
+    }
+    if (destination == source) return;
+    if (destination && destination->type != FS_FILE) {
+        terminal_writestring("cp: destination is not a file\n");
+        return;
+    }
+    if (!destination) destination = create_node(name, FS_FILE, parent);
+    if (!destination || fs_node_truncate(destination, 0) != 0 ||
+        fs_node_write(destination, 0, fs_node_data(source), (uint32_t)source->content_len) != 0) terminal_writestring("cp: copy failed\n");
+}
+
+static void cmd_mv(const char* args) {
+    char copy[320];
+    if (strlen(args) >= sizeof(copy)) {
+        terminal_writestring("mv: path too long\n");
+        return;
+    }
+    strcpy(copy, args);
+    char* cursor = copy;
+    char* source_path = shell_next_token(&cursor);
+    char* destination_path = shell_next_token(&cursor);
+    if (!source_path || !destination_path || shell_next_token(&cursor)) {
+        terminal_writestring("usage: mv <source> <destination>\n");
+        return;
+    }
+    struct fs_node* source = fs_resolve_path(source_path);
+    if (!source || source == root || shell_is_ancestor(source, current_dir)) {
+        terminal_writestring("mv: source not found or currently in use\n");
+        return;
+    }
+    struct fs_node* destination = fs_resolve_path(destination_path);
+    char name[32];
+    struct fs_node* parent;
+    if (destination && destination->type == FS_DIRECTORY) {
+        parent = destination;
+        strcpy(name, source->name);
+    } else if (!destination) {
+        parent = shell_parent_for_path(destination_path, name);
+        if (!parent) {
+            terminal_writestring("mv: destination directory not found\n");
+            return;
+        }
+    } else {
+        terminal_writestring("mv: destination already exists\n");
+        return;
+    }
+    if (parent == source || shell_is_ancestor(source, parent)) {
+        terminal_writestring("mv: cannot move a directory into itself\n");
+        return;
+    }
+    struct fs_node* collision = find_node(parent, name);
+    if (collision && collision != source) {
+        terminal_writestring("mv: destination already exists\n");
+        return;
+    }
+    if (source->parent == parent && strcmp(source->name, name) == 0) return;
+    if (source->parent != parent && parent->num_children >= MAX_CHILDREN) {
+        terminal_writestring("mv: destination directory is full\n");
+        return;
+    }
+    struct fs_node* old_parent = source->parent;
+    uint32_t index = 0;
+    while (index < (uint32_t)old_parent->num_children && old_parent->children[index] != source) index++;
+    if (index >= (uint32_t)old_parent->num_children) {
+        terminal_writestring("mv: source is detached\n");
+        return;
+    }
+    if (old_parent != parent) {
+        while (index + 1 < (uint32_t)old_parent->num_children) {
+            old_parent->children[index] = old_parent->children[index + 1];
+            index++;
+        }
+        old_parent->num_children--;
+        parent->children[parent->num_children++] = source;
+        source->parent = parent;
+    }
+    strcpy(source->name, name);
+    fs_cache_clear();
+}
+
+static void shell_print_file_range(const char* data, uint32_t start, uint32_t end) {
+    for (uint32_t i = start; i < end; i++) terminal_putchar(data[i]);
+}
+
+static void cmd_head_tail(const char* args, int tail) {
+    char copy[192];
+    if (strlen(args) >= sizeof(copy)) {
+        terminal_writestring("file path too long\n");
+        return;
+    }
+    strcpy(copy, args);
+    char* cursor = copy;
+    char* first = shell_next_token(&cursor);
+    uint32_t count = 10;
+    char* path = first;
+    if (first && strcmp(first, "-n") == 0) {
+        char* number = shell_next_token(&cursor);
+        if (!number || !*number) {
+            terminal_writestring("usage: head|tail [-n count] <file>\n");
+            return;
+        }
+        count = 0;
+        while (*number >= '0' && *number <= '9') count = count * 10 + (uint32_t)(*number++ - '0');
+        if (*number) {
+            terminal_writestring("line count must be a nonnegative integer\n");
+            return;
+        }
+        path = shell_next_token(&cursor);
+    } else if (first && first[0] == '-' && first[1]) {
+        char* number = first + 1;
+        count = 0;
+        while (*number >= '0' && *number <= '9') count = count * 10 + (uint32_t)(*number++ - '0');
+        if (*number) {
+            terminal_writestring("usage: head|tail [-n count] <file>\n");
+            return;
+        }
+        path = shell_next_token(&cursor);
+    } else if (first) {
+        char* number = shell_next_token(&cursor);
+        if (number) {
+            count = 0;
+            while (*number >= '0' && *number <= '9') count = count * 10 + (uint32_t)(*number++ - '0');
+            if (*number) {
+                terminal_writestring("line count must be a nonnegative integer\n");
+                return;
+            }
+        }
+    }
+    if (!path || shell_next_token(&cursor)) {
+        terminal_writestring("usage: head|tail [-n count] <file>\n");
+        return;
+    }
+    struct fs_node* file = fs_resolve_path(path);
+    if (!file || file->type != FS_FILE) {
+        terminal_writestring("file not found\n");
+        return;
+    }
+    const char* data = fs_node_data(file);
+    uint32_t length = (uint32_t)file->content_len;
+    uint32_t total_lines = 0;
+    for (uint32_t i = 0; i < length; i++) if (data[i] == '\n') total_lines++;
+    if (length && data[length - 1] != '\n') total_lines++;
+    if (tail) {
+        if (!count) return;
+        uint32_t skip = total_lines > count ? total_lines - count : 0;
+        uint32_t start = 0;
+        while (start < length && skip) if (data[start++] == '\n') skip--;
+        shell_print_file_range(data, start, length);
+    } else {
+        uint32_t wanted = total_lines < count ? total_lines : count;
+        uint32_t end = 0;
+        while (end < length && wanted) if (data[end++] == '\n') wanted--;
+        if (wanted) end = length;
+        shell_print_file_range(data, 0, end);
+    }
+}
+
+static void cmd_wc(const char* args) {
+    char copy[192];
+    if (strlen(args) >= sizeof(copy)) {
+        terminal_writestring("wc: path too long\n");
+        return;
+    }
+    strcpy(copy, args);
+    char* cursor = copy;
+    char* path = shell_next_token(&cursor);
+    if (!path || shell_next_token(&cursor)) {
+        terminal_writestring("usage: wc <file>\n");
+        return;
+    }
+    struct fs_node* file = fs_resolve_path(path);
+    if (!file || file->type != FS_FILE) {
+        terminal_writestring("wc: file not found\n");
+        return;
+    }
+    const char* data = fs_node_data(file);
+    uint32_t bytes = (uint32_t)file->content_len;
+    uint32_t lines = 0, words = 0;
+    int in_word = 0;
+    for (uint32_t i = 0; i < bytes; i++) {
+        char c = data[i];
+        if (c == '\n') lines++;
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') in_word = 0;
+        else if (!in_word) { words++; in_word = 1; }
+    }
+    char number[16];
+    int_to_string(lines, number); terminal_writestring(number); terminal_putchar(' ');
+    int_to_string(words, number); terminal_writestring(number); terminal_putchar(' ');
+    int_to_string(bytes, number); terminal_writestring(number); terminal_putchar(' ');
+    terminal_writestring(path); terminal_writestring("\n");
+}
+
+static void cmd_head(const char* args) {
+    cmd_head_tail(args, 0);
+}
+
+static void cmd_tail(const char* args) {
+    cmd_head_tail(args, 1);
+}
+
+static void cmd_edit(const char* args) {
+    if (strlen(args) == 0) {
+        terminal_writestring("Usage: edit <filename>");
+        return;
+    }
+    if (current_kernel_mode == KERNEL_MODE_DESKTOP) {
+        if (!fs_resolve_path(args) && strchr(args, '/')) {
+            terminal_writestring("edit: path not found. Use a filename in the current directory or an existing path.\n");
+            return;
+        }
+        notepad_open_file(args);
+        terminal_writestring("Opened in Shark IDE. Use Ctrl+S to save.\n");
+        return;
+    }
+    editor_target_file = fs_resolve_path(args);
+    if (!editor_target_file && !strchr(args, '/')) {
+        terminal_writestring("File not found. Creating new file...\n");
+        editor_target_file = create_node(args, FS_FILE, current_dir);
+    }
+    if (editor_target_file) {
+        editor_buffer_idx = 0;
+        current_kernel_mode = KERNEL_MODE_EDITOR;
+        terminal_writestring("Editor: ");
+        terminal_writestring(args);
+        terminal_writestring(" (ESC to save and exit)\n");
+        strcpy(editor_buffer, editor_target_file->content);
+        editor_buffer_idx = editor_target_file->content_len;
+    } else {
+        terminal_writestring("Error: Cannot create file.\n");
+    }
+}
+
+static void cmd_whoami(const char* args) {
+    (void)args;
+    terminal_writestring(current_user);
+    terminal_writestring("\n");
+}
+
+static void cmd_help(const char* args) {
+    (void)args;
+#ifdef SERVER_IMAGE
+    terminal_writestring("SharkOS Server commands\n");
+    terminal_writestring("Files: ls [-la] [dir], cd <dir>, pwd, cat <file>, nano <file>, tree, find, grep, stat\n");
+    terminal_writestring("File operations: touch, mkdir, rm [force], rmdir, mv <src> <dst>, cp <src> <dst>, head, tail, wc\n");
+    terminal_writestring("System: whoami, uname, sysinfo, neofetch, uptime, devices, ps, htop, reboot, poweroff\n");
+    terminal_writestring("Network: ifconfig, dhcp, ping, dns, netstat, curl, wget\n");
+    terminal_writestring("Services: container, fw docs, rtr start|status|help, httpd, sshd\n");
+    terminal_writestring("GUI apps and ATA/FAT16 mounting are not included in this Server image.\n");
+    return;
+#else
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_MAGENTA, VGA_COLOR_BLACK));
+    terminal_writestring("\nSharkOS Help\n------------------------------\n\n");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    terminal_writestring("FILESYSTEM  - ");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    terminal_writestring("ls, cd, cat, touch, edit, mkdir, rm, mv, cp, pwd, tree, mount, umount\n");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    terminal_writestring("SYSTEM      - ");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    terminal_writestring("whoami, sysinfo, kernelinfo, colors, devices/lspci, ps, taskmanager, kill, exec\n");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    terminal_writestring("NETWORK     - ");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    terminal_writestring("ifconfig, dhcp, ping, dns, netstat, rtr, fw\n");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    terminal_writestring("RING 0      - ");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    terminal_writestring("ring0, priv, inb, outb\n");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    terminal_writestring("APPS        - ");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    terminal_writestring("clear, colors, credits, help, neofetch, sharkfetch, imgfetch, whatis, fortune, cowsay, sl, banner, doom, browser [url]\n");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    terminal_writestring("POWER       - ");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    terminal_writestring("poweroff, reboot\n");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    terminal_writestring("KEYS        - ");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    terminal_writestring("?, +, -, TAB, Ctrl+S, ESC\n\n");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_BROWN, VGA_COLOR_BLACK));
+    terminal_writestring("Type 'help <category>' for details\n");
+    terminal_set_color(vga_entry_color(VGA_COLOR_DARK_GREY, VGA_COLOR_BLACK));
+    terminal_writestring("Categories: Filesystem, System, Ring 0, Apps, Power, Keys\n\n");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+#endif
+}
+
+static void cmd_uname(const char* args) {
+    terminal_writestring("SharkOS");
+    if (strcmp(args, "-a") == 0) {
+        terminal_writestring(" V1 i686 shark@SharkOS nemo");
+    }
+    terminal_writestring("\n");
+}
+
+static void cmd_sysinfo(const char* args) {
+    (void)args;
+    char buf[64];
+    terminal_writestring("\033[0;36m");
+    terminal_writestring("╔══════════════════════════════════╗\n");
+    terminal_writestring("║       SharkOS System Info        ║\n");
+    terminal_writestring("╚══════════════════════════════════╝\n");
+    terminal_writestring("\033[0;37m");
+
+    char cpu_model[49];
+    get_cpu_model(cpu_model);
+    terminal_writestring("CPU: ");
+    terminal_writestring(cpu_model);
+    terminal_writestring("\n");
+
+    terminal_writestring("RAM: ");
+    uint32_t total_mb = (uint32_t)(total_system_memory >> 20);
+    int_to_string(total_mb, buf);
+    terminal_writestring(buf);
+    terminal_writestring(" MB\n");
+
+    terminal_writestring("Resolution: ");
+    int_to_string(screen_width, buf); terminal_writestring(buf);
+    terminal_writestring("x");
+    int_to_string(screen_height, buf); terminal_writestring(buf);
+    terminal_writestring("\n");
+
+    uint32_t up_secs = uptime_ticks / TICKS_PER_SEC;
+    uint32_t hours = up_secs / 3600;
+    uint32_t mins = (up_secs % 3600) / 60;
+    uint32_t secs = up_secs % 60;
+    terminal_writestring("Uptime: ");
+    int_to_string(hours, buf); terminal_writestring(buf); terminal_writestring("h ");
+    int_to_string(mins, buf); terminal_writestring(buf); terminal_writestring("m ");
+    int_to_string(secs, buf); terminal_writestring(buf); terminal_writestring("s\n");
+
+    terminal_writestring("Tasks: ");
+    int task_count = 0;
+    task_t* t;
+    for (t = task_list; t; t = t->next) task_count++;
+    int_to_string(task_count, buf); terminal_writestring(buf);
+    terminal_writestring("\n");
+
+    terminal_writestring("\033[0;32m");
+    terminal_writestring("SharkOS V2 - The Sharkslayer Edition\n");
+    terminal_writestring("\033[0;37m");
+}
+
+static void cmd_devices_hex(uint16_t value) {
+    static const char digits[] = "0123456789ABCDEF";
+    for (int i = 3; i >= 0; i--) terminal_putchar(digits[(value >> (i * 4)) & 15]);
+}
+
+static void cmd_devices_hex8(uint8_t value) {
+    static const char digits[] = "0123456789ABCDEF";
+    terminal_putchar(digits[value >> 4]);
+    terminal_putchar(digits[value & 15]);
+}
+
+static const char* pci_vendor_name(uint16_t vendor) {
+    if (vendor == 0x10EC) return "Realtek";
+    if (vendor == 0x8086) return "Intel";
+    if (vendor == 0x1022) return "AMD";
+    if (vendor == 0x1AF4) return "Virtio";
+    if (vendor == 0x1234) return "QEMU";
+    if (vendor == 0x10DE) return "NVIDIA";
+    if (vendor == 0x15AD) return "VMware";
+    if (vendor == 0x80EE) return "VirtualBox";
+    return "Unknown vendor";
+}
+
+static const char* pci_device_name(uint16_t vendor, uint16_t device) {
+    if (vendor == 0x10EC && device == 0x8168) return "RTL8111/8168/8211/8411 Gigabit Ethernet";
+    if (vendor == 0x10EC && device == 0x8169) return "RTL8169 Gigabit Ethernet";
+    if (vendor == 0x10EC && device == 0x8139) return "RTL8139 Fast Ethernet";
+    if (vendor == 0x8086 && (device == 0x100E || device == 0x100F)) return "82540EM Gigabit Ethernet";
+    if (vendor == 0x1AF4 && device == 0x1000) return "Virtio network device";
+    if (vendor == 0x1234 && device == 0x1111) return "Virtual VGA adapter";
+    if (vendor == 0x1022 && (device == 0x2000 || device == 0x2001)) return "PCnet Ethernet";
+    return "PCI device";
+}
+
+static const char* pci_class_name(uint8_t class_code) {
+    switch (class_code) {
+        case 0x00: return "Unclassified";
+        case 0x01: return "Mass storage";
+        case 0x02: return "Network controller";
+        case 0x03: return "Display controller";
+        case 0x04: return "Multimedia controller";
+        case 0x05: return "Memory controller";
+        case 0x06: return "Bridge";
+        case 0x07: return "Communication controller";
+        case 0x08: return "System peripheral";
+        case 0x09: return "Input controller";
+        case 0x0A: return "Docking station";
+        case 0x0B: return "Processor";
+        case 0x0C: return "Serial bus controller";
+        case 0x0D: return "Wireless controller";
+        case 0x0E: return "Intelligent controller";
+        case 0x0F: return "Satellite controller";
+        case 0x10: return "Encryption controller";
+        case 0x11: return "Signal processing controller";
+        case 0x12: return "Processing accelerator";
+        case 0x13: return "Instrumentation controller";
+        default: return "Other PCI class";
+    }
+}
+
+static void cmd_devices(const char* args) {
+    (void)args;
+    char number[24];
+    terminal_writestring("Detected hardware and system devices\n\nSYSTEM\n");
+    terminal_writestring("CPU: ");
+    char cpu_model[49];
+    get_cpu_model(cpu_model);
+    terminal_writestring(cpu_model);
+    terminal_writestring("\nMemory: ");
+    int_to_string((uint32_t)(total_system_memory >> 20), number);
+    terminal_writestring(number);
+    terminal_writestring(" MiB\nDisplay: ");
+    int_to_string((uint32_t)screen_width, number);
+    terminal_writestring(number);
+    terminal_putchar('x');
+    int_to_string((uint32_t)screen_height, number);
+    terminal_writestring(number);
+    terminal_writestring(" console\nKeyboard: PS/2 controller\nSerial: COM1\nTimer: PIT/IRQ0\nInterrupt controller: dual 8259 PIC\n");
+    terminal_writestring("Storage: ");
+    int drive_count = ata_drive_count();
+    int_to_string((uint32_t)drive_count, number);
+    terminal_writestring(number);
+    terminal_writestring(drive_count == 1 ? " ATA drive\n" : " ATA drives\n");
+    terminal_writestring("Network: ");
+    if (net_has_nic()) {
+        terminal_writestring(net_driver_name);
+        terminal_writestring(" MAC ");
+        for (uint32_t i = 0; i < 6; i++) {
+            static const char digits[] = "0123456789abcdef";
+            terminal_putchar(digits[net_mac[i] >> 4]);
+            terminal_putchar(digits[net_mac[i] & 15]);
+            if (i < 5) terminal_putchar(':');
+        }
+        terminal_putchar('\n');
+    } else terminal_writestring("not detected\n");
+    terminal_writestring("\nPCI DEVICES\nBDF       Vendor:Device  Class                  Device name and resources\n");
+    uint32_t count = 0;
+    for (uint32_t bus = 0; bus < 256; bus++) {
+        for (uint32_t slot = 0; slot < 32; slot++) {
+            for (uint32_t func = 0; func < 8; func++) {
+                uint32_t identity = pci_config_read((uint8_t)bus, (uint8_t)slot, (uint8_t)func, 0);
+                if (identity == 0xFFFFFFFFu) {
+                    if (!func) break;
+                    continue;
+                }
+                uint16_t vendor = (uint16_t)identity;
+                uint16_t device = (uint16_t)(identity >> 16);
+                uint32_t class_register = pci_config_read((uint8_t)bus, (uint8_t)slot, (uint8_t)func, 0x08);
+                uint8_t revision = (uint8_t)class_register;
+                uint8_t interface = (uint8_t)(class_register >> 8);
+                uint8_t subclass = (uint8_t)(class_register >> 16);
+                uint8_t class_code = (uint8_t)(class_register >> 24);
+                uint32_t irq = pci_config_read((uint8_t)bus, (uint8_t)slot, (uint8_t)func, 0x3C) & 0xFF;
+                terminal_putchar(' ');
+                cmd_devices_hex8((uint8_t)bus);
+                terminal_putchar(':');
+                cmd_devices_hex8((uint8_t)slot);
+                terminal_putchar('.');
+                int_to_string(func, number); terminal_writestring(number);
+                terminal_writestring("   ");
+                cmd_devices_hex(vendor); terminal_putchar(':'); cmd_devices_hex(device);
+                terminal_writestring("  ");
+                terminal_writestring(pci_class_name(class_code));
+                terminal_writestring(" (");
+                cmd_devices_hex8(subclass);
+                terminal_putchar('/');
+                cmd_devices_hex8(interface);
+                terminal_writestring(")  ");
+                terminal_writestring(pci_vendor_name(vendor));
+                terminal_writestring(" ");
+                terminal_writestring(pci_device_name(vendor, device));
+                terminal_writestring(" rev ");
+                int_to_string(revision, number); terminal_writestring(number);
+                terminal_writestring(" irq ");
+                int_to_string(irq, number); terminal_writestring(number);
+                terminal_putchar('\n');
+                for (uint8_t bar_index = 0; bar_index < 6; bar_index++) {
+                    uint8_t offset = (uint8_t)(0x10 + bar_index * 4);
+                    uint32_t bar = pci_config_read((uint8_t)bus, (uint8_t)slot, (uint8_t)func, offset);
+                    if (!bar) continue;
+                    terminal_writestring("    BAR");
+                    int_to_string(bar_index, number); terminal_writestring(number);
+                    terminal_writestring((bar & 1u) ? " I/O " : " MMIO ");
+                    cmd_devices_hex((uint16_t)(bar >> 16));
+                    cmd_devices_hex((uint16_t)bar);
+                    terminal_putchar('\n');
+                    if (!(bar & 1u) && ((bar >> 1) & 3u) == 2u) bar_index++;
+                }
+                count++;
+                uint32_t header = pci_config_read((uint8_t)bus, (uint8_t)slot, (uint8_t)func, 0x0C);
+                if (!func && !(header & 0x00800000u)) break;
+            }
+        }
+    }
+    terminal_writestring("PCI device count: ");
+    int_to_string(count, number);
+    terminal_writestring(number);
+    terminal_writestring("\n");
+    if (!count) terminal_writestring("No PCI functions were detected.\n");
+}
+
+static void cmd_hostname(const char* args) {
+    (void)args;
+    terminal_writestring("SharkOS");
+    terminal_writestring("\n");
+}
+
+static void cmd_ps(const char* args) {
+    (void)args;
+    spin_lock(&task_list_lock);
+    terminal_writestring("PID    NAME            STATE      CPU\n");
+    task_t* t = task_list;
+    while (t) {
+        char buf[16];
+        int_to_string(t->id, buf);
+        terminal_writestring(buf);
+        terminal_writestring("      ");
+        terminal_writestring(t->name);
+        terminal_writestring("          ");
+        if (t->state == TASK_RUNNING) terminal_writestring("RUNNING    ");
+        else terminal_writestring("READY      ");
+        int_to_string(t->cpu_id, buf);
+        terminal_writestring(buf);
+        terminal_writestring("\n");
+        t = t->next;
+    }
+    spin_unlock(&task_list_lock);
+}
+
+static void cmd_browser(const char* args) {
+    while (args && *args == ' ') args++;
+    if (current_kernel_mode != KERNEL_MODE_DESKTOP) {
+        terminal_writestring("The browser needs the desktop. Boot the default (desktop) entry and run 'browser' there,\n"
+                             "or use 'wget <url>' to fetch a page as text.\n");
+        return;
+    }
+    browser_open_url(args && *args ? args : NULL);
+    terminal_writestring("Shark Navigator opened");
+    if (args && *args) { terminal_writestring(": "); terminal_writestring(args); }
+    terminal_writestring("\n");
+}
+
+static void cmd_taskmanager(const char* args) {
+    (void)args;
+    if (current_kernel_mode == KERNEL_MODE_DESKTOP) {
+
+        for (int i = 0; i < desktop.window_count; i++) {
+            if (desktop.windows[i].type == WINDOW_TYPE_TASKMANAGER) {
+                if (desktop.windows[i].state == WINDOW_STATE_MINIMIZED) window_restore(i);
+                else window_focus(i);
+                desktop.dirty = true;
+                terminal_writestring("Task Manager brought to front.\n");
+                return;
+            }
+        }
+        desktop_icon_launch_offset(WINDOW_TYPE_TASKMANAGER, "Task Manager");
+        terminal_writestring("Task Manager opened.\n");
+        return;
+    }
+
+    char buf[32];
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    terminal_writestring("\nSharkOS Task Manager\n");
+    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    terminal_writestring("--------------------------------------\n");
+
+    uint32_t up = uptime_ticks / TICKS_PER_SEC;
+    terminal_writestring("Uptime     : ");
+    int_to_string(up / 3600, buf); terminal_writestring(buf); terminal_writestring("h ");
+    int_to_string((up / 60) % 60, buf); terminal_writestring(buf); terminal_writestring("m ");
+    int_to_string(up % 60, buf); terminal_writestring(buf); terminal_writestring("s\n");
+
+    terminal_writestring("CPU load   : ");
+    int_to_string(sys_cpu_percent, buf); terminal_writestring(buf);
+    terminal_writestring("% (main loop busy share, last second)\n");
+
+    uint32_t total_kb = (uint32_t)(total_system_memory / 1024u);
+    uint64_t free_bytes = pmm_free_memory_bytes();
+    if (free_bytes > total_system_memory) free_bytes = total_system_memory;
+    uint32_t used_kb = (uint32_t)((total_system_memory - free_bytes) / 1024u);
+    terminal_writestring("Memory     : ");
+    int_to_string(used_kb, buf); terminal_writestring(buf); terminal_writestring(" KB used / ");
+    int_to_string(total_kb, buf); terminal_writestring(buf); terminal_writestring(" KB total\n");
+
+    terminal_writestring("Windows    : ");
+    int_to_string((uint32_t)desktop.window_count, buf); terminal_writestring(buf);
+    terminal_writestring("\n");
+    for (int i = 0; i < desktop.window_count; i++) {
+        terminal_writestring("   [");
+        int_to_string((uint32_t)i, buf); terminal_writestring(buf);
+        terminal_writestring("] ");
+        terminal_writestring(desktop.windows[i].title);
+        terminal_writestring(desktop.windows[i].state == WINDOW_STATE_MINIMIZED
+                             ? "  (minimized)\n" : "\n");
+    }
+
+    terminal_writestring("\nPID   NAME              STATE     CPU  SYSCALLS\n");
+    spin_lock(&task_list_lock);
+    for (task_t* t = task_list; t; t = t->next) {
+        int_to_string((uint32_t)t->id, buf); terminal_writestring(buf);
+        for (int k = (int)strlen(buf); k < 6; k++) terminal_writestring(" ");
+        terminal_writestring(t->name);
+        for (int k = (int)strlen(t->name); k < 18; k++) terminal_writestring(" ");
+        const char* st = t->state == TASK_RUNNING ? "RUNNING   " :
+                         t->state == TASK_READY ? "READY     " :
+                         t->state == TASK_SLEEPING ? "SLEEPING  " : "ZOMBIE    ";
+        terminal_writestring(st);
+        int_to_string(t->cpu_usage, buf); terminal_writestring(buf);
+        for (int k = (int)strlen(buf); k < 5; k++) terminal_writestring(" ");
+        int_to_string(t->syscall_count, buf); terminal_writestring(buf);
+        terminal_writestring("\n");
+    }
+    spin_unlock(&task_list_lock);
+    terminal_writestring("\nIn the desktop, 'taskmanager' (or Ctrl+Esc) opens the window.\n");
+}
+
+#ifdef SERVER_IMAGE
+static void server_htop_print_bar(uint32_t percent) {
+    if (percent > 100) percent = 100;
+    uint32_t fill = percent * 40 / 100;
+    terminal_putchar('[');
+    for (uint32_t i = 0; i < 40; i++) terminal_putchar(i < fill ? '#' : '.');
+    terminal_putchar(']');
+}
+
+static void server_htop_draw(uint32_t cpu_percent) {
+    char number[24];
+    uint64_t total_bytes = total_system_memory;
+    uint64_t free_bytes = pmm_free_memory_bytes();
+    if (free_bytes > total_bytes) free_bytes = total_bytes;
+    uint64_t used_bytes = total_bytes - free_bytes;
+    uint32_t memory_percent = total_bytes ? (uint32_t)(used_bytes * 100 / total_bytes) : 0;
+    uint32_t total_mb = (uint32_t)(total_bytes >> 20);
+    uint32_t used_mb = (uint32_t)(used_bytes >> 20);
+    uint32_t free_mb = total_mb > used_mb ? total_mb - used_mb : 0;
+    uint32_t seconds = uptime_ticks / 1000;
+    uint32_t hours = seconds / 3600;
+    uint32_t minutes = (seconds / 60) % 60;
+    uint32_t secs = seconds % 60;
+    uint32_t task_count = 0;
+    terminal_clear();
+    terminal_writestring("SharkOS htop | live monitor | Z local, Q/Z SSH\n");
+    terminal_writestring("CPU  ");
+    server_htop_print_bar(cpu_percent);
+    terminal_writestring(" ");
+    int_to_string(cpu_percent, number);
+    terminal_writestring(number);
+    terminal_writestring("%\nRAM  ");
+    server_htop_print_bar(memory_percent);
+    terminal_writestring(" ");
+    int_to_string(memory_percent, number);
+    terminal_writestring(number);
+    terminal_writestring("%  ");
+    int_to_string(used_mb, number);
+    terminal_writestring(number);
+    terminal_putchar('/');
+    int_to_string(total_mb, number);
+    terminal_writestring(number);
+    terminal_writestring(" MiB used\n     free ");
+    int_to_string(free_mb, number);
+    terminal_writestring(number);
+    terminal_writestring(" MiB\n");
+    terminal_writestring("Uptime ");
+    int_to_string(hours, number);
+    terminal_writestring(number);
+    terminal_writestring(":");
+    if (minutes < 10) terminal_putchar('0');
+    int_to_string(minutes, number);
+    terminal_writestring(number);
+    terminal_putchar(':');
+    if (secs < 10) terminal_putchar('0');
+    int_to_string(secs, number);
+    terminal_writestring(number);
+    terminal_writestring("\n\nSERVICES\n");
+    terminal_writestring("HTTP  ");
+    if (httpd_is_active()) {
+        terminal_writestring("RUNNING  port ");
+        int_to_string(httpd_listen_port(), number);
+        terminal_writestring(number);
+        terminal_writestring("  clients ");
+        int_to_string(net_tcp_server_connection_count(httpd_listen_port()), number);
+        terminal_writestring(number);
+    } else terminal_writestring("STOPPED");
+    terminal_writestring("\nSSH   ");
+    if (ssh_server_is_active()) {
+        terminal_writestring("RUNNING  port ");
+        int_to_string(ssh_server_listen_port(), number);
+        terminal_writestring(number);
+        terminal_writestring("  sessions ");
+        int_to_string(net_tcp_server_connection_count(ssh_server_listen_port()), number);
+        terminal_writestring(number);
+    } else terminal_writestring("STOPPED");
+    terminal_writestring("\nLINK  ");
+    terminal_writestring(net_has_link ? "UP" : "DOWN");
+    terminal_writestring("  drops ");
+    int_to_string(net_link_down_count(), number);
+    terminal_writestring(number);
+    terminal_writestring("  recoveries ");
+    int_to_string(net_link_recover_count(), number);
+    terminal_writestring(number);
+    terminal_writestring("\nTCP connections ");
+    int_to_string(net_tcp_server_connection_count(0), number);
+    terminal_writestring(number);
+    terminal_writestring(" / 8\n\nTASKS\n");
+    spin_lock(&task_list_lock);
+    for (task_t* task = task_list; task; task = task->next) task_count++;
+    if (!task_count) {
+        terminal_writestring("No separately scheduled user tasks; server services run in the kernel loop.\n");
+    } else {
+        terminal_writestring("PID  NAME             STATE      CPU  SYSCALLS\n");
+        for (task_t* task = task_list; task; task = task->next) {
+            int_to_string((uint32_t)task->id, number);
+            terminal_writestring(number);
+            terminal_writestring("  ");
+            terminal_writestring(task->name);
+            uint32_t name_length = (uint32_t)strlen(task->name);
+            for (uint32_t i = name_length; i < 16; i++) terminal_putchar(' ');
+            const char* state = task->state == TASK_RUNNING ? "RUNNING" : task->state == TASK_READY ? "READY" : task->state == TASK_SLEEPING ? "SLEEPING" : "ZOMBIE";
+            terminal_writestring(state);
+            terminal_writestring("  ");
+            int_to_string(task->cpu_usage, number);
+            terminal_writestring(number);
+            terminal_writestring("%  ");
+            int_to_string(task->syscall_count, number);
+            terminal_writestring(number);
+            terminal_putchar('\n');
+        }
+    }
+    spin_unlock(&task_list_lock);
+}
+
+static volatile uint8_t server_htop_active;
+static uint32_t server_htop_previous_ticks;
+static uint32_t server_htop_previous_idle;
+static uint32_t server_htop_last_draw;
+static uint32_t server_htop_cpu_percent;
+
+int server_htop_is_active(void) {
+    return server_htop_active != 0;
+}
+
+void server_htop_start(void) {
+    server_htop_active = 1;
+    server_htop_previous_ticks = uptime_ticks;
+    server_htop_previous_idle = server_idle_ticks;
+    server_htop_last_draw = uptime_ticks;
+    server_htop_cpu_percent = 0;
+    server_htop_draw(0);
+}
+
+void server_htop_poll(void) {
+    if (!server_htop_active) return;
+    uint32_t now = uptime_ticks;
+    if (now - server_htop_last_draw < 500) return;
+    uint32_t elapsed = now - server_htop_previous_ticks;
+    uint32_t idle = server_idle_ticks - server_htop_previous_idle;
+    if (idle > elapsed) idle = elapsed;
+    server_htop_cpu_percent = elapsed ? (elapsed - idle) * 100 / elapsed : 0;
+    server_htop_previous_ticks = now;
+    server_htop_previous_idle = server_idle_ticks;
+    server_htop_last_draw = now;
+    server_htop_draw(server_htop_cpu_percent);
+}
+
+uint32_t server_htop_render_remote(char* output, uint32_t output_capacity) {
+    if (!output || !output_capacity) return 0;
+    server_output_capture_begin(output, output_capacity);
+    server_htop_draw(server_htop_cpu_percent);
+    return server_output_capture_end();
+}
+
+int server_htop_handle_key(int key) {
+    if (!server_htop_active) return 0;
+    if (key == 'q' || key == 'Q' || key == 'z' || key == 'Z' || key == 3 || key == 27) {
+        server_htop_active = 0;
+        terminal_clear();
+        terminal_writestring("htop closed.\n");
+    }
+    return 1;
+}
+
+static void cmd_htop(const char* args) {
+    (void)args;
+    if (server_output_capture_active()) {
+        server_htop_draw(server_htop_cpu_percent);
+        return;
+    }
+    server_htop_start();
+}
+#else
+static void cmd_htop(const char* args) {
+    (void)args;
+    spin_lock(&task_list_lock);
+
+    uint32_t total_syscalls = 0;
+    task_t* t;
+    for (t = task_list; t; t = t->next) total_syscalls += t->syscall_count;
+
+    char buf[128];
+    terminal_writestring("\n\033[0;32m");
+    terminal_writestring("htop - SharkOS Task Manager\n");
+    terminal_writestring("\033[0;37m");
+    terminal_writestring("────────────────────────────────────────\n");
+
+    uint32_t up_secs = uptime_ticks / TICKS_PER_SEC;
+    uint32_t hours = up_secs / 3600;
+    uint32_t mins = (up_secs % 3600) / 60;
+    uint32_t secs = up_secs % 60;
+    terminal_writestring("Uptime: ");
+    int_to_string(hours, buf); terminal_writestring(buf); terminal_writestring("h ");
+    int_to_string(mins, buf); terminal_writestring(buf); terminal_writestring("m ");
+    int_to_string(secs, buf); terminal_writestring(buf); terminal_writestring("s  |  ");
+
+    int task_count = 0;
+    for (t = task_list; t; t = t->next) task_count++;
+    terminal_writestring("Tasks: ");
+    int_to_string(task_count, buf);
+    terminal_writestring(buf);
+    terminal_writestring("  |  Syscalls: ");
+    int_to_string(total_syscalls, buf);
+    terminal_writestring(buf);
+    terminal_writestring("\033[0;37m\n");
+
+    terminal_writestring("\033[0;36mPID    NAME            STATE      CPU     SYSCALLS\033[0;37m\n");
+    terminal_writestring("─────────────────────────────────────────────────\n");
+
+    for (t = task_list; t; t = t->next) {
+        uint32_t cpu_pct = total_syscalls > 0 ? (t->syscall_count * 100 / total_syscalls) : 0;
+
+        terminal_writestring("\033[0;33m");
+        int_to_string(t->id, buf);
+        terminal_writestring(buf);
+        terminal_writestring("      \033[0;36m");
+        terminal_writestring(t->name);
+        int len = strlen(t->name);
+        for (int i = len; i < 15; i++) terminal_writestring(" ");
+        terminal_writestring("\033[0;37m");
+
+        if (t->state == TASK_RUNNING) terminal_writestring("RUNNING   ");
+        else if (t->state == TASK_READY) terminal_writestring("READY     ");
+        else if (t->state == TASK_SLEEPING) terminal_writestring("SLEEPING  ");
+        else terminal_writestring("ZOMBIE    ");
+
+        terminal_writestring("\033[0;32m");
+        int_to_string(cpu_pct, buf);
+        terminal_writestring(buf);
+        for (int i = strlen(buf); i < 5; i++) terminal_writestring(" ");
+        terminal_writestring("%  \033[0;35m");
+
+        int_to_string(t->syscall_count, buf);
+        terminal_writestring(buf);
+        terminal_writestring("\033[0;37m\n");
+    }
+
+    terminal_writestring("────────────────────────────────────────\n");
+    terminal_writestring("\033[0;37m");
+
+    spin_unlock(&task_list_lock);
+}
+
+#endif
+
+static void cmd_uptime(const char* args) {
+    (void)args;
+    uint32_t total_secs = uptime_ticks / TICKS_PER_SEC;
+    uint32_t hours = total_secs / 3600;
+    uint32_t mins = (total_secs % 3600) / 60;
+    uint32_t secs = total_secs % 60;
+    char buf[32];
+    terminal_writestring("Uptime: ");
+    int_to_string(hours, buf); terminal_writestring(buf); terminal_writestring("h ");
+    int_to_string(mins, buf); terminal_writestring(buf); terminal_writestring("m ");
+    int_to_string(secs, buf); terminal_writestring(buf); terminal_writestring("s\n");
+}
+
+static void cmd_poweroff(const char* args) {
+    (void)args;
+    terminal_writestring("Shutting down...\n");
+    shutdown();
+}
+
+static void cmd_reboot(const char* args) {
+    (void)args;
+    terminal_writestring("Rebooting...\n");
+    outb(0x64, 0xFE);
+    asm volatile("cli; hlt");
+}
+
+static void cmd_bokop(const char* args) {
+    (void)args;
+    terminal_writestring("bokop command executed.\n");
+}
+
+static void cmd_neofetch(const char* args) {
+    (void)args;
+    shark_neofetch_show();
+}
+
+static void cmd_ifconfig(const char* args) {
+    (void)args;
+    net_cmd_ifconfig();
+}
+static void cmd_dhcp(const char* args) {
+    (void)args;
+    net_cmd_dhcp();
+}
+static void cmd_ping(const char* args) {
+    if (strlen(args) == 0) {
+        terminal_writestring("Usage: ping <ip>\n");
+        return;
+    }
+    net_cmd_ping(args);
+}
+static void cmd_wget(const char* args) {
+    if (strlen(args) == 0) {
+        terminal_writestring("Usage: wget <url>   (http:// or https://)\n");
+        return;
+    }
+    net_cmd_wget(args);
+}
+
+static void curl_copy(char* out, const char* in, size_t cap) {
+    if (!cap) return;
+    size_t i = 0;
+    while (in[i] && i + 1 < cap) { out[i] = in[i]; i++; }
+    out[i] = 0;
+}
+
+static void curl_cat(char* out, const char* in, size_t cap) {
+    size_t i = strlen(out);
+    if (i >= cap) return;
+    size_t j = 0;
+    while (in[j] && i + 1 < cap) out[i++] = in[j++];
+    out[i] = 0;
+}
+
+static const char* curl_next_arg(const char* p, char* out, int cap) {
+    while (*p == ' ' || *p == '\t') p++;
+    int o = 0;
+    char quote = 0;
+    if (*p == '\'' || *p == '"') quote = *p++;
+    while (*p) {
+        if (quote) {
+            if (*p == quote) { p++; break; }
+        } else if (*p == ' ' || *p == '\t') break;
+        if (o < cap - 1) out[o++] = *p;
+        p++;
+    }
+    out[o] = 0;
+    return p;
+}
+
+static void curl_resolve_redirect(const char* base, const char* loc, char* out, int cap) {
+    if (strstr(loc, "://")) { curl_copy(out, loc, (size_t)cap); return; }
+    const char* scheme_end = strstr(base, "://");
+    if (!scheme_end) { curl_copy(out, loc, (size_t)cap); return; }
+    int origin_len = (int)(scheme_end - base) + 3;
+    const char* path = base + origin_len;
+    while (*path && *path != '/') path++;
+    int host_len = (int)(path - base);
+    if (loc[0] == '/') {
+        int n = host_len;
+        if (n >= cap) n = cap - 1;
+        memcpy(out, base, n);
+        out[n] = 0;
+        curl_cat(out, loc, (size_t)cap);
+        return;
+    }
+    int n = (int)strlen(base);
+    while (n > host_len && base[n - 1] != '/') n--;
+    if (n > cap - 1) n = cap - 1;
+    memcpy(out, base, n);
+    out[n] = 0;
+    curl_cat(out, loc, (size_t)cap);
+}
+
+static void cmd_curl(const char* args) {
+    static uint8_t response[64 * 1024];
+    char url[512] = "";
+    char output[96] = "";
+    char method[16] = "GET";
+    char data[1024] = "";
+    char headers[768] = "";
+    int follow = 0;
+    int verbose = 0;
+    int head_only = 0;
+    const char* p = args;
+    char arg[512];
+    while (*(p = curl_next_arg(p, arg, sizeof(arg)))) {
+        if (!strcmp(arg, "-L") || !strcmp(arg, "--location")) follow = 1;
+        else if (!strcmp(arg, "-v") || !strcmp(arg, "--verbose")) verbose = 1;
+        else if (!strcmp(arg, "-I") || !strcmp(arg, "--head")) { head_only = 1; strcpy(method, "HEAD"); }
+        else if (!strcmp(arg, "-o") || !strcmp(arg, "--output")) {
+            p = curl_next_arg(p, output, sizeof(output));
+            if (!output[0]) break;
+        } else if (!strcmp(arg, "-X") || !strcmp(arg, "--request")) {
+            p = curl_next_arg(p, method, sizeof(method));
+            if (!method[0]) break;
+        } else if (!strcmp(arg, "-d") || !strcmp(arg, "--data") || !strcmp(arg, "--data-raw")) {
+            p = curl_next_arg(p, data, sizeof(data));
+            if (!data[0]) break;
+        } else if (!strcmp(arg, "-H") || !strcmp(arg, "--header")) {
+            p = curl_next_arg(p, arg, sizeof(arg));
+            if (arg[0] && strlen(headers) + strlen(arg) + 3 < sizeof(headers)) {
+                curl_cat(headers, arg, sizeof(headers));
+                curl_cat(headers, "\r\n", sizeof(headers));
+            }
+        } else if (arg[0] == '-') {
+            terminal_writestring("curl: unsupported option ");
+            terminal_writestring(arg);
+            terminal_writestring("\n");
+            return;
+        } else {
+            curl_copy(url, arg, sizeof(url));
+        }
+        while (*p == ' ' || *p == '\t') p++;
+    }
+    if (!url[0] || *p) {
+        terminal_writestring("Usage: curl [-L] [-v] [-I] [-o file] [-X method] [-H header] [-d data] <http[s]://url>\n");
+        return;
+    }
+    if (data[0] && !strcmp(method, "GET")) strcpy(method, "POST");
+    if (data[0] && !strstr(headers, "Content-Type:")) curl_cat(headers, "Content-Type: application/x-www-form-urlencoded\r\n", sizeof(headers));
+
+    int count = -1;
+    int redirects = 0;
+    char current_url[512];
+    curl_copy(current_url, url, sizeof(current_url));
+    for (;;) {
+        if (verbose) {
+            terminal_writestring("> "); terminal_writestring(method); terminal_putchar(' ');
+            terminal_writestring(current_url); terminal_writestring("\n");
+        }
+        count = net_http_request(method, current_url, headers, (const uint8_t*)data,
+                                 (uint32_t)strlen(data), response, sizeof(response));
+        if (count < 0) {
+            terminal_writestring("curl: request failed\n");
+            return;
+        }
+        if (verbose) {
+            terminal_writestring("< HTTP ");
+            char status[16]; int_to_string((uint32_t)net_http_last_status, status);
+            terminal_writestring(status); terminal_writestring(" ");
+            terminal_writestring(net_http_last_content_type);
+            terminal_writestring("\n");
+        }
+        if (!follow || net_http_last_status < 300 || net_http_last_status >= 400 ||
+            !net_http_last_location[0] || redirects >= 5) break;
+        char next[512];
+        curl_resolve_redirect(current_url, net_http_last_location, next, sizeof(next));
+        if (!strcmp(next, current_url)) break;
+        curl_copy(current_url, next, sizeof(current_url));
+        if (net_http_last_status == 303 || ((net_http_last_status == 301 || net_http_last_status == 302) && strcmp(method, "GET") && strcmp(method, "HEAD"))) {
+            strcpy(method, "GET"); data[0] = 0;
+        }
+        redirects++;
+    }
+    if (head_only && verbose && net_http_last_content_type[0]) {
+        terminal_writestring("Content-Type: "); terminal_writestring(net_http_last_content_type); terminal_writestring("\n");
+    }
+    if (output[0]) {
+        struct fs_node* file = fs_resolve_path(output);
+        if (!file && !strchr(output, '/') && !strchr(output, '\\')) file = create_node(output, FS_FILE, current_dir);
+        if (!file || file->type != FS_FILE) {
+            terminal_writestring("curl: cannot open output path\n");
+            return;
+        }
+        if (count > MAX_FILE_CONTENT_SIZE - 1) {
+            terminal_writestring("curl: response exceeds SharkOS file size limit\n");
+            return;
+        }
+        memcpy(file->content, response, (size_t)count);
+        file->content[count] = 0;
+        file->content_len = count;
+        if (!fs_node_sync(file)) {
+            terminal_writestring("curl: download received but file could not be written to its filesystem\n");
+            return;
+        }
+        terminal_writestring("Saved ");
+        char sizebuf[16]; int_to_string((uint32_t)count, sizebuf);
+        terminal_writestring(sizebuf); terminal_writestring(" bytes to ");
+        terminal_writestring(output); terminal_writestring("\n");
+        return;
+    }
+    if (net_http_last_status < 200 || net_http_last_status >= 300) {
+        terminal_writestring("curl: HTTP status ");
+        char status[16]; int_to_string((uint32_t)net_http_last_status, status);
+        terminal_writestring(status); terminal_writestring("\n");
+    }
+    for (int i = 0; i < count; i++) {
+        if (response[i] == 0) terminal_putchar(' ');
+        else terminal_putchar((char)response[i]);
+    }
+    if (!count || response[count - 1] != '\n') terminal_putchar('\n');
+}
+
+static void cmd_websocket(const char* args) {
+    char url[512];
+    char message[1024];
+    const char* p = curl_next_arg(args, url, sizeof(url));
+    p = curl_next_arg(p, message, sizeof(message));
+    if (!url[0]) {
+        terminal_writestring("Usage: websocket <ws:// or wss:// URL> [text]\n");
+        return;
+    }
+    if (net_websocket_open(url) < 0) {
+        terminal_writestring("websocket: connection or upgrade handshake failed\n");
+        return;
+    }
+    terminal_writestring("websocket: connected\n");
+    if (message[0] && net_websocket_send((const uint8_t*)message, (uint32_t)strlen(message)) < 0) {
+        terminal_writestring("websocket: send failed\n");
+        net_websocket_close();
+        return;
+    }
+    if (message[0]) {
+        static uint8_t response[64 * 1024];
+        int n = net_websocket_recv(response, sizeof(response), 5000);
+        if (n < 0) terminal_writestring("websocket: receive timed out or failed\n");
+        else if (n > 0) {
+            for (int i = 0; i < n; i++) terminal_putchar(response[i] ? (char)response[i] : ' ');
+            terminal_putchar('\n');
+        }
+    }
+    net_websocket_close();
+}
+
+static void cmd_mount(const char* args) {
+    if (!args[0]) {
+        terminal_writestring("Detected ATA drives: ");
+        char number[16];
+        int_to_string((uint32_t)ata_drive_count(), number);
+        terminal_writestring(number);
+        terminal_writestring("\nUsage: mount <drive-index> [directory]\n");
+        for (int i = 0; i < ata_drive_count(); i++) {
+            const ata_drive_t* d = ata_drive_get(i);
+            terminal_writestring("  ");
+            int_to_string((uint32_t)i, number);
+            terminal_writestring(number);
+            terminal_writestring(": ");
+            terminal_writestring(d->model);
+            terminal_writestring("\n");
+        }
+        return;
+    }
+    int drive = 0;
+    const char* p = args;
+    if (*p < '0' || *p > '9') {
+        terminal_writestring("Usage: mount <drive-index> [directory]\n");
+        return;
+    }
+    while (*p >= '0' && *p <= '9') drive = drive * 10 + (*p++ - '0');
+    while (*p == ' ') p++;
+    struct fs_node* target = NULL;
+    if (*p) {
+        target = fs_resolve_path(p);
+    } else {
+        struct fs_node* mnt = fs_resolve_path("/mnt");
+        if (!mnt) mnt = create_node("mnt", FS_DIRECTORY, root);
+        char name[16] = "disk";
+        int_to_string((uint32_t)drive, name + 4);
+        target = find_node(mnt, name);
+        if (!target && mnt) target = create_node(name, FS_DIRECTORY, mnt);
+    }
+    if (!target || target->type != FS_DIRECTORY) {
+        terminal_writestring("mount: mount point must be an existing directory\n");
+        return;
+    }
+    int result = fat16_mount(drive, target);
+    if (result < 0) {
+        terminal_writestring("mount: FAT16 mount failed; use a FAT16 volume and a free mount point\n");
+        return;
+    }
+    terminal_writestring("Mounted FAT16 drive ");
+    char number[16];
+    int_to_string((uint32_t)drive, number);
+    terminal_writestring(number);
+    terminal_writestring(" at ");
+    terminal_writestring(target->name);
+    terminal_writestring("\n");
+}
+
+static void cmd_umount(const char* args) {
+    struct fs_node* target = fs_resolve_path(args);
+    if (!target || !fat16_unmount(target)) {
+        terminal_writestring("umount: path is not a mounted filesystem\n");
+        return;
+    }
+    terminal_writestring("Filesystem unmounted\n");
+}
+
+static void cmd_gcc(const char* args) {
+    if (strcmp(args, "--version") == 0 || strcmp(args, "-v") == 0) {
+        terminal_writestring("GNU GCC build compiler: ");
+        terminal_writestring(__VERSION__);
+        terminal_writestring("\nTarget: x86_64, freestanding kernel C\n");
+        return;
+    }
+    terminal_writestring("GCC is integrated into the SharkOS kernel build toolchain, not bundled as a kernel-hosted process.\n");
+    terminal_writestring("On the Linux build host run: tools/sharkcc source.c output.o\n");
+}
+
+static void cmd_dns(const char* args) {
+    if (strlen(args) == 0) {
+        terminal_writestring("Usage: dns <hostname>\n");
+        return;
+    }
+    net_cmd_dns(args);
+}
+static void cmd_netstat(const char* args) {
+    (void)args;
+    net_cmd_netstat();
+}
+
+                                                                          
+                                                                        
+                                                                           
+
+
+#include "audio.h"
+static void cmd_audio(const char* args){
+    char buf0[64];  
+    if (strlen(args)==0 || strcmp(args,"status")==0){
+        terminal_writestring("Audio backend: "); terminal_writestring((char*)audio_backend_name()); terminal_writestring("\n");
+        terminal_writestring("Available: "); terminal_writestring(audio_available() ? "yes" : "no"); terminal_writestring("\n");
+        terminal_writestring("Master vol: "); char nb[16]; int_to_string(g_audio.master_volume, nb); terminal_writestring(nb); terminal_writestring("/255\n");
+        terminal_writestring("Mix ticks: "); int_to_string(g_audio.tick_count, nb); terminal_writestring(nb); terminal_writestring("\n");
+        terminal_writestring("Underruns: "); int_to_string(g_audio.underruns, nb); terminal_writestring(nb); terminal_writestring("\n");
+        for(int i=0;i<AUDIO_MAX_CHANNELS;i++){
+            if(g_audio.channels[i].active){
+                terminal_writestring(" ch"); int_to_string(i,nb); terminal_writestring(nb);
+                terminal_writestring(": "); terminal_writestring(g_audio.channels[i].loop?"loop ":"");
+                int_to_string(g_audio.channels[i].volume,nb); terminal_writestring(nb);
+                terminal_writestring(" sr"); int_to_string(g_audio.channels[i].src_rate,nb); terminal_writestring(nb);
+                terminal_writestring(" pos"); int_to_string(g_audio.channels[i].frac_pos>>16,nb); terminal_writestring(nb);
+                terminal_writestring("\n");
+            }
+        }
+        return;
+    }
+    if (strcmp(args,"beep")==0){
+        pcspkr_beep(880,200); pcspkr_beep(440,200);
+        terminal_writestring("Beep! (PC speaker 880+440Hz)\n");
+        return;
+    }
+    if (strstr(args,"tone ")){
+        int f=0, ms=0;
+        const char* p=args+5;
+        while(*p==' ') p++;
+        while(*p>='0'&&*p<='9'){ f=f*10+(*p-'0'); p++; }
+        while(*p==' ') p++;
+        while(*p>='0'&&*p<='9'){ ms=ms*10+(*p-'0'); p++; }
+        if(f>0 && ms>0){ pcspkr_beep(f,ms); terminal_writestring("Tone done\n"); } else terminal_writestring("Usage: audio tone <freq> <ms>\n");
+        return;
+    }
+    if (strcmp(args,"stop")==0){
+        audio_stop_all();
+        terminal_writestring("Stopped all channels\n");
+        return;
+    }
+    if (strstr(args,"vol ")){
+        int v=0; const char* p=args+4; while(*p==' ') p++; while(*p>='0'&&*p<='9'){ v=v*10+(*p-'0'); p++; }
+        audio_set_master_volume(v);
+        terminal_writestring("Master volume set\n");
+        return;
+    }
+    if (strstr(args,"wav ")){
+        const char* path=args+4; while(*path==' ') path++;
+        struct fs_node* n=search_path(path);
+        if(!n) n=find_node(root,(char*)path);
+        if(!n || n->type!=FS_FILE){ terminal_writestring("WAV not found\n"); return; }
+        wav_info_t wi;
+        if(!wav_parse((uint8_t*)n->content, n->content_len, &wi)){ terminal_writestring("Invalid WAV\n"); return; }
+        int h=audio_play_wav((uint8_t*)n->content, n->content_len, 200, false);
+        terminal_writestring("Playing WAV "); terminal_writestring(path); terminal_writestring(" handle "); char nb2[16]; int_to_string(h,nb2); terminal_writestring(nb2); terminal_writestring("\n");
+        return;
+    }
+    if (strcmp(args,"test")==0){
+         
+        int16_t* buf=(int16_t*)kmalloc(48000/2*4);
+        if(!buf){ terminal_writestring("oom\n"); return; }
+        int period=48000/440;
+        for(int i=0;i<24000;i++){
+            int16_t s=(i%period < period/2) ? 18000 : -18000;
+            buf[i*2+0]=s; buf[i*2+1]=s;
+        }
+        audio_play(buf, 24000*4, 48000, 2, 16, false, 200);
+        terminal_writestring("Test tone 440Hz square playing (0.5s)\n");
+        return;
+    }
+    terminal_writestring("Usage: audio [status|beep|tone <f> <ms>|stop|vol <0-255>|wav <path>|test]\n");
+}
+
+static const char* neofetch_art[] = {
+    "                             :-:::",
+    "                             =@@**+=-:",
+    "                              :#+:-=+*+-",
+    "                             : -@-   :=**-",
+    "  ::::::                       -@- :    -#*-:",
+    "  -*@%*+++=-:               :-+#=:       :-+*+=::",
+    "   :-+#=:-=+**=:::::::---=++*+=:            :-++**+==-::",
+    "      -**-  :-++++++++++==-::        =-=--      ::--=+++++:",
+    "        =@=   -+==--::     ::        -++=*:          :-+@+:",
+    "         +@ :+@=-==++*+::-+*-:=-:::::-----   ::--==+**+=:",
+    "         +%-#*:       :-#@%-+#=:-++**++++=- :%*+==--:",
+    "        :@@#-          :::=**:     :::::-*%:#*:",
+    "        =*-:                             *@%+:",
+    "                                        :+=:",
+};
+#define NEOFETCH_ART_ROWS 14
+
+static void fetch_cat(char* dst, const char* src) {
+    while (*dst) dst++;
+    while ((*dst++ = *src++));
+}
+
+static void fetch_num(char* dst, uint32_t v) {
+    char b[16];
+    int_to_string(v, b);
+    fetch_cat(dst, b);
+}
+
+static void fetch_kv(char* dst, const char* key) {
+    fetch_cat(dst, "\x1b[96m");
+    fetch_cat(dst, key);
+    fetch_cat(dst, ":\x1b[97m ");
+}
+
+static int neofetch_line_width(const char* line, int compact) {
+    int width = 0;
+    int in_space = 0;
+    for (int i = 0; line[i]; i++) {
+        if (compact && line[i] == ' ') {
+            if (!in_space) width++;
+            in_space = 1;
+        } else {
+            width++;
+            in_space = 0;
+        }
+    }
+    return width;
+}
+
+static void neofetch_write_art_line(const char* line, int compact) {
+    if (!compact) {
+        terminal_writestring(line);
+        return;
+    }
+    int in_space = 0;
+    for (int i = 0; line[i]; i++) {
+        if (line[i] == ' ') {
+            if (!in_space) terminal_putchar(' ');
+            in_space = 1;
+        } else {
+            terminal_putchar(line[i]);
+            in_space = 0;
+        }
+    }
+}
+
+static void shark_fetch_fill_info(char info[10][160]) {
+    for (uint32_t i = 0; i < 10; i++) info[i][0] = 0;
+    fetch_cat(info[0], "\x1b[1;96mroot\x1b[1;97m@\x1b[1;93msharkos\x1b[0m");
+    fetch_cat(info[1], "\x1b[94m----------------\x1b[0m");
+    fetch_kv(info[2], "OS");
+#ifdef SERVER_IMAGE
+    fetch_cat(info[2], "\x1b[1;93mSharkOS\x1b[97m Server\x1b[0m");
+#else
+    fetch_cat(info[2], "\x1b[1;93mSharkOS\x1b[0m");
+#endif
+    fetch_kv(info[3], "Kernel");
+    fetch_cat(info[3], "Nemo Kernel, freestanding");
+    fetch_kv(info[4], "Shell");
+#ifdef SERVER_IMAGE
+    fetch_cat(info[4], "SharkOS Server console");
+#else
+    fetch_cat(info[4], "nemo-shell");
+#endif
+    fetch_kv(info[5], "Uptime");
+    uint32_t uptime = uptime_ticks / TICKS_PER_SEC;
+    fetch_num(info[5], uptime / 3600);
+    fetch_cat(info[5], "h ");
+    fetch_num(info[5], (uptime / 60) % 60);
+    fetch_cat(info[5], "m ");
+    fetch_num(info[5], uptime % 60);
+    fetch_cat(info[5], "s");
+    fetch_kv(info[6], "CPU");
+    char cpu[49];
+    get_cpu_model(cpu);
+    fetch_cat(info[6], cpu);
+    fetch_kv(info[7], "Memory");
+    uint64_t free_bytes = pmm_free_memory_bytes();
+    if (free_bytes > total_system_memory) free_bytes = total_system_memory;
+    fetch_num(info[7], (uint32_t)((total_system_memory - free_bytes) >> 20));
+    fetch_cat(info[7], " / ");
+    fetch_num(info[7], (uint32_t)(total_system_memory >> 20));
+    fetch_cat(info[7], " MiB");
+    fetch_kv(info[8], "Network");
+    if (!net_has_nic()) fetch_cat(info[8], "no adapter");
+    else {
+        fetch_cat(info[8], net_driver_name);
+        fetch_cat(info[8], " ");
+        if (net_configured) {
+            for (uint32_t i = 0; i < 4; i++) {
+                fetch_num(info[8], net_ip[i]);
+                if (i < 3) fetch_cat(info[8], ".");
+            }
+        } else fetch_cat(info[8], "DHCP pending");
+    }
+    fetch_kv(info[9], "Firewall");
+    fetch_num(info[9], firewall_rule_count());
+    fetch_cat(info[9], firewall_rule_count() == 1 ? " rule, default " : " rules, default ");
+    fetch_cat(info[9], firewall_get_default() == FIREWALL_ACTION_ALLOW
+                          ? "\x1b[92mallow\x1b[0m" : "\x1b[91mdeny\x1b[0m");
+}
+
+static int fetch_terminal_columns(void) {
+#ifdef SERVER_IMAGE
+    return desktop_terminal_cols;
+#else
+    return terminal_in_desktop_window ? desktop_terminal_cols : (int)term_cols;
+#endif
+}
+
+static void shark_neofetch_show(void) {
+    char info[10][160];
+    shark_fetch_fill_info(info);
+    int columns = fetch_terminal_columns();
+    int compact = columns > 0 && columns < 60;
+    int art_width = 0;
+    for (uint32_t i = 0; i < NEOFETCH_ART_ROWS; i++) {
+        int length = neofetch_line_width(neofetch_art[i], compact);
+        if (length > art_width) art_width = length;
+    }
+    int info_column = art_width + 4;
+    int side_by_side = columns >= info_column + 56;
+    for (uint32_t row = 0; row < NEOFETCH_ART_ROWS; row++) {
+        terminal_writestring("\x1b[94m");
+        neofetch_write_art_line(neofetch_art[row], compact);
+        terminal_writestring("\x1b[0m");
+        if (side_by_side) {
+            int padding = info_column - neofetch_line_width(neofetch_art[row], compact);
+            while (padding-- > 0) terminal_putchar(' ');
+            if (row < 10) terminal_writestring(info[row]);
+        }
+        terminal_putchar('\n');
+    }
+    if (!side_by_side) {
+        terminal_putchar('\n');
+        for (uint32_t row = 0; row < 10; row++) {
+            terminal_writestring(info[row]);
+            terminal_putchar('\n');
+        }
+    }
+    terminal_writestring("\x1b[0m");
+}
+
+#ifndef SERVER_IMAGE
+static void cmd_sharkfetch(const char* args) {
+    (void)args;
+    shark_neofetch_show();
+}
+#endif
+
+
+
+
+
+
+
+
+
+#define IMGFETCH_INFO_LINES 10
+
+
+#define IMGFETCH_GAP_COLS 5
+
+static int fetch_visible_width(const char* text) {
+    int width = 0;
+    int state = 0; 
+    for (int i = 0; text[i]; i++) {
+        char c = text[i];
+        if (state == 1) {
+            if (c == '[') state = 2;
+            else state = 0;
+            continue;
+        }
+        if (state == 2) {
+            if (c >= 0x40 && c <= 0x7E) state = 0;
+            continue;
+        }
+        if (c == 27) { state = 1; continue; }
+        width++;
+    }
+    return width;
+}
+
+
+static uint8_t imgfetch_vga_to_ansi(uint8_t vga) {
+    static const uint8_t map[16] = {0, 4, 2, 6, 1, 5, 3, 7, 8, 12, 10, 14, 9, 13, 11, 15};
+    return map[vga & 0x0F];
+}
+
+
+static void imgfetch_put_sgr(uint8_t fg, uint8_t bg) {
+    char seq[16];
+    int n = 0;
+    fg = imgfetch_vga_to_ansi(fg);
+    bg = imgfetch_vga_to_ansi(bg);
+    seq[n++] = 27;
+    seq[n++] = '[';
+    if (fg < 8) { seq[n++] = '3'; seq[n++] = (char)('0' + fg); }
+    else { seq[n++] = '9'; seq[n++] = (char)('0' + (fg - 8)); }
+    seq[n++] = ';';
+    if (bg < 8) { seq[n++] = '4'; seq[n++] = (char)('0' + bg); }
+    else { seq[n++] = '1'; seq[n++] = '0'; seq[n++] = (char)('0' + (bg - 8)); }
+    seq[n++] = 'm';
+    seq[n] = 0;
+    terminal_writestring(seq);
+}
+
+#ifndef SERVER_IMAGE
+
+static void imgfetch_draw_pixels(int x0, int y0, int size, int clipx0, int clipy0, int clipx1, int clipy1) {
+    if (!lfbptr || size <= 0) return;
+    
+    const imgfetch_pixel_t* source_art = &imgfetch_pixels[IMGFETCH_PIXEL_COUNT - 1];
+    for (int i = 0; i < IMGFETCH_PIXEL_COUNT; i++) {
+        if ((int)imgfetch_pixels[i].size >= size) { source_art = &imgfetch_pixels[i]; break; }
+    }
+    uint32_t stride = (uint32_t)(screen_pitch / 4);
+    const uint8_t* p = source_art->rle;
+    const uint8_t* end = source_art->rle + source_art->rle_len;
+    const int source = (int)source_art->size;
+    if (size == source) {
+        
+        int y0c = clipy0 > y0 ? clipy0 : y0;
+        int y1c = clipy1 < y0 + size ? clipy1 : y0 + size;
+        int x0c = clipx0 > x0 ? clipx0 : x0;
+        int x1c = clipx1 < x0 + size ? clipx1 : x0 + size;
+        if (x0c < x1c && y0c < y1c) {
+            const uint8_t* p1 = source_art->rle;
+            const uint8_t* end1 = p1 + source_art->rle_len;
+            int sx1 = 0, sy1 = 0;
+            while (p1 + 2 <= end1 && sy1 < source) {
+                int run = p1[0];
+                uint8_t index = p1[1];
+                p1 += 2;
+                if (!run) continue;
+                uint32_t colour1 = imgfetch_pixel_palette[index % IMGFETCH_PIXEL_COLORS];
+                while (run-- > 0 && sy1 < source) {
+                    int py = y0 + sy1;
+                    if (py >= y0c && py < y1c) {
+                        int px = x0 + sx1;
+                        if (px >= x0c && px < x1c) lfbptr[(uint32_t)py * stride + (uint32_t)px] = colour1;
+                    }
+                    if (++sx1 >= source) { sx1 = 0; sy1++; }
+                }
+            }
+            return;
+        }
+    }
+    int sx = 0;
+    int sy = 0;
+    int last_ox = -1;
+    int last_oy = -1;
+    uint32_t colour = 0;
+    while (p + 2 <= end && sy < source) {
+        int run = p[0];
+        uint8_t index = p[1];
+        p += 2;
+        if (!run) continue;
+        colour = imgfetch_pixel_palette[index % IMGFETCH_PIXEL_COLORS];
+        while (run-- > 0 && sy < source) {
+            int ox = sx * size / source;
+            int oy = sy * size / source;
+            if (ox != last_ox || oy != last_oy) {
+                int px = x0 + ox;
+                int py = y0 + oy;
+                if (px >= clipx0 && px < clipx1 && py >= clipy0 && py < clipy1) {
+                    lfbptr[(uint32_t)py * stride + (uint32_t)px] = colour;
+                }
+                last_ox = ox;
+                last_oy = oy;
+            }
+            if (++sx >= source) {
+                sx = 0;
+                sy++;
+            }
+        }
+    }
+}
+
+void imgfetch_blit(int x, int y, int size, int clipx0, int clipy0, int clipx1, int clipy1) {
+    imgfetch_draw_pixels(x, y, size, clipx0, clipy0, clipx1, clipy1);
+}
+
+
+static int imgfetch_overlay_active = 0;
+static int imgfetch_overlay_x = 0;
+static int imgfetch_overlay_y = 0;
+static int imgfetch_overlay_size = 0;
+static int imgfetch_overlay_clipx1 = 0;
+static int imgfetch_overlay_clipy1 = 0;
+
+void imgfetch_overlay_redraw(void) {
+    if (!imgfetch_overlay_active || !lfbptr) return;
+    imgfetch_draw_pixels(imgfetch_overlay_x, imgfetch_overlay_y, imgfetch_overlay_size,
+                         imgfetch_overlay_x, (int)row_px((size_t)content_first_row),
+                         imgfetch_overlay_clipx1, imgfetch_overlay_clipy1);
+}
+
+void imgfetch_overlay_clear(void) {
+    imgfetch_overlay_active = 0;
+}
+
+
+static int imgfetch_pixel_show(char info[10][160], int info_width, int requested) {
+    if (!lfbptr || !screen_width || !screen_height) return 0;
+    if (terminal_in_desktop_window || lite_mode || legacy_mode) return 0;
+
+    int start_row = (int)terminal_row;
+    int pane_x0 = (int)col_px(panes[active_pane].col_start);
+    int cell_w = (int)font_cell_w;
+    int cell_h = (int)font_cell_h;
+    int panel_x = (int)col_px(panes[active_pane].col_end);
+    if (pane_x0 < 0) pane_x0 = 0;
+    if (panel_x > (int)screen_width) panel_x = (int)screen_width;
+    if (pane_x0 >= panel_x) return 0;
+
+    int available_rows = (int)term_max_row - start_row - 1;
+    if (available_rows < 5) return 0;
+
+    
+    int rows_wanted = IMGFETCH_INFO_LINES;
+    if (requested > 0) rows_wanted = available_rows;
+    if (rows_wanted > available_rows) rows_wanted = available_rows;
+
+    int size = panel_x - pane_x0 - (info_width + IMGFETCH_GAP_COLS) * cell_w;
+    int by_height = rows_wanted * cell_h;
+    if (size > by_height) size = by_height;
+    if (requested > 0 && size > requested * cell_w) size = requested * cell_w;
+    if (size > (int)imgfetch_pixels[IMGFETCH_PIXEL_COUNT - 1].size)
+        size = (int)imgfetch_pixels[IMGFETCH_PIXEL_COUNT - 1].size;
+    if (size < 48) return 0;
+
+    int art_cols = (size + cell_w - 1) / cell_w;
+    if (art_cols < 1) art_cols = 1;
+    int art_rows = (size + cell_h - 1) / cell_h;
+    if (art_rows > available_rows) return 0; 
+
+    int info_top = (art_rows - 10) / 2;
+    if (info_top < 0) info_top = 0;
+    int next_info = 0;
+    terminal_writestring("\x1b[0m");
+    for (int r = 0; r < art_rows; r++) {
+        for (int c = 0; c < art_cols + IMGFETCH_GAP_COLS; c++) terminal_putchar(' ');
+        terminal_writestring("\x1b[0m");
+        if (r >= info_top && next_info < 10) {
+            terminal_writestring(info[next_info]);
+            next_info++;
+        }
+        terminal_putchar('\n');
+    }
+    while (next_info < 10) {
+        terminal_writestring(info[next_info]);
+        terminal_putchar('\n');
+        next_info++;
+    }
+    terminal_writestring("\x1b[0m");
+
+    int clipy0 = (int)row_px((size_t)content_first_row);
+    imgfetch_overlay_x = pane_x0;
+    imgfetch_overlay_y = (int)row_px((size_t)start_row);
+    imgfetch_overlay_size = art_cols * cell_w;
+    imgfetch_overlay_clipx1 = panel_x;
+    imgfetch_overlay_clipy1 = (int)screen_height;
+    imgfetch_overlay_active = 1;
+    imgfetch_draw_pixels(pane_x0, (int)row_px((size_t)start_row), art_cols * cell_w,
+                         pane_x0, clipy0, panel_x, (int)screen_height);
+    return 1;
+}
+
+#define IMGFETCH_WIN_CELL_W 8
+#define IMGFETCH_WIN_CELL_H 16
+static int imgfetch_window_show(char info[10][160], int info_width, int requested) {
+    if (!terminal_in_desktop_window || !lfbptr) return 0;
+    int cols = desktop_terminal_cols;
+    if (cols < 12) return 0;
+
+    int art_rows = IMGFETCH_INFO_LINES;
+    if (requested > 0 && requested < art_rows) art_rows = requested;
+    int art_cols = art_rows * (IMGFETCH_WIN_CELL_H / IMGFETCH_WIN_CELL_W);
+    int need_cols = art_cols + IMGFETCH_GAP_COLS + info_width;
+
+    
+    desktop_terminal_widen(need_cols);
+    cols = desktop_terminal_cols;
+
+    if (need_cols <= cols && desktop_terminal_rows_available() >= art_rows + 1) {
+        terminal_writestring("\x1b[0m");
+        for (int r = 0; r < art_rows; r++) {
+            for (int c = 0; c < art_cols + IMGFETCH_GAP_COLS; c++) terminal_putchar(' ');
+            terminal_writestring(info[r]);
+            terminal_putchar('\n');
+        }
+        terminal_writestring("\x1b[0m");
+        desktop_terminal_image_attach(art_rows, 0, art_cols,
+                                      art_rows * IMGFETCH_WIN_CELL_H, 0);
+        return 1;
+    }
+
+    
+    int wanted_rows = art_rows + IMGFETCH_INFO_LINES + 1;
+    desktop_terminal_grow(wanted_rows);
+    int avail = desktop_terminal_rows_available();
+    if (avail < IMGFETCH_INFO_LINES + 4) return 0;
+
+    int room = avail - IMGFETCH_INFO_LINES - 1;
+    if (art_rows > room) art_rows = room;
+    if (art_rows < 4) return 0;
+    art_cols = art_rows * (IMGFETCH_WIN_CELL_H / IMGFETCH_WIN_CELL_W);
+    if (art_cols > cols - 2) {
+        art_cols = cols - 2;
+        art_rows = art_cols / (IMGFETCH_WIN_CELL_H / IMGFETCH_WIN_CELL_W);
+    }
+    if (art_cols < 8 || art_rows < 4) return 0;
+
+    int size = art_rows * IMGFETCH_WIN_CELL_H;
+    int baked = (int)imgfetch_pixels[IMGFETCH_PIXEL_COUNT - 1].size;
+    if (size > baked) size = baked;
+    if (size < 48) return 0;
+
+    terminal_writestring("\x1b[0m");
+    for (int r = 0; r < art_rows; r++) {
+        for (int c = 0; c < art_cols; c++) terminal_putchar(' ');
+        terminal_putchar('\n');
+    }
+    for (int i = 0; i < IMGFETCH_INFO_LINES; i++) {
+        terminal_writestring(info[i]);
+        terminal_putchar('\n');
+    }
+    terminal_writestring("\x1b[0m");
+    desktop_terminal_image_attach(art_rows, IMGFETCH_INFO_LINES, art_cols, size,
+                                  (cols - art_cols) / 2);
+    return 1;
+}
+#endif
+
+static void cmd_imgfetch(const char* args) {
+    char* cursor = (char*)args;
+    char* arg = shell_next_token(&cursor);
+    int requested = arg ? simple_atoi(arg) : 0;
+
+    char info[10][160];
+    shark_fetch_fill_info(info);
+    int info_width = 0;
+    for (uint32_t i = 0; i < 10; i++) {
+        int w = fetch_visible_width(info[i]);
+        if (w > info_width) info_width = w;
+    }
+
+    int columns = fetch_terminal_columns();
+    if (columns < 20) columns = 20;
+    int available_rows = (int)term_max_row - (int)content_first_row;
+    if (available_rows < 6) available_rows = 6;
+
+#ifndef SERVER_IMAGE
+    
+    terminal_hot_clear();
+    desktop_terminal_hot_set(0);
+    if (imgfetch_window_show(info, info_width, requested)) return;
+    if (imgfetch_pixel_show(info, info_width, requested)) return;
+    imgfetch_overlay_clear();
+    desktop_terminal_image_detach();
+#endif
+
+    const imgfetch_art_t* art = NULL;
+    int stacked = 0;
+    if (requested > 0) {
+        
+        for (int i = 0; i < IMGFETCH_ART_COUNT; i++) {
+            if ((int)imgfetch_arts[i].cols <= requested) { art = &imgfetch_arts[i]; break; }
+        }
+        if (!art) art = &imgfetch_arts[IMGFETCH_ART_COUNT - 1];
+        if ((int)art->cols > columns) {
+            for (int i = 0; i < IMGFETCH_ART_COUNT; i++) {
+                if ((int)imgfetch_arts[i].cols <= columns) { art = &imgfetch_arts[i]; break; }
+            }
+        }
+        stacked = (int)art->cols + IMGFETCH_GAP_COLS + info_width > columns;
+    } else {
+        const imgfetch_art_t* width_fit = NULL;
+        for (int i = 0; i < IMGFETCH_ART_COUNT; i++) {
+            const imgfetch_art_t* candidate = &imgfetch_arts[i];
+            if ((int)candidate->cols + IMGFETCH_GAP_COLS + info_width > columns) continue;
+            if (!width_fit) width_fit = candidate;
+            if ((int)candidate->rows <= IMGFETCH_INFO_LINES) { art = candidate; break; }
+        }
+        if (!art) art = width_fit;
+        if (!art) {
+            
+            stacked = 1;
+            for (int i = 0; i < IMGFETCH_ART_COUNT; i++) {
+                if ((int)imgfetch_arts[i].cols <= columns) { art = &imgfetch_arts[i]; break; }
+            }
+            if (!art) art = &imgfetch_arts[IMGFETCH_ART_COUNT - 1];
+        }
+    }
+
+    int info_top = ((int)art->rows - 10) / 2;
+    if (info_top < 0) info_top = 0;
+    int next_info = 0;
+    int row = 0;
+    int col = 0;
+    uint8_t cur_fg = VGA_COLOR_LIGHT_GREY;
+    uint8_t cur_bg = VGA_COLOR_BLACK;
+
+    const uint8_t* p = art->rle;
+    const uint8_t* end = art->rle + art->rle_len;
+    while (p + 4 <= end) {
+        int run = p[0];
+        char glyph = (char)p[1];
+        uint8_t fg = p[2];
+        uint8_t bg = p[3];
+        p += 4;
+        if (run == 0) {
+            if (!stacked) {
+                int padding = (int)art->cols + IMGFETCH_GAP_COLS - col;
+                while (padding-- > 0) terminal_putchar(' ');
+                terminal_writestring("\x1b[0m");
+                cur_fg = VGA_COLOR_LIGHT_GREY;
+                cur_bg = VGA_COLOR_BLACK;
+                if (row >= info_top && next_info < 10) {
+                    terminal_writestring(info[next_info]);
+                    next_info++;
+                }
+            }
+            terminal_putchar('\n');
+            row++;
+            col = 0;
+            continue;
+        }
+        if (fg != cur_fg || bg != cur_bg) {
+            imgfetch_put_sgr(fg, bg);
+            cur_fg = fg;
+            cur_bg = bg;
+        }
+        while (run-- > 0) {
+            terminal_putchar(glyph);
+            col++;
+        }
+    }
+    terminal_writestring("\x1b[0m");
+    if (next_info < 10) {
+        if (stacked) terminal_putchar('\n');
+        while (next_info < 10) {
+            terminal_writestring(info[next_info]);
+            terminal_putchar('\n');
+            next_info++;
+        }
+    }
+}
+
+static void cmd_rtr(const char* args) { router_command(args); }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+static void cmd_fw(const char* args)  { fw_command(args); }
+
+static const cmd_entry_t cmd_table[] = {
+    {"ls", cmd_ls},
+    {"dir", cmd_ls},
+    {"cd", cmd_cd},
+    {"pwd", cmd_pwd},
+    {"cat", cmd_cat},
+    {"mkdir", cmd_mkdir},
+    {"touch", cmd_touch},
+    {"rm", cmd_rm},
+    {"rmdir", cmd_rmdir},
+    {"cp", cmd_cp},
+    {"mv", cmd_mv},
+    {"head", cmd_head},
+    {"tail", cmd_tail},
+    {"wc", cmd_wc},
+    {"clear", cmd_clear},
+    {"cls", cmd_clear},
+    {"rtr", cmd_rtr},
+    {"router", cmd_rtr},
+    {"fw", cmd_fw},
+    {"firewall", cmd_fw},
+    {"echo", cmd_echo},
+#ifndef SERVER_IMAGE
+    {"edit", cmd_edit},
+#endif
+    {"whoami", cmd_whoami},
+    {"help", cmd_help},
+    {"uname", cmd_uname},
+    {"sysinfo", cmd_sysinfo},
+    {"hostname", cmd_hostname},
+    {"devices", cmd_devices},
+    {"lspci", cmd_devices},
+    {"ps", cmd_ps},
+    {"htop", cmd_htop},
+#ifndef SERVER_IMAGE
+    {"taskmanager", cmd_taskmanager},
+    {"taskmgr", cmd_taskmanager},
+    {"browser", cmd_browser},
+    {"iexplore", cmd_browser},
+    {"www", cmd_browser},
+#endif
+    {"uptime", cmd_uptime},
+    {"neofetch", cmd_neofetch},
+    {"imgfetch", cmd_imgfetch},
+    {"ifetch", cmd_imgfetch},
+#ifndef SERVER_IMAGE
+    {"sharkfetch", cmd_sharkfetch},
+    {"sfetch", cmd_sharkfetch},
+#endif
+    {"poweroff", cmd_poweroff},
+    {"reboot", cmd_reboot},
+    {"bokop", cmd_bokop},
+    {"ifconfig", cmd_ifconfig},
+    {"dhcp", cmd_dhcp},
+    {"ping", cmd_ping},
+    {"wget", cmd_wget},
+    {"curl", cmd_curl},
+    {"websocket", cmd_websocket},
+    {"gcc", cmd_gcc},
+    {"mount", cmd_mount},
+    {"umount", cmd_umount},
+    {"dns", cmd_dns},
+    {"netstat", cmd_netstat},
+    {"audio", cmd_audio},
+    {"beep", cmd_audio},
+    {"mixer", cmd_audio},
+};
+
+#define CMD_TABLE_SIZE (sizeof(cmd_table) / sizeof(cmd_table[0]))
+
+static cmd_handler_t find_command(const char* name) {
+    for (unsigned int i = 0; i < CMD_TABLE_SIZE; i++) {
+        if (strcmp(cmd_table[i].name, name) == 0) {
+            return cmd_table[i].handler;
+        }
+    }
+    return NULL;
+}
+
+#ifdef SERVER_IMAGE
+static int server_command_is_disabled(const char* cmd) {
+    char name[32];
+    uint32_t i = 0;
+    while (cmd[i] && cmd[i] != ' ' && i < sizeof(name) - 1) {
+        name[i] = cmd[i];
+        i++;
+    }
+    name[i] = 0;
+    static const char* disabled[] = {
+        "edit", "browser", "iexplore", "www", "taskmanager", "taskmgr",
+        "sharkfetch", "sfetch", "doom", "flappybird", "pong",
+        "gdash", "geometrydash", "sharkcube", "sharkcraft", "fnaf",
+        "guess", "tictactoe", "sl", "banner", "cowsay", "microsoft",
+        "wallpaper", "theme", "desktop", "settings", "notepad", "window"
+    };
+    for (uint32_t j = 0; j < sizeof(disabled) / sizeof(disabled[0]); j++) {
+        if (strcmp(name, disabled[j]) == 0) return 1;
+    }
+    return 0;
+}
+#endif
+
+void execute_command(char* cmd) {
+#ifdef SERVER_IMAGE
+    if (server_command_is_disabled(cmd)) {
+        terminal_writestring("This visual or game command is not included in the server image.\n");
+        return;
+    }
+#endif
+    if (strlen(cmd) == 0) return;
+    uint8_t old_color = terminal_color;
+    terminal_putchar('\n');
+
+    char cmd_name[32];
+    int i = 0;
+    while(cmd[i] != ' ' && cmd[i] != '\0' && i < 31) {
+        cmd_name[i] = cmd[i];
+        i++;
+    }
+    cmd_name[i] = '\0';
+    uint32_t plugin_id;
+    char* args = (cmd[i] == ' ') ? &cmd[i+1] : "";
+    while (*args == ' ') args++;
+
+#ifndef SERVER_IMAGE
+    if (terminal_hot_active()) terminal_hot_clear();
+    desktop_terminal_hot_set(0);
+    imgfetch_overlay_clear();
+    if (strcmp(cmd_name, "hot") == 0) {
+        if (terminal_in_desktop_window) desktop_terminal_hot_set(1);
+        else terminal_hot_easter_egg();
+        terminal_set_color(old_color);
+        return;
+    }
+#endif
+
+    cmd_handler_t handler = find_command(cmd_name);
+    if (handler) {
+        handler(args);
+        terminal_set_color(old_color);
+        return;
+    }
+
+    if (strcmp(cmd_name, "tree") == 0) {
+        print_tree(current_dir, 0);
+    } else if (strcmp(cmd_name, "find") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: find <name>");
+        } else {
+            struct fs_node* stack[64];
+            int sp = 0;
+            stack[sp++] = root;
+            int found = 0;
+            while (sp > 0) {
+                yield();
+                struct fs_node* n = stack[--sp];
+                if (strstr(n->name, args)) {
+                    terminal_writestring(n->name);
+                    terminal_writestring("\n");
+                    found++;
+                }
+                if (n->type == FS_DIRECTORY && n != root) {
+                    for (int k = 0; k < n->num_children; k++) {
+                        if (sp < 64) stack[sp++] = n->children[k];
+                    }
+                }
+            }
+            if (!found) terminal_writestring("No matches found.");
+        }
+    } else if (strcmp(cmd_name, "grep") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: grep <pattern> <file>");
+        } else {
+            char pattern[32];
+            char filename[32];
+            int s = 0, d = 0;
+            char* p = args;
+            while (*p && *p != ' ' && s < 31) pattern[s++] = *p++;
+            pattern[s] = '\0';
+            if (*p == ' ') p++;
+            while (*p && d < 31) filename[d++] = *p++;
+            filename[d] = '\0';
+            if (s == 0 || d == 0) {
+                terminal_writestring("Usage: grep <pattern> <file>");
+            } else {
+                struct fs_node* target = fs_resolve_path(filename);
+                if (target && target->type == FS_FILE) {
+                    int found = 0;
+                    char line[128];
+                    int li = 0;
+                    for (int idx = 0; idx < target->content_len; idx++) {
+                        char c = target->content[idx];
+                        if (c == '\n' || idx == target->content_len - 1) {
+                            if (idx == target->content_len - 1 && c != '\n') {
+                                if (li < 127) line[li++] = c;
+                            }
+                            line[li] = '\0';
+                            if (strstr(line, pattern)) {
+                                terminal_writestring(line);
+                                terminal_writestring("\n");
+                                found++;
+                            }
+                            li = 0;
+                        } else {
+                            if (li < 127) line[li++] = c;
+                        }
+                    }
+                    if (!found) terminal_writestring("No matches found.");
+                } else {
+                    terminal_writestring("File not found.");
+                }
+            }
+        }
+    } else if (strcmp(cmd_name, "stat") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: stat <file>");
+        } else {
+            struct fs_node* target = fs_resolve_path(args);
+            if (target) {
+                terminal_writestring("File: ");
+                terminal_writestring(target->name);
+                terminal_writestring("\nType: ");
+                terminal_writestring(target->type == FS_DIRECTORY ? "directory" : "file");
+                terminal_writestring("\nSize: ");
+                char buf[16];
+                int_to_string(target->content_len, buf);
+                terminal_writestring(buf);
+                terminal_writestring(" bytes\n");
+                if (target->parent) {
+                    terminal_writestring("Parent: ");
+                    terminal_writestring(target->parent->name);
+                    terminal_writestring("\n");
+                }
+            } else {
+                terminal_writestring("File not found.");
+            }
+        }
+    } else if (strcmp(cmd_name, "neofetch") == 0) {
+        cmd_neofetch("");
+    } else if (strcmp(cmd_name, "fortune") == 0) {
+        const char* fortunes[] = {
+            "🦈 The shark is always hungry.",
+            "Code is poetry written for machines.",
+            "In SharkOS we trust.",
+            "Segfault is just a feature.",
+            "Keep swimming, keep coding.",
+            "0xDEADBEEF is a tasty snack.",
+            "Beware of off-by-one errors.",
+            "The kernel is always watching.",
+            "printf(\"Hello World\");\n",
+            "rm -rf / --no-preserve-root\n"
+        };
+        int idx = (uptime_ticks / 7) % 10;
+        terminal_writestring(fortunes[idx]);
+        terminal_writestring("\n");
+    } else if (strcmp(cmd_name, "cowsay") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: cowsay <text>");
+        } else {
+            terminal_writestring(" ");
+            for (i = 0; i < (int)strlen(args) + 2; i++) terminal_writestring("_");
+            terminal_writestring("\n< ");
+            terminal_writestring(args);
+            terminal_writestring(" >\n ");
+            for (i = 0; i < (int)strlen(args) + 2; i++) terminal_writestring("-");
+            terminal_writestring("\n        \\   ^__^\n         \\  (oo)\\_______\n            (__)\\       )\\/\\n                ||----w |\n                ||     ||\n");
+        }
+    } else if (strcmp(cmd_name, "sl") == 0) {
+        terminal_writestring("      ====        ________                ___________ \n  _/ _  \\_      /        \\   \\_    _/    /           \\ \n /    \\   \\    /    /\\    \\    \\  /     /    /\\    /\\ \n/     /    /  /    /  \\    \\    \\/     /    /  \\   \\ \\ \n\\     \\   /  /    /    \\    \\    /     /    /    \\   \\ \\ \n \\     \\/   /    /      \\    \\  /     /    /      \\   \\ \\ \n  \\        /    /        \\    \\/     /    /        \\   \\ \\ \n   \\______/____/__________\\____\\____/____/__________\\___\\ \\ \n");
+    } else if (strcmp(cmd_name, "banner") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: banner <text>");
+        } else {
+            terminal_writestring("\n ##   ##  #####  ##   ## ######\n ### ### ##   ### ### ###   ##\n ## # ## ##   ## ## # ##   ##\n ##   ## #####  ##   ## ######\n ##   ## ##   ## ##   ## ##   ##\n ##   ## ##   ## ##   ## ##   ##\n ##   ##  #####  ##   ## ######\n\n");
+            terminal_writestring(args);
+            terminal_writestring("\n");
+        }
+    } else if (strcmp(cmd_name, "guess") == 0) {
+        int secret = (uptime_ticks % 100) + 1;
+        terminal_writestring("Guess the number (1-100): ");
+        char numbuf[16];
+        int ni = 0;
+        while (ni < 15) {
+            yield();
+            char nc = keyboard_getchar();
+            if (nc == '\n') break;
+            if (nc == '\b') { if (ni > 0) ni--; continue; }
+            if (nc >= '0' && nc <= '9') numbuf[ni++] = nc;
+        }
+        numbuf[ni] = '\0';
+        int guess = 0;
+        for (i = 0; i < ni; i++) guess = guess * 10 + (numbuf[i] - '0');
+        if (guess == secret) terminal_writestring("\nCorrect! You win!");
+        else if (guess < secret) terminal_writestring("\nToo low!");
+        else terminal_writestring("\nToo high!");
+        terminal_writestring(" (answer was ");
+        char sbuf[16]; int_to_string(secret, sbuf); terminal_writestring(sbuf);
+        terminal_writestring(")\n");
+    } else if (strcmp(cmd_name, "tictactoe") == 0) {
+        char board[9];
+        for (i = 0; i < 9; i++) board[i] = ' ';
+        int moves = 0;
+        int player_score = 0, cpu_score = 0, draws = 0;
+        int play_again = 1;
+        while (play_again) {
+            moves = 0;
+            for (i = 0; i < 9; i++) board[i] = ' ';
+            terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+            terminal_writestring("\n╔═══════════════════════════╗\n");
+            terminal_writestring("║      TIC TAC TOE         ║\n");
+            terminal_writestring("╚═══════════════════════════╝\n");
+            terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+            terminal_writestring("You = X   CPU = O\n");
+            terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_BROWN, VGA_COLOR_BLACK));
+            terminal_writestring("Score: You ");
+            char sbuf[16]; int_to_string(player_score, sbuf); terminal_writestring(sbuf);
+            terminal_writestring(" - ");
+            int_to_string(cpu_score, sbuf); terminal_writestring(sbuf);
+            terminal_writestring(" CPU  (Draws: ");
+            int_to_string(draws, sbuf); terminal_writestring(sbuf);
+            terminal_writestring(")\n\n");
+            while (moves < 9) {
+                terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+                terminal_writestring("  ");
+                for (i = 0; i < 9; i++) {
+                    if (board[i] == 'X') terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+                    else if (board[i] == 'O') terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+                    else terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+                    terminal_putchar(board[i]);
+                    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+                    if (i % 3 != 2) terminal_writestring(" │ ");
+                    else if (i != 8) terminal_writestring("\n  ───┼───┼───\n  ");
+                }
+                terminal_writestring("\n\n");
+                int pos = 0;
+                while (pos < 1 || pos > 9) {
+                    yield();
+                    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+                    terminal_writestring("Your move (1-9, 0=quit): ");
+                    char nc = keyboard_getchar();
+                    if (nc == 0) continue;
+                    if (nc == '0') { moves = 9; break; }
+                    if (nc >= '1' && nc <= '9') {
+                        pos = nc - '0';
+                        terminal_putchar(nc);
+                        terminal_writestring("\n");
+                    }
+                }
+                if (pos == 0) break;
+                if (board[pos - 1] != ' ') {
+                    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+                    terminal_writestring("Spot taken! Try again.\n\n");
+                    continue;
+                }
+                board[pos - 1] = 'X';
+                moves++;
+                int win = 0;
+                int wins[8][3] = {{0,1,2},{3,4,5},{6,7,8},{0,3,6},{1,4,7},{2,5,8},{0,4,8},{2,4,6}};
+                for (int w = 0; w < 8; w++) {
+                    if (board[wins[w][0]] == 'X' && board[wins[w][1]] == 'X' && board[wins[w][2]] == 'X') win = 1;
+                }
+                if (win) {
+                    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+                    terminal_writestring("\n★ You win! ★\n");
+                    player_score++;
+                    break;
+                }
+                if (moves >= 9) {
+                    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_BROWN, VGA_COLOR_BLACK));
+                    terminal_writestring("\nDraw!\n");
+                    draws++;
+                    break;
+                }
+                int cpu_pos = -1;
+                for (int w = 0; w < 8; w++) {
+                    int a = wins[w][0], b = wins[w][1], c = wins[w][2];
+                    if (board[a] == 'O' && board[b] == 'O' && board[c] == ' ') cpu_pos = c + 1;
+                    if (board[a] == 'O' && board[c] == 'O' && board[b] == ' ') cpu_pos = b + 1;
+                    if (board[b] == 'O' && board[c] == 'O' && board[a] == ' ') cpu_pos = a + 1;
+                }
+                if (cpu_pos == -1) {
+                    for (int w = 0; w < 8; w++) {
+                        int a = wins[w][0], b = wins[w][1], c = wins[w][2];
+                        if (board[a] == 'X' && board[b] == 'X' && board[c] == ' ') cpu_pos = c + 1;
+                        if (board[a] == 'X' && board[c] == 'X' && board[b] == ' ') cpu_pos = b + 1;
+                        if (board[b] == 'X' && board[c] == 'X' && board[a] == ' ') cpu_pos = a + 1;
+                    }
+                }
+                if (cpu_pos == -1 && board[4] == ' ') cpu_pos = 5;
+                if (cpu_pos == -1) {
+                    int corners[4] = {1, 3, 7, 9};
+                    for (i = 0; i < 4; i++) {
+                        if (board[corners[i] - 1] == ' ') { cpu_pos = corners[i]; break; }
+                    }
+                }
+                if (cpu_pos == -1) {
+                    for (i = 0; i < 9; i++) {
+                        if (board[i] == ' ') { cpu_pos = i + 1; break; }
+                    }
+                }
+                board[cpu_pos - 1] = 'O';
+                moves++;
+                terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+                terminal_writestring("CPU plays at position ");
+                char pbuf[4]; int_to_string(cpu_pos, pbuf); terminal_writestring(pbuf);
+                terminal_writestring("\n\n");
+                win = 0;
+                for (int w = 0; w < 8; w++) {
+                    if (board[wins[w][0]] == 'O' && board[wins[w][1]] == 'O' && board[wins[w][2]] == 'O') win = 1;
+                }
+                if (win) {
+                    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+                    terminal_writestring("\nCPU wins!\n");
+                    cpu_score++;
+                    break;
+                }
+                if (moves >= 9) {
+                    terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_BROWN, VGA_COLOR_BLACK));
+                    terminal_writestring("\nDraw!\n");
+                    draws++;
+                    break;
+                }
+            }
+            terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+            terminal_writestring("\nPlay again? (y/N): ");
+            yield();
+            char nc = keyboard_getchar();
+            if (nc != 'y' && nc != 'Y') play_again = 0;
+            terminal_writestring("\n");
+        }
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        terminal_writestring("\nFinal Score: You ");
+        char sbuf[16]; int_to_string(player_score, sbuf); terminal_writestring(sbuf);
+        terminal_writestring(" - ");
+        int_to_string(cpu_score, sbuf); terminal_writestring(sbuf);
+        terminal_writestring(" CPU  (Draws: ");
+        int_to_string(draws, sbuf); terminal_writestring(sbuf);
+        terminal_writestring(")\n");
+    } else if (strcmp(cmd_name, "touch") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: touch <file>");
+        } else {
+            struct fs_node* target = find_node(current_dir, args);
+            if (!target) {
+                struct fs_node* new_node = create_node(args, FS_FILE, current_dir);
+                if (new_node) {
+                    terminal_writestring("Created: ");
+                    terminal_writestring(args);
+                    terminal_writestring("\n");
+                } else {
+                    terminal_writestring("Error: Cannot create file (node pool full or directory full)\n");
+                }
+            } else {
+                terminal_writestring("File already exists: ");
+                terminal_writestring(args);
+                terminal_writestring("\n");
+            }
+        }
+    } else if (strcmp(cmd_name, "mkdir") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: mkdir <name>");
+        } else if (find_node(current_dir, args)) {
+            terminal_writestring("Directory already exists.");
+        } else {
+            create_node(args, FS_DIRECTORY, current_dir);
+        }
+    } else if (strcmp(cmd_name, "rm") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: rm <name>");
+        } else {
+            int use_force = 0;
+            char rm_name[32];
+            char* rp = args;
+            if (rp[0] == 'f' && rp[1] == 'o' && rp[2] == 'r' && rp[3] == 'c' && rp[4] == 'e' && rp[5] == ' ') {
+                use_force = 1;
+                rp += 6;
+            }
+            int rs = 0;
+            while (*rp && rs < 31) rm_name[rs++] = *rp++;
+            rm_name[rs] = '\0';
+            if (rs == 0) {
+                terminal_writestring("Usage: rm [force] <name>");
+            } else {
+                struct fs_node* target = find_node(current_dir, rm_name);
+                if (!target) {
+                    terminal_writestring("Not found.");
+                } else {
+                    if (strcmp(target->name, "System") == 0 || strcmp(current_dir->name, "System") == 0) {
+                        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+                        terminal_writestring("\n\n");
+                        terminal_writestring("╔══════════════════════════════════════════════════════════╗\n");
+                        terminal_writestring("║                    KERNEL PANIC                         ║\n");
+                        terminal_writestring("╚══════════════════════════════════════════════════════════╝\n\n");
+                        terminal_writestring("FATAL: Attempted to delete protected system file/directory!\n");
+                        terminal_writestring("System integrity compromised. Kernel halted.\n\n");
+                        terminal_writestring("ACTION REQUIRED:\n");
+                        terminal_writestring("  1. Power off the device immediately\n");
+                        terminal_writestring("  2. Remove the USB drive / boot media\n");
+                        terminal_writestring("  3. Do not boot from this media again\n\n");
+                        terminal_writestring("System will now freeze. Please shut down manually.\n");
+                        while (1) {
+                            asm volatile("hlt");
+                        }
+                    }
+                    if (!use_force) {
+                        terminal_writestring("Protected: use rm force <name> to delete");
+                    } else {
+                        if (fs_node_remove(target) == 0) terminal_writestring("Removed.");
+                        else terminal_writestring("Could not remove.");
+                    }
+                }
+            }
+        }
+    } else if (strcmp(cmd_name, "mv") == 0 || strcmp(cmd_name, "rename") == 0) {
+        char src[32], dst[32];
+        int s = 0, d = 0;
+        char* p = args;
+        while (*p && *p != ' ' && s < 31) src[s++] = *p++;
+        src[s] = '\0';
+        if (*p == ' ') p++;
+        while (*p && d < 31) dst[d++] = *p++;
+        dst[d] = '\0';
+        if (s == 0 || d == 0) {
+            terminal_writestring("Usage: mv <src> <dst>");
+        } else {
+            struct fs_node* target = find_node(current_dir, src);
+            if (target) {
+                strcpy(target->name, dst);
+                terminal_writestring("Renamed.");
+            } else {
+                terminal_writestring("Not found.");
+            }
+        }
+    } else if (strcmp(cmd_name, "cp") == 0) {
+        char src[32], dst[32];
+        int s = 0, d = 0;
+        char* p = args;
+        while (*p && *p != ' ' && s < 31) src[s++] = *p++;
+        src[s] = '\0';
+        if (*p == ' ') p++;
+        while (*p && d < 31) dst[d++] = *p++;
+        dst[d] = '\0';
+        if (s == 0 || d == 0) {
+            terminal_writestring("Usage: cp <src> <dst>");
+        } else {
+            struct fs_node* source = find_node(current_dir, src);
+            if (source && source->type == FS_FILE) {
+                struct fs_node* copy = create_node(dst, FS_FILE, current_dir);
+                if (copy) {
+                    if (fs_node_write(copy, 0, source->content, (uint32_t)source->content_len) == 0) terminal_writestring("Copied.");
+                    else {
+                        fs_node_remove(copy);
+                        terminal_writestring("Copy failed.");
+                    }
+                }
+            } else {
+                terminal_writestring("Source not found or is a directory.");
+            }
+        }
+    } else if (strcmp(cmd_name, "head") == 0) {
+        char filename[32];
+        int n = 10;
+        int s = 0;
+        char* p = args;
+        while (*p && *p != ' ' && s < 31) filename[s++] = *p++;
+        filename[s] = '\0';
+        if (*p == ' ') {
+            p++;
+            n = 0;
+            while (*p >= '0' && *p <= '9') { n = n * 10 + (*p - '0'); p++; }
+        }
+        if (s == 0) {
+            terminal_writestring("Usage: head <file> [lines]");
+        } else {
+            struct fs_node* target = find_node(current_dir, filename);
+            if (target && target->type == FS_FILE) {
+                int lines_shown = 0;
+                int idx = 0;
+                while (idx < target->content_len && lines_shown < n) {
+                    terminal_putchar(target->content[idx]);
+                    if (target->content[idx] == '\n') lines_shown++;
+                    idx++;
+                }
+            } else {
+                terminal_writestring("File not found.");
+            }
+        }
+    } else if (strcmp(cmd_name, "tail") == 0) {
+        char filename[32];
+        int n = 10;
+        int s = 0;
+        char* p = args;
+        while (*p && *p != ' ' && s < 31) filename[s++] = *p++;
+        filename[s] = '\0';
+        if (*p == ' ') {
+            p++;
+            n = 0;
+            while (*p >= '0' && *p <= '9') { n = n * 10 + (*p - '0'); p++; }
+        }
+        if (s == 0) {
+            terminal_writestring("Usage: tail <file> [lines]");
+        } else {
+            struct fs_node* target = find_node(current_dir, filename);
+            if (target && target->type == FS_FILE) {
+                int total_lines = 1;
+                for (int idx = 0; idx < target->content_len; idx++) {
+                    if (target->content[idx] == '\n') total_lines++;
+                }
+                int lines_to_skip = total_lines - n;
+                if (lines_to_skip < 0) lines_to_skip = 0;
+                int idx = 0;
+                int line_count = 0;
+                while (idx < target->content_len && line_count < lines_to_skip) {
+                    if (target->content[idx] == '\n') line_count++;
+                    idx++;
+                }
+                while (idx < target->content_len) {
+                    terminal_putchar(target->content[idx]);
+                    idx++;
+                }
+            } else {
+                terminal_writestring("File not found.");
+            }
+        }
+    } else if (strcmp(cmd_name, "wc") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: wc <file>");
+        } else {
+            struct fs_node* target = find_node(current_dir, args);
+            if (target && target->type == FS_FILE) {
+                int lines = 0, words = 0, chars = target->content_len;
+                int in_word = 0;
+                for (int idx = 0; idx < chars; idx++) {
+                    char c = target->content[idx];
+                    if (c == '\n') lines++;
+                    if (c == ' ' || c == '\n' || c == '\t') {
+                        in_word = 0;
+                    } else if (!in_word) {
+                        in_word = 1;
+                        words++;
+                    }
+                }
+                char buf[16];
+                terminal_writestring("  ");
+                int_to_string(lines, buf); terminal_writestring(buf);
+                terminal_writestring("  ");
+                int_to_string(words, buf); terminal_writestring(buf);
+                terminal_writestring("  ");
+                int_to_string(chars, buf); terminal_writestring(buf);
+                terminal_writestring(" ");
+                terminal_writestring(args);
+            } else {
+                terminal_writestring("File not found.");
+            }
+        }
+    } else if (strcmp(cmd_name, "nl") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: nl <file>");
+        } else {
+            struct fs_node* target = find_node(current_dir, args);
+            if (target && target->type == FS_FILE) {
+                int line_num = 1;
+                char buf[16];
+                int_to_string(line_num, buf);
+                int num_len = strlen(buf);
+                for (int p = 0; p < 6 - num_len; p++) terminal_writestring(" ");
+                terminal_writestring(buf);
+                terminal_writestring("  ");
+                line_num++;
+                for (int idx = 0; idx < target->content_len; idx++) {
+                    terminal_putchar(target->content[idx]);
+                    if (target->content[idx] == '\n' && idx + 1 < target->content_len) {
+                        int_to_string(line_num, buf);
+                        num_len = strlen(buf);
+                        for (int p = 0; p < 6 - num_len; p++) terminal_writestring(" ");
+                        terminal_writestring(buf);
+                        terminal_writestring("  ");
+                        line_num++;
+                    }
+                }
+            } else {
+                terminal_writestring("File not found.");
+            }
+        }
+    } else if (strcmp(cmd_name, "sort") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: sort <file>");
+        } else {
+            struct fs_node* target = find_node(current_dir, args);
+            if (target && target->type == FS_FILE) {
+
+                static char lines[64][128];
+                int line_count = 0;
+                char line_buf[128];
+                int line_idx = 0;
+                for (int idx = 0; idx < target->content_len && line_count < 64; idx++) {
+                    if (target->content[idx] == '\n' || idx == target->content_len - 1) {
+                        if (idx == target->content_len - 1 && target->content[idx] != '\n') {
+                            if (line_idx < 127) line_buf[line_idx++] = target->content[idx];
+                        }
+                        line_buf[line_idx] = '\0';
+                        strcpy(lines[line_count], line_buf);
+                        line_count++;
+                        line_idx = 0;
+                    } else {
+                        if (line_idx < 127) line_buf[line_idx++] = target->content[idx];
+                    }
+                }
+                int reverse = 0;
+                if (strstr(args, "-r")) reverse = 1;
+                int numeric = 0;
+                if (strstr(args, "-n")) numeric = 1;
+                for (i = 0; i < line_count - 1; i++) {
+                    for (int j = 0; j < line_count - 1 - i; j++) {
+                        int cmp = 0;
+                        if (numeric) {
+                            int a = simple_atoi(lines[j]);
+                            int b = simple_atoi(lines[j+1]);
+                            cmp = a - b;
+                        } else {
+                            cmp = strcmp(lines[j], lines[j+1]);
+                        }
+                        if ((!reverse && cmp > 0) || (reverse && cmp < 0)) {
+                            char temp[128];
+                            strcpy(temp, lines[j]);
+                            strcpy(lines[j], lines[j+1]);
+                            strcpy(lines[j+1], temp);
+                        }
+                    }
+                }
+                for (i = 0; i < line_count; i++) {
+                    terminal_writestring(lines[i]);
+                    terminal_writestring("\n");
+                }
+            } else {
+                terminal_writestring("File not found.");
+            }
+        }
+    } else if (strcmp(cmd_name, "which") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: which <command>");
+        } else {
+            struct fs_node* bin = search_path(args);
+            if (bin) {
+                terminal_writestring("/bin/");
+                terminal_writestring(args);
+            } else {
+                terminal_writestring("Command not found in PATH.");
+            }
+        }
+    } else if (strcmp(cmd_name, "yes") == 0) {
+        const char* text = (strlen(args) > 0) ? args : "y";
+        for (i = 0; i < 5; i++) {
+            terminal_writestring(text);
+            terminal_writestring("\n");
+        }
+    } else if (strcmp(cmd_name, "sleep") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: sleep <ms>");
+        } else {
+            int ms = 0;
+            char* p = args;
+            while (*p >= '0' && *p <= '9') { ms = ms * 10 + (*p - '0'); p++; }
+            delay_ms(ms);
+        }
+    } else if (strcmp(cmd_name, "basename") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: basename <path>");
+        } else {
+            int last_slash = -1;
+            int len = strlen(args);
+            for (i = 0; i < len; i++) {
+                if (args[i] == '/') last_slash = i;
+            }
+            terminal_writestring(args + last_slash + 1);
+        }
+    } else if (strcmp(cmd_name, "dirname") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: dirname <path>");
+        } else {
+            int last_slash = -1;
+            int len = strlen(args);
+            for (i = 0; i < len; i++) {
+                if (args[i] == '/') last_slash = i;
+            }
+            if (last_slash == -1) {
+                terminal_writestring(".");
+            } else if (last_slash == 0) {
+                terminal_writestring("/");
+            } else {
+                for (i = 0; i < last_slash; i++) {
+                    terminal_putchar(args[i]);
+                }
+            }
+        }
+    } else if (strcmp(cmd_name, "env") == 0) {
+        terminal_writestring("SHELL=sharkos\n");
+        terminal_writestring("OS=SharkOS\n");
+        terminal_writestring("USER=");
+        terminal_writestring(current_user);
+        terminal_writestring("\n");
+        terminal_writestring("HOSTNAME=SharkOS\n");
+        terminal_writestring("PWD=");
+        struct fs_node* n = current_dir;
+        char path[256];
+        char rev[256];
+        int plen = 0;
+        rev[plen++] = '/';
+        while (n && n->parent) {
+            int namelen = strlen(n->name);
+            for (int k = namelen - 1; k >= 0; k--) rev[plen++] = n->name[k];
+            rev[plen++] = '/';
+            n = n->parent;
+        }
+        int j = 0;
+        for (int k = plen - 1; k >= 0; k--) path[j++] = rev[k];
+        if (j > 0 && path[j-1] != '/') path[j++] = '/';
+        path[j] = '\0';
+        terminal_writestring(path);
+        terminal_writestring("\n");
+        terminal_writestring("HOME=/\n");
+        terminal_writestring("TERM=sharkos-vga\n");
+        terminal_writestring("PATH=/bin:/usr/bin\n");
+        terminal_writestring("SHELL=/bin/shark\n");
+        terminal_writestring("LOGNAME=");
+        terminal_writestring(current_user);
+        terminal_writestring("\n");
+        terminal_writestring("USER=");
+        terminal_writestring(current_user);
+        terminal_writestring("\n");
+    } else if (strcmp(cmd_name, "rev") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: rev <text>");
+        } else {
+            int len = strlen(args);
+            for (i = len - 1; i >= 0; i--) {
+                terminal_putchar(args[i]);
+            }
+            terminal_writestring("\n");
+        }
+    } else if (strcmp(cmd_name, "seq") == 0) {
+        int start = 1, end = 10, step = 1;
+        char* p = args;
+        if (*p) {
+            start = 0;
+            while (*p >= '0' && *p <= '9') { start = start * 10 + (*p - '0'); p++; }
+        }
+        if (*p == ' ') {
+            p++;
+            end = 0;
+            while (*p >= '0' && *p <= '9') { end = end * 10 + (*p - '0'); p++; }
+        }
+        if (*p == ' ') {
+            p++;
+            step = 0;
+            while (*p >= '0' && *p <= '9') { step = step * 10 + (*p - '0'); p++; }
+        }
+        if (step == 0) step = 1;
+        char buf[16];
+        for (i = start; i <= end; i += step) {
+            int_to_string(i, buf);
+            terminal_writestring(buf);
+            terminal_writestring("\n");
+        }
+    } else if (strcmp(cmd_name, "factor") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: factor <number>");
+        } else {
+            int n = 0;
+            char* p = args;
+            while (*p >= '0' && *p <= '9') { n = n * 10 + (*p - '0'); p++; }
+            if (n < 2) {
+                terminal_writestring("Number must be >= 2");
+            } else {
+                char buf[16];
+                int first = 1;
+                for (int d = 2; d * d <= n; d++) {
+                    while (n % d == 0) {
+                        if (!first) terminal_writestring(" ");
+                        int_to_string(d, buf);
+                        terminal_writestring(buf);
+                        n /= d;
+                        first = 0;
+                    }
+                }
+                if (n > 1) {
+                    if (!first) terminal_writestring(" ");
+                    int_to_string(n, buf);
+                    terminal_writestring(buf);
+                }
+                terminal_writestring("\n");
+            }
+        }
+    } else if (strcmp(cmd_name, "true") == 0) {
+
+    } else if (strcmp(cmd_name, "false") == 0) {
+
+    } else if (strcmp(cmd_name, "tr") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: tr <set1> [set2]");
+        } else {
+            char set1[32], set2[32];
+            int s1 = 0, s2 = 0;
+            char* p = args;
+            while (*p && *p != ' ' && s1 < 31) set1[s1++] = *p++;
+            set1[s1] = '\0';
+            if (*p == ' ') {
+                p++;
+                while (*p && s2 < 31) set2[s2++] = *p++;
+                set2[s2] = '\0';
+            }
+            for (i = 0; args[i]; i++) {
+                char c = args[i];
+                if (s1 > 0) {
+                    int found = 0;
+                    for (int j = 0; j < s1; j++) {
+                        if (c == set1[j]) {
+                            if (s2 > 0 && j < s2) c = set2[j];
+                            else if (s2 == 0) c = '\n';
+                            found = 1;
+                            break;
+                        }
+                    }
+                    if (found) terminal_putchar(c);
+                    else terminal_putchar(args[i]);
+                } else {
+                    terminal_putchar(c);
+                }
+            }
+            terminal_writestring("\n");
+        }
+    } else if (strcmp(cmd_name, "cut") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: cut -c<range> or cut -f<field> -d<delim>");
+        } else {
+            if (args[0] == '-' && args[1] == 'c') {
+                int pos = simple_atoi(args + 2) - 1;
+                if (pos >= 0 && pos < (int)strlen(args)) terminal_putchar(args[pos]);
+                terminal_writestring("\n");
+            } else if (args[0] == '-' && args[1] == 'f') {
+                int field = simple_atoi(args + 2) - 1;
+                char* p = args + 3;
+                while (*p && *p != ' ') p++;
+                if (*p == ' ') p++;
+                char delim = *p ? *p : ' ';
+                int current = 0;
+                int in_field = 0;
+                for (i = 0; args[i]; i++) {
+                    if (args[i] == delim) {
+                        in_field = 0;
+                    } else if (!in_field) {
+                        in_field = 1;
+                        if (current == field) {
+                            terminal_putchar(args[i]);
+                        }
+                        current++;
+                    } else if (current == field) {
+                        terminal_putchar(args[i]);
+                    }
+                }
+                terminal_writestring("\n");
+            } else {
+                terminal_writestring("Usage: cut -c<range> or cut -f<field> -d<delim>");
+            }
+        }
+    } else if (strcmp(cmd_name, "uniq") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: uniq <file>");
+        } else {
+            struct fs_node* target = find_node(current_dir, args);
+            if (target && target->type == FS_FILE) {
+                char last_line[128] = "";
+                char line[128];
+                int li = 0;
+                for (int idx = 0; idx < target->content_len; idx++) {
+                    char c = target->content[idx];
+                    if (c == '\n' || idx == target->content_len - 1) {
+                        if (idx == target->content_len - 1 && c != '\n') {
+                            if (li < 127) line[li++] = c;
+                        }
+                        line[li] = '\0';
+                        if (strcmp(line, last_line) != 0) {
+                            terminal_writestring(line);
+                            terminal_writestring("\n");
+                            strcpy(last_line, line);
+                        }
+                        li = 0;
+                    } else {
+                        if (li < 127) line[li++] = c;
+                    }
+                }
+            } else {
+                terminal_writestring("File not found.");
+            }
+        }
+    } else if (strcmp(cmd_name, "tee") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: tee <file>");
+        } else {
+            terminal_writestring("tee: ");
+            terminal_writestring(args);
+            terminal_writestring(" (simulated - would write to file)\n");
+        }
+    } else if (strcmp(cmd_name, "time") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: time <command>");
+        } else {
+            uint32_t start = uptime_ticks;
+            terminal_writestring("Timing: ");
+            terminal_writestring(args);
+            terminal_writestring("\n");
+            execute_command(args);
+            uint32_t end = uptime_ticks;
+            uint32_t elapsed = end - start;
+            terminal_writestring("Time: ");
+            char buf[16];
+            int_to_string(elapsed / TICKS_PER_SEC, buf);
+            terminal_writestring(buf);
+            terminal_writestring(".");
+            int_to_string((elapsed % TICKS_PER_SEC) / 10, buf);
+            terminal_writestring(buf);
+            terminal_writestring("s\n");
+        }
+    } else if (strcmp(cmd_name, "id") == 0) {
+        terminal_writestring("uid=0(root) gid=0(root) groups=0(root)\n");
+    } else if (strcmp(cmd_name, "ring0") == 0) {
+        uint32_t cs_val;
+        asm volatile("mov %%cs, %0" : "=r"(cs_val));
+        uint32_t cpl = cs_val & 0x03;
+
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+        terminal_writestring("\n");
+        terminal_writestring("  ╔══════════════════════════════════════════════════════════════╗\n");
+        terminal_writestring("  ║                      RING 0 STATUS                          ║\n");
+        terminal_writestring("  ╠══════════════════════════════════════════════════════════════╣\n");
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        terminal_writestring("  ║  Privilege Level:     RING 0 (Kernel Mode)                  ║\n");
+        terminal_writestring("  ║  CS Segment:          0x");
+        char hex_buf[16];
+        hex_to_string(cs_val, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring("                                ║\n");
+        terminal_writestring("  ║  Current CPL:         ");
+        int_to_string(cpl, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring(" (Maximum Privilege)                  ║\n");
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_BROWN, VGA_COLOR_BLACK));
+        terminal_writestring("  ║  RPL of CS:           ");
+        int_to_string(cpl, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring(" (Requested Privilege Level)          ║\n");
+        terminal_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
+        terminal_writestring("  ║                                                              ║\n");
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+        terminal_writestring("  ║  All terminal operations execute at Ring 0:                  ║\n");
+        terminal_writestring("  ║    - Direct hardware access (framebuffer, keyboard)          ║\n");
+        terminal_writestring("  ║    - Full memory access (no virtual memory isolation)        ║\n");
+        terminal_writestring("  ║    - Privileged instruction execution (cli/sti/hlt/in/out)   ║\n");
+        terminal_writestring("  ║    - Interrupt descriptor table manipulation                 ║\n");
+        terminal_writestring("  ║    - Direct filesystem and device driver access              ║\n");
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        terminal_writestring("  ║                                                              ║\n");
+        terminal_writestring("  ║  WARNING: No memory protection - any command can             ║\n");
+        terminal_writestring("  ║  access or modify any part of the system!                    ║\n");
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+        terminal_writestring("  ╚══════════════════════════════════════════════════════════════╝\n");
+        terminal_set_color(old_color);
+    } else if (strcmp(cmd_name, "priv") == 0) {
+        uintptr_t cr0_val, cr3_val;
+        asm volatile("mov %%cr0, %0" : "=r"(cr0_val));
+        asm volatile("mov %%cr3, %0" : "=r"(cr3_val));
+
+        uint16_t cs_val, ds_val, ss_val;
+        asm volatile("mov %%cs, %0" : "=r"(cs_val));
+        asm volatile("mov %%ds, %0" : "=r"(ds_val));
+        asm volatile("mov %%ss, %0" : "=r"(ss_val));
+
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+        terminal_writestring("\n");
+        terminal_writestring("  ╔══════════════════════════════════════════════════════════════╗\n");
+        terminal_writestring("  ║                   RING 0 PRIVILEGE DUMP                     ║\n");
+        terminal_writestring("  ╠══════════════════════════════════════════════════════════════╣\n");
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+
+        terminal_writestring("  ║  Control Registers (Ring 0 only):                           ║\n");
+        terminal_writestring("  ║    CR0: 0x");
+        char hex_buf[16];
+        hex_to_string(cr0_val, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring("  (PG=");
+        terminal_writestring((cr0_val >> 31) & 1 ? "1" : "0");
+        terminal_writestring(" PE=");
+        terminal_writestring(cr0_val & 1 ? "1" : "0");
+        terminal_writestring(")                      ║\n");
+
+        terminal_writestring("  ║    CR3: 0x");
+        hex_to_string(cr3_val, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring("  (Page Directory Base)                ║\n");
+
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_BROWN, VGA_COLOR_BLACK));
+        terminal_writestring("  ║                                                              ║\n");
+        terminal_writestring("  ║  Segment Registers:                                          ║\n");
+        terminal_writestring("  ║    CS: 0x");
+        hex_to_string(cs_val, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring("  (CPL=");
+        int_to_string(cs_val & 0x03, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring(" RPL=");
+        int_to_string(cs_val & 0x03, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring(")                        ║\n");
+
+        terminal_writestring("  ║    DS: 0x");
+        hex_to_string(ds_val, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring("  (Data Segment)                           ║\n");
+
+        terminal_writestring("  ║    SS: 0x");
+        hex_to_string(ss_val, hex_buf);
+        terminal_writestring(hex_buf);
+        terminal_writestring("  (Stack Segment)                          ║\n");
+
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        terminal_writestring("  ║                                                              ║\n");
+        terminal_writestring("  ║  These registers are ONLY readable from Ring 0!              ║\n");
+        terminal_writestring("  ║  Executing this from Ring 3 would cause a #GP fault.         ║\n");
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+        terminal_writestring("  ╚══════════════════════════════════════════════════════════════╝\n");
+        terminal_set_color(old_color);
+    } else if (strcmp(cmd_name, "inb") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: inb <port_hex>\n");
+            terminal_writestring("  Read a byte from a hardware port (Ring 0 only)\n");
+            terminal_writestring("  Example: inb 0x60  (keyboard data port)\n");
+        } else {
+            uint32_t port = 0;
+            const char* p = args;
+            if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+            while (*p) {
+                port *= 16;
+                if (*p >= '0' && *p <= '9') port += *p - '0';
+                else if (*p >= 'a' && *p <= 'f') port += *p - 'a' + 10;
+                else if (*p >= 'A' && *p <= 'F') port += *p - 'A' + 10;
+                p++;
+            }
+            uint8_t val = inb((uint16_t)port);
+            terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+            terminal_writestring("inb(0x");
+            char hex_buf[16];
+            hex_to_string(port, hex_buf);
+            terminal_writestring(hex_buf);
+            terminal_writestring(") = 0x");
+            hex_to_string(val, hex_buf);
+            terminal_writestring(hex_buf);
+            terminal_writestring(" (");
+            int_to_string(val, hex_buf);
+            terminal_writestring(hex_buf);
+            terminal_writestring(")\n");
+            terminal_set_color(old_color);
+        }
+    } else if (strcmp(cmd_name, "outb") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: outb <port_hex> <value_hex>\n");
+            terminal_writestring("  Write a byte to a hardware port (Ring 0 only)\n");
+            terminal_writestring("  Example: outb 0x61 0xB6  (keyboard controller)\n");
+        } else {
+            uint32_t port = 0, val = 0;
+            const char* p = args;
+            if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+            while (*p && *p != ' ') {
+                port *= 16;
+                if (*p >= '0' && *p <= '9') port += *p - '0';
+                else if (*p >= 'a' && *p <= 'f') port += *p - 'a' + 10;
+                else if (*p >= 'A' && *p <= 'F') port += *p - 'A' + 10;
+                p++;
+            }
+            while (*p == ' ') p++;
+            if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+            while (*p) {
+                val *= 16;
+                if (*p >= '0' && *p <= '9') val += *p - '0';
+                else if (*p >= 'a' && *p <= 'f') val += *p - 'a' + 10;
+                else if (*p >= 'A' && *p <= 'F') val += *p - 'A' + 10;
+                p++;
+            }
+            outb((uint16_t)port, (uint8_t)val);
+            terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+            terminal_writestring("outb(0x");
+            char hex_buf[16];
+            hex_to_string(port, hex_buf);
+            terminal_writestring(hex_buf);
+            terminal_writestring(", 0x");
+            hex_to_string(val, hex_buf);
+            terminal_writestring(hex_buf);
+            terminal_writestring(") - Written to hardware port (Ring 0)\n");
+            terminal_set_color(old_color);
+        }
+    } else if (strcmp(cmd_name, "umask") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("0002\n");
+        } else {
+            terminal_writestring("umask set to: ");
+            terminal_writestring(args);
+            terminal_writestring("\n");
+        }
+    } else if (strcmp(cmd_name, "chmod") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: chmod <mode> <file>");
+        } else {
+            terminal_writestring("Permissions changed (simulated)\n");
+        }
+    } else if (strcmp(cmd_name, "ln") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: ln <target> <link>");
+        } else {
+            terminal_writestring("Link created (simulated)\n");
+        }
+    } else if (strcmp(cmd_name, "realpath") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: realpath <path>");
+        } else {
+            terminal_writestring("/");
+            terminal_writestring(args);
+            terminal_writestring("\n");
+        }
+    } else if (strcmp(cmd_name, "mktemp") == 0) {
+        char temp_name[32];
+        strcpy(temp_name, "tmp_");
+        for (i = 4; i < 12; i++) {
+            temp_name[i] = 'a' + (uptime_ticks % 26);
+        }
+        temp_name[12] = '\0';
+        create_node(temp_name, FS_FILE, current_dir);
+        terminal_writestring(temp_name);
+        terminal_writestring("\n");
+    } else if (strcmp(cmd_name, "cal") == 0) {
+        uint32_t days = uptime_ticks / 8640000;
+        int month = (days % 12) + 1;
+        int year = 2024 + (days / 12);
+        terminal_writestring("    ");
+        const char* months[] = {"January","February","March","April","May","June","July","August","September","October","November","December"};
+        terminal_writestring(months[month - 1]);
+        terminal_writestring(" ");
+        char ybuf[16]; int_to_string(year, ybuf); terminal_writestring(ybuf);
+        terminal_writestring("\n");
+        terminal_writestring("Su Mo Tu We Th Fr Sa\n");
+        int start_day = (days + 2) % 7;
+        int days_in_month = 31;
+        if (month == 2) days_in_month = 28;
+        else if (month == 4 || month == 6 || month == 9 || month == 11) days_in_month = 30;
+        for (i = 0; i < start_day; i++) terminal_writestring("   ");
+        for (int d = 1; d <= days_in_month; d++) {
+            char dbuf[4]; int_to_string(d, dbuf);
+            if (d < 10) terminal_writestring(" ");
+            terminal_writestring(dbuf);
+            terminal_writestring(" ");
+            if ((start_day + d) % 7 == 0 && d != days_in_month) terminal_writestring("\n");
+        }
+        terminal_writestring("\n");
+    } else if (strcmp(cmd_name, "who") == 0 || strcmp(cmd_name, "w") == 0) {
+        terminal_writestring("USER     TTY      FROM             LOGIN@   IDLE   WHAT\n");
+        terminal_writestring(current_user);
+        terminal_writestring("     tty1     console          boot     ");
+        uint32_t mins = (uptime_ticks / TICKS_PER_SEC) / 60;
+        char mbuf[16]; int_to_string(mins, mbuf); terminal_writestring(mbuf);
+        terminal_writestring("     shark\n");
+    } else if (strcmp(cmd_name, "dmesg") == 0) {
+        terminal_writestring("[    0.000000] nemo (SharkOS V2 Kernel build 0.06) (gcc)\n");
+        terminal_writestring("[    0.000001] BIOS-e820 memory map detected\n");
+        terminal_writestring("[    0.000002] ");
+        char buf[16]; hex_to_string((uint32_t)total_system_memory >> 20, buf); terminal_writestring(buf);
+        terminal_writestring(" MB usable RAM\n");
+        terminal_writestring("[    0.000003] Framebuffer initialized\n");
+        terminal_writestring("[    0.000004] CPU features: FPU, PAE, PSE detected\n");
+        terminal_writestring("[    0.000005] Local APIC timer: 100 Hz\n");
+        terminal_writestring("[    0.000006] HZ: 1000\n");
+        terminal_writestring("[    0.000007] PID max: 32768\n");
+        terminal_writestring("[    0.000008] SHKRNL boot complete.\n");
+        terminal_writestring("[    0.000009] Initializing filesystem\n");
+        terminal_writestring("[    0.000010] Shell started\n");
+    } else if (strcmp(cmd_name, "log") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: log <message>");
+        } else {
+            terminal_writestring("Logged: ");
+            terminal_writestring(args);
+            terminal_writestring("\n");
+        }
+    } else if (strcmp(cmd_name, "test") == 0 || strcmp(cmd_name, "[") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: test <expression>");
+        } else {
+            if (strcmp(args, "0") == 0 || strcmp(args, "false") == 0 || strcmp(args, "") == 0) {
+
+            } else {
+
+            }
+        }
+    } else if (strcmp(cmd_name, "printf") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: printf <format> [args...]");
+        } else {
+            terminal_writestring(args);
+            terminal_writestring("\n");
+        }
+    } else if (strcmp(cmd_name, "xargs") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: xargs <command>");
+        } else {
+            terminal_writestring("xargs: ");
+            terminal_writestring(args);
+            terminal_writestring(" (simulated)\n");
+        }
+    } else if (strcmp(cmd_name, "comm") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: comm <file1> <file2>");
+        } else {
+            terminal_writestring("comm: compare files (simulated)\n");
+        }
+    } else if (strcmp(cmd_name, "expand") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: expand <file>");
+        } else {
+            struct fs_node* target = find_node(current_dir, args);
+            if (target && target->type == FS_FILE) {
+                for (int idx = 0; idx < target->content_len; idx++) {
+                    if (target->content[idx] == '\t') {
+                        terminal_writestring("    ");
+                    } else {
+                        terminal_putchar(target->content[idx]);
+                    }
+                }
+            } else {
+                terminal_writestring("File not found.");
+            }
+        }
+    } else if (strcmp(cmd_name, "fold") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: fold -w<width> <file>");
+        } else {
+            terminal_writestring("fold: wrap lines (simulated)\n");
+        }
+    } else if (strcmp(cmd_name, "split") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: split <file>");
+        } else {
+            terminal_writestring("split: file split (simulated)\n");
+        }
+    } else if (strcmp(cmd_name, "paste") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: paste <file1> [file2...]");
+        } else {
+            terminal_writestring("paste: merge lines (simulated)\n");
+        }
+    } else if (strcmp(cmd_name, "join") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: join <file1> <file2>");
+        } else {
+            terminal_writestring("join: join lines (simulated)\n");
+        }
+    } else if (strcmp(cmd_name, "strings") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: strings <file>");
+        } else {
+            struct fs_node* target = find_node(current_dir, args);
+            if (target && target->type == FS_FILE) {
+                int in_string = 0;
+                int str_start = 0;
+                for (int idx = 0; idx < target->content_len; idx++) {
+                    char c = target->content[idx];
+                    if (c >= 32 && c < 127) {
+                        if (!in_string) {
+                            in_string = 1;
+                            str_start = idx;
+                        }
+                    } else {
+                        if (in_string && idx - str_start >= 4) {
+                            for (int j = str_start; j < idx; j++) {
+                                terminal_putchar(target->content[j]);
+                            }
+                            terminal_writestring("\n");
+                        }
+                        in_string = 0;
+                    }
+                }
+            } else {
+                terminal_writestring("File not found.");
+            }
+        }
+    } else if (strcmp(cmd_name, "od") == 0) {
+        if (strlen(args) == 0) {
+            terminal_writestring("Usage: od <file>");
+        } else {
+            struct fs_node* target = find_node(current_dir, args);
+            if (target && target->type == FS_FILE) {
+                char hex[16];
+                for (i = 0; i < target->content_len && i < 128; i += 16) {
+                    hex_to_string(i, hex);
+                    terminal_writestring(hex);
+                    terminal_writestring("  ");
+                    for (int j = 0; j < 16 && i + j < target->content_len; j++) {
+                        unsigned char c = (unsigned char)target->content[i + j];
+                        hex_to_string(c, hex);
+                        terminal_writestring(&hex[2]);
+                        terminal_writestring(" ");
+                    }
+                    terminal_writestring(" ");
+                    for (int j = 0; j < 16 && i + j < target->content_len; j++) {
+                        unsigned char c = (unsigned char)target->content[i + j];
+                        if (c >= 32 && c < 127) terminal_putchar(c);
+                        else terminal_putchar('.');
+                    }
+                    terminal_writestring("\n");
+                }
+            } else {
+                terminal_writestring("File not found.");
+            }
+        }
+    } else if (strcmp(cmd_name, "spkg") == 0) {
+        int spkg_argc = 1;
+        char* spkg_argv[16] = {(char*)"spkg"};
+        char args_copy[256];
+        strcpy(args_copy, args);
+
+        int i = 0;
+        int arg_start = 0;
+        int len = strlen(args_copy);
+        while (i <= len && spkg_argc < 15) {
+            if (args_copy[i] == ' ' || args_copy[i] == '\0') {
+                if (i > arg_start) {
+                    args_copy[i] = '\0';
+                    spkg_argv[spkg_argc++] = &args_copy[arg_start];
+                }
+                arg_start = i + 1;
+            }
+            i++;
+        }
+
+        extern int cmd_spkg(int argc, char** argv);
+        cmd_spkg(spkg_argc, spkg_argv);
+    } else if (plugin_is_plugin_command(cmd_name, &plugin_id)) {
+        plugin_t* plugin = plugin_get_by_name(cmd_name);
+        if (!plugin || !plugin->loaded) {
+            terminal_writestring("Plugin '");
+            terminal_writestring(cmd_name);
+            terminal_writestring("' is not loaded. Use 'spkg install ");
+            terminal_writestring(cmd_name);
+            terminal_writestring("' to install it.\n");
+        } else {
+            char* plugin_argv[16] = {cmd_name};
+            int plugin_argc = 1;
+            if (strlen(args) > 0) {
+                plugin_argv[plugin_argc++] = args;
+            }
+            plugin_execute(plugin->id, plugin_argc, plugin_argv);
+        }
+    } else if (strcmp(cmd_name, "microsoft") == 0) {
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        terminal_writestring("\n\n");
+        terminal_writestring("╔══════════════════════════════════════════╗\n");
+        terminal_writestring("║          KERNEL PANIC                    ║\n");
+        terminal_writestring("╚══════════════════════════════════════════╝\n\n");
+        terminal_writestring("Ewl get that slop out of here\n\n");
+        terminal_writestring("FATAL: Unsupported operating system detected\n");
+        terminal_writestring("SharkOS refuses to associate with proprietary software.\n\n");
+        terminal_writestring("System will now halt to protect your freedom.\n\n");
+        while (1) {
+            asm volatile("hlt");
+        }
+    } else {
+        struct fs_node* bin = search_path(cmd_name);
+        if (bin) {
+            execute_elf((uint8_t*)bin->content, args);
+        } else {
+            terminal_writestring("Unknown command: ");
+            terminal_writestring(cmd_name);
+            terminal_writestring("\n");
+        }
+    }
+    terminal_set_color(old_color);
+}
