@@ -127,13 +127,9 @@ static void server_prompt(void) {
 }
 
 static void server_net_rearm(void) {
-    int http = httpd_rearm();
-    int ssh = ssh_server_rearm();
-    terminal_writestring("net: link restored; services re-armed (");
-    server_putdec((uint32_t)http);
-    terminal_writestring(" http, ");
-    server_putdec((uint32_t)(ssh > 0 ? ssh : 0));
-    terminal_writestring(" ssh)\r\n");
+    httpd_rearm();
+    ssh_server_rearm();
+    terminal_writestring("net: link restored; services re-armed\r\n");
 }
 
 static void server_service_poll(void) {
@@ -663,7 +659,7 @@ static void server_execute_core(char* line) {
         terminal_writestring("Router: rtr start [port], rtr status, rtr help, rtr stop, rtr wan, rtr dhcp, rtr dns\r\n");
         terminal_writestring("Files: ls [-la] [dir], cd <dir>, pwd, cat <file>, nano <file>, tree, find, grep, stat\r\n");
         terminal_writestring("File operations: touch, mkdir, rm [force], mv <src> <dst>, cp <src> <dst>, head, tail, wc\r\n");
-        terminal_writestring("System/network: help, whoami, uname, sysinfo, neofetch, uptime, devices, ifconfig, dhcp, ping, dns, netstat\r\n");
+        terminal_writestring("System/network: help, whoami, uname, sysinfo, neofetch, imgfetch, uptime, devices, ifconfig, dhcp, ping, dns, netstat\r\n");
         terminal_writestring("Web/network tools: httpd, sshd, curl, wget, gcc\r\n");
         return;
     }
