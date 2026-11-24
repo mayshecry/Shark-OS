@@ -558,4 +558,6 @@ void redraw_all_panes(void) {
     draw_pane_tabs();
 
     terminal_draw_scrollback();
+    if (terminal_hot_active()) terminal_hot_easter_egg();
+    else imgfetch_overlay_redraw();
 }
