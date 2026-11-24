@@ -155,8 +155,8 @@ typedef struct {
     int wallpaper_w;
     int wallpaper_h;
 
-    int wallpaper_id;
-    int wallpaper_fit;
+    int wallpaper_id;                                                     
+    int wallpaper_fit;                                                    
     bool alt_tab_active;
     int alt_tab_index;
     int wallpaper_mode;
@@ -196,7 +196,7 @@ int desktop_get_taskbar_hover(int mx, int my);
 void desktop_set_wallpaper_color(uint32_t top, uint32_t bottom);
 void desktop_set_wallpaper_mode(int mode);
 
-
+                                                                             
 #define WP_ID_CLASSIC 0
 #define WP_ID_KAWAII  1
 #define WP_ID_COTTAGE 2
@@ -214,6 +214,15 @@ const uint32_t* desktop_wallpaper_thumb(int id);
 void desktop_set_wallpaper(int id);
 void desktop_set_wallpaper_fit(int fit);
 void desktop_icons_clear_selection(void);
+
+typedef struct {
+    int x, y, w, h;
+} tile_rect_t;
+
+int tiling_compute(int n, int ax, int ay, int aw, int ah, int gap, tile_rect_t* out);
+void tiling_arrange(void);
+void tiling_set(int on);
+int tiling_is_enabled(void);
 
 int window_create(window_type_t type, const char* title, int x, int y, int w, int h);
 void window_close(int idx);
@@ -307,8 +316,6 @@ void sharkcraft_tick(void);
 void sharkcraft_draw_window(int x, int y, int width, int height);
 int sharkcraft_handle_key(char key);
 int sharkcraft_handle_mouse(int x, int y, int buttons);
-int sharkcraft_wants_close(void);
-void sharkcraft_clear_wants_close(void);
 void app_window_draw_settings(window_t* w);
 void app_window_mouse_settings(window_t* w, int mx, int my, int buttons);
 void app_window_mouse_filemanager(window_t* w, int mx, int my, int buttons);
@@ -361,4 +368,4 @@ extern int desktop_drag_window;
 extern int desktop_resize_window;
 extern int desktop_resize_edge;
 
-#endif
+#endif 
