@@ -10,7 +10,7 @@ void ui_init_metrics(void) {
     if (font_scale > 3) font_scale = 3;
 
     font_cell_w = 8 * font_scale;
-    font_cell_h = 16 * font_scale;
+    font_cell_h = 16 * font_scale;                               
     ui_tab_y = font_cell_h + 8;
     ui_chrome_top = ui_tab_y + font_cell_h;
     ui_footer_h = font_cell_h + 4;
@@ -77,13 +77,13 @@ void draw_char(char c, int x, int y, uint32_t fg, uint32_t bg) {
     }
 }
 
-
+                                                                    
 void term_put_char_win(char c, int x, int y, uint32_t fg, uint32_t bg,
                        int cx0, int cy0, int cx1, int cy1) {
-    (void)bg;
+    (void)bg;                                        
     if (c < 32 || c > 126) return;
     if (c == ' ') {
-
+                                                                 
         return;
     }
     const unsigned char* glyph = term_font8x16[c - 32];
@@ -174,6 +174,30 @@ void terminal_capture_end(void) {
     terminal_capture_cap = 0;
 }
 
+static void terminal_apply_sgr_param(int param) {
+    static const uint8_t ansi_to_vga[8] = {
+        VGA_COLOR_BLACK, VGA_COLOR_RED, VGA_COLOR_GREEN, VGA_COLOR_BROWN,
+        VGA_COLOR_BLUE, VGA_COLOR_MAGENTA, VGA_COLOR_CYAN, VGA_COLOR_LIGHT_GREY
+    };
+    uint8_t fg = terminal_color & 0x0F;
+    uint8_t bg = (terminal_color >> 4) & 0x0F;
+    if (param == 0) {
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    } else if (param == 39) {
+        terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, bg));
+    } else if (param == 49) {
+        terminal_set_color(vga_entry_color(fg, VGA_COLOR_BLACK));
+    } else if (param >= 30 && param <= 37) {
+        terminal_set_color((uint8_t)(ansi_to_vga[param - 30] | (bg << 4)));
+    } else if (param >= 90 && param <= 97) {
+        terminal_set_color((uint8_t)((ansi_to_vga[param - 90] | 0x08) | (bg << 4)));
+    } else if (param >= 40 && param <= 47) {
+        terminal_set_color((uint8_t)(fg | (ansi_to_vga[param - 40] << 4)));
+    } else if (param >= 100 && param <= 107) {
+        terminal_set_color((uint8_t)(fg | ((ansi_to_vga[param - 100] | 0x08) << 4)));
+    }
+}
+
 static bool terminal_ansi_filter(char c) {
     static int state = 0;
     static int param = 0;
@@ -191,23 +215,12 @@ static bool terminal_ansi_filter(char c) {
 
     if (c >= '0' && c <= '9') { param = param * 10 + (c - '0'); have_param = 1; return true; }
     if (c == ';') {
-        if (have_param) {
-            if (param == 0) terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-        }
+        terminal_apply_sgr_param(have_param ? param : 0);
         param = 0; have_param = 0;
         return true;
     }
     if (c == 'm') {
-        static const uint8_t ansi_to_vga[8] = {
-            VGA_COLOR_BLACK, VGA_COLOR_RED, VGA_COLOR_GREEN, VGA_COLOR_BROWN,
-            VGA_COLOR_BLUE, VGA_COLOR_MAGENTA, VGA_COLOR_CYAN, VGA_COLOR_LIGHT_GREY
-        };
-        if (have_param) {
-            uint8_t bg = (terminal_color >> 4) & 0x0F;
-            if (param == 0) terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-            else if (param >= 30 && param <= 37) terminal_set_color((uint8_t)(ansi_to_vga[param - 30] | (bg << 4)));
-            else if (param >= 90 && param <= 97) terminal_set_color((uint8_t)((ansi_to_vga[param - 90] | 0x08) | (bg << 4)));
-        }
+        terminal_apply_sgr_param(have_param ? param : 0);
         state = 0;
         return true;
     }
@@ -228,6 +241,7 @@ void terminal_set_color(uint8_t color) {
 }
 
 void terminal_scroll() {
+    imgfetch_overlay_clear();
     if (terminal_capturing()) {
 
         terminal_row = term_max_row - 1;
@@ -258,6 +272,8 @@ void terminal_scroll() {
 }
 
 void terminal_clear(void) {
+    imgfetch_overlay_clear();
+    terminal_hot_clear();
     if (terminal_capturing()) {
 
         terminal_capture_len = 0;
@@ -283,8 +299,7 @@ void terminal_hot_clear(void) {
     hot_easter_egg_on = false;
 }
 
-void terminal_hot_draw_into(int rx, int ry, int rw, int rh) {
-    if (!hot_easter_egg_on) return;
+static void hot_blit_rect(int rx, int ry, int rw, int rh) {
     if (rw <= 0 || rh <= 0) return;
 
     uint32_t size = (uint32_t)(rw < rh ? rw : rh);
@@ -320,6 +335,15 @@ void terminal_hot_draw_into(int rx, int ry, int rw, int rh) {
                        (((g << 2) | (g >> 4)) << 8) | ((b << 3) | (b >> 2)));
         }
     }
+}
+
+void terminal_hot_draw_into(int rx, int ry, int rw, int rh) {
+    if (!hot_easter_egg_on) return;
+    hot_blit_rect(rx, ry, rw, rh);
+}
+
+void terminal_hot_draw_rect(int rx, int ry, int rw, int rh) {
+    hot_blit_rect(rx, ry, rw, rh);
 }
 
 void terminal_hot_easter_egg(void) {
