@@ -3,7 +3,7 @@
 <p align="center"> > A freestanding x86-64 hobby operating system built from scratch in C and assembly. < </p>
 
 <p align="center">
-  <img src="sharkos-fish-promo.gif" alt="SharkOS pixel-art shark promo animation" width="720">
+  <img src="assets/imgfetch_logo.png" alt="SharkOS pixel-art shark promo animation" width="720">
 </p>
 
 <p align="center">
