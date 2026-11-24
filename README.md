@@ -1,313 +1,218 @@
-# SharkOS
+# <p align="center"> SharkOS</p>
 
-SharkOS is a hobby operating system written in C and x86_64 assembly. It boots on real hardware and in QEMU/VirtualBox, and brings up a full graphical desktop from a single freestanding kernel image.
+<p align="center"> > A freestanding x86-64 hobby operating system built from scratch in C and assembly. < </p>
 
-This is the 64-bit branch (v3.0 Suzuna). The old 32-bit GRUB-based build has been replaced by a long-mode kernel with a 128GB identity-mapped address space, booted by Limine in both BIOS and UEFI mode.
+<p align="center">
+  <img src="sharkos-fish-promo.gif" alt="SharkOS pixel-art shark promo animation" width="720">
+</p>
 
-If you just want to try it:
+<p align="center">
+  <a href="https://sharkos.lol">Website</a> ·
+  <a href="https://github.com/mayshecry/Shark-OS">Source code</a> ·
+  <a href="https://github.com/mayshecry/Shark-OS/releases">Releases</a>
+</p>
+
+SharkOS is an experimental operating system not a Linux distribution, and not an application running on top of another OS. Its kernel, drivers, memory manager, filesystem, shell, desktop, browser and networking components are built into a freestanding system image. It boots through Limine on BIOS and UEFI systems and can be tried in QEMU or VirtualBox.
+
+The project is designed to be hands-on and hackable. It deliberately keeps the shell, desktop, drivers and plugins in kernel space; this keeps the system architecture compact, but it also means a faulty pointer or plugin can crash the whole machine. **SharkOS is experimental and should not be used to store important data or exposed as a production server.**
+
+## At a glance
+
+- **Architecture:** 64-bit x86 (x86-64), freestanding C and assembly
+- **Boot:** Limine; hybrid BIOS/UEFI ISO
+- **Desktop:** graphical framebuffer desktop, window manager, four themes and wallpaper support
+- **Shell:** `nemo-shell`, with 90+ commands
+- **Networking:** in-kernel Ethernet/IP stack, browser, firewall and a separate server build
+- **Extensions:** C/ELF plugins using SharkAPI and the `spkg` package manager
+- **Website:** [sharkos.lol](https://sharkos.lol)
+- **License:** GPL-3.0 — see [`LICENSE`](LICENSE)
+
+## Project timeline
+
+- **May 2025:** development began.
+- **Through January 2026:** development was paused.
+- **January 2026 onward:** development resumed, with continuous development planned through **December 2026**.
+
+## What’s included
+
+### Graphical desktop
+
+SharkOS starts a framebuffer desktop with a desktop grid, icons, a start menu, wallpaper support and a window manager (up to 16 windows). The visual style takes inspiration from Windows 98, with four themes: **Win98, Modern, Kawaii and WindowMaker**. Theme-aware icons, borders and taskbar styling change with the selected theme.
+
+Desktop interactions include a right-click menu for view options, arranging and refreshing icons, opening a terminal and settings. Icons can be hidden or removed. The desktop also includes a file manager and **Shark IDE**, a small editor with line numbers, basic C syntax highlighting, keyboard navigation, Tab indentation and Ctrl+S saving.
+
+The image and animation decoders listed in the project include PNG, JPEG, GIF and WebP.
+
+### Shell and system tools
+
+The `nemo-shell` provides more than 90 commands, including:
+
+- **Files:** `ls`, `cd`, `cat`, `mkdir`, `rm`, `cp`, `mv`
+- **System inspection:** `sysinfo`, `ps`, `htop`, `devices`, `lspci`
+- **Networking:** `ifconfig`, `dhcp`, `ping`, `dns`, `wget`, `curl`, `netstat`
+- **Storage:** `mount`, `umount`
+- **Audio:** `audio status`, `audio test`, `audio tone`, `audio wav`, `audio beep`
+- **Packages and plugins:** `spkg list`, `spkg install`, `spkg uninstall`, `spkg info`
+- **Utilities:** `sharkfetch`, `neofetch`, `imgfetch`, `banner`, `cowsay`, `fortune`
+
+`imgfetch` shows the SharkOS logo next to the neofetch panel: the desktop shell blits the real artwork straight into the framebuffer, while serial, SSH and the server image fall back to a coloured ASCII version of the same picture. `imgfetch <cols>` picks a smaller or larger logo.
+
+Exact command availability can differ between the desktop and server images; use `help` in the running system for the current command list.
+
+### Filesystem and storage
+
+The kernel provides an in-memory filesystem for the running session and an ATA PIO-backed **FAT16** mount driver. The RAM filesystem is intentionally small (up to 128 nodes, 32 children per directory and files up to 64 KiB). FAT16 volumes can be mounted and existing files read or edited, but writes are limited by the file’s existing allocated clusters. Persistent file creation and directory changes are not implemented; FAT32 and long filenames are also not supported. RAM-backed content is lost on reboot.
+
+### Browser and networking
+
+**Shark Navigator** is a compact, in-kernel browser and networking stack—not a Chromium replacement. The stack includes Ethernet, ARP, IPv4, ICMP, UDP, DHCP, DNS, TCP, HTTP/HTTPS, and a stateful firewall. Browser features include HTML/CSS rendering, JavaScript and SVG support, plain-text and common image viewing, URL-encoded GET/POST forms, bounded `fetch()` and a synchronous XMLHttpRequest compatibility layer. A WebSocket client is also available.
+
+The codebase includes drivers for several common emulated and physical NIC families, including Realtek RTL8139/RTL8168/RTL8169, AMD PCnet and supported Intel e1000 devices. Hardware support depends on the exact device and environment.
+
+**Important networking limitations:** only one HTTP/WebSocket connection is active at a time in the desktop network stack; browser APIs are intentionally limited, and TLS certificate identity is not validated. The network stack has not been fuzz-tested against hostile input. Do not treat it as security-hardened.
+
+### Audio
+
+Audio support probes for AC’97 and Intel HD Audio devices. Both feed an eight-channel mixer that resamples audio to 48 kHz, 16-bit stereo. WAV playback and plugin/game audio are supported; the PC speaker is available as a fallback when a DMA audio device is unavailable.
+
+Try commands such as `audio status`, `audio test`, `audio tone 523 300`, or `audio wav /System/Sounds/startup.wav` from the shell.
+
+### Plugins, package manager and games
+
+Plugins are C/ELF modules that use the **SharkAPI** for services such as console I/O, memory, files, graphics, input, tasks and audio. The plugin manager and `spkg` provide discovery, installation, command dispatch and removal. Plugins run in Ring 0 in the kernel’s address space: only install or run code you trust.
+
+The repository includes projects such as Doom, Flappy Bird, Pong, Super Mario Bros. 1-1, Geometry Dash, SharkCube, SharkCraft, FNAF and a Python interpreter plugin. Availability and installation state may vary by image/release. The website’s v4.2 overview also highlights SharkCraft LAN peer-to-peer multiplayer, including discovery, chat and usernames; check the [release notes](https://github.com/mayshecry/Shark-OS/releases) for the exact state of a feature in a particular build.
+
+### SharkOS Server image
+
+The separate server image boots to a framebuffer/serial text console rather than the desktop. It includes HTTP server management, a basic web root, SSH and SFTP support, and a router subsystem with DHCP, DNS forwarding/resolution, WAN management, NAT/port forwarding and a web management console. The server also provides firewall controls and a JSON management API.
+
+**Server safety and persistence:** the documented default SSH credentials are `root` / `root123`; change them before connecting the server to any untrusted network. Website files and credentials are RAM-backed and lost on reboot. HTTP is plaintext, and this experimental server is not a hardened production system. Review the router and firewall documentation before using those components:
+
+- [`docs/SHARKOS-ROUTER.md`](docs/SHARKOS-ROUTER.md)
+- [`docs/SHARKOS-FIREWALL.md`](docs/SHARKOS-FIREWALL.md)
+
+## How SharkOS works
+
+### Boot and startup
+
+1. The machine firmware starts Limine from the bootable ISO (BIOS or UEFI).
+2. Limine loads the SharkOS kernel image and passes the boot information to the kernel entry point.
+3. The assembly entry code establishes the 64-bit execution environment, initializes the kernel’s early memory/paging setup and transfers control to `kmain`.
+4. Kernel startup initializes core CPU/interrupt/timer services, reads the platform clock, scans PCI devices and probes storage, audio and network drivers.
+5. The desktop build initializes the Limine framebuffer, desktop, theme, icons and window manager. The server build instead initializes its text console and server services.
+6. The main loop handles input and system polling. In the desktop build it also polls networking/audio and redraws changed screen regions to the framebuffer.
+
+The 64-bit branch uses a 128 GiB identity-mapped address space as documented by the project. Limine supplies the boot protocol and framebuffer information; the kernel contains the device drivers and system components needed after hand-off.
+
+### Kernel architecture
+
+| Area | Role |
+| --- | --- |
+| `src/arch/` | Early x86-64 setup, GDT/IDT, interrupt handling, PIC, timer, CPU identification and memory-type configuration. |
+| `src/drivers/` | Keyboard, mouse, PCI enumeration, ATA/RTC and audio hardware drivers. |
+| `src/lib/` | Physical memory allocation, ELF loading, SharkAPI and plugin management. |
+| `src/fs/` | RAM filesystem and FAT16 storage support. |
+| `src/desktop/` | Window manager, desktop, themes, icons, image decoders, bootscreen and editor. |
+| `src/browser/` | Browser rendering and client-side HTML/CSS/JS/SVG functionality. |
+| `src/net/` | Network protocols, HTTP services, TLS-related code, firewall, router and server networking. |
+| `src/shell/` | `nemo-shell`, built-in commands and package manager. |
+| `src/server/` | Server image entry point, console and server-specific command support. |
+| `plugins/` | Optional applications and games built for SharkOS. |
+
+### Kernel-space design
+
+SharkOS does not currently provide a protected userspace boundary. Kernel code, shell commands, drivers, desktop components and plugins share privileged execution and address space. The system has no full POSIX environment and no preemptive scheduler; tasks must yield cooperatively. This architecture is useful for learning and experimentation, but it substantially limits reliability and security.
+
+## Try SharkOS
+
+### Download a release
+
+Visit [sharkos.lol](https://sharkos.lol) or the [GitHub Releases page](https://github.com/mayshecry/Shark-OS/releases) for the current ISO and release notes. The website currently features the v4.2 preview. Release assets and feature sets may change over time.
+
+### Run in QEMU
+
+After downloading or building `sharkos.iso`, a basic QEMU launch is:
 
 ```bash
-qemu-system-x86_64 -m 512 -smp 2 -enable-kvm -cpu host \
+qemu-system-x86_64 \
+  -m 512 -smp 2 \
   -cdrom sharkos.iso -boot order=d \
-  -vga std -display gtk,zoom-to-fit=on \
-  -audiodev pa,id=snd0 -device intel-hda -device hda-duplex,audiodev=snd0 \
+  -vga std \
   -netdev user,id=net0 -device e1000,netdev=net0
 ```
 
----
+For serial boot logs:
 
-## What it is
+```bash
+qemu-system-x86_64 -m 512 -cdrom sharkos.iso \
+  -serial stdio -display none
+```
 
-SharkOS isn't a Linux distribution and it doesn't run on top of another OS. It's a kernel, drivers, memory manager, filesystem, shell, desktop, browser and networking stack compiled together into one privileged image.
+A multimedia QEMU configuration with audio is shown in the repository’s release/build instructions; available QEMU audio backends vary by host. VirtualBox can also be used with a 64-bit VM and EFI enabled.
 
-There is no userspace separation. The shell, desktop, window manager, drivers and plugins all run in Ring 0 in the same address space. That's intentional — it makes the system simple to hack on — but it means a bad pointer can take down the whole machine. Treat it as experimental.
+## Build from source
 
-The desktop will look familiar if you've used Windows 98. That's on purpose. The current release ships four themes (Win98, Modern, Kawaii, WindowMaker) and several wallpapers including the Suzuna series. Icons, window borders and the taskbar all adapt per theme.
+A Linux host is required. Install a C toolchain and the ISO/boot utilities:
 
----
+```bash
+sudo apt install build-essential nasm xorriso mtools curl qemu-system-x86 ovmf
+```
 
-## What changed in 64-bit
+Clone and build:
 
-The move to 64-bit was not just recompiling with `-m64`. The boot path, paging and toolchain all changed:
+```bash
+git clone https://github.com/mayshecry/Shark-OS.git
+cd Shark-OS
+make
+```
 
-**Long mode from the first instruction.** `boot.asm` sets up a 64-bit GDT, enables PAE and LME in EFER, builds the PML4 in `arch/early.c`, and does a far jump `0x08:long_mode_entry`. There is no 32-bit protected-mode kernel anymore.
+The default `make` target builds the desktop ISO (`sharkos.iso`). The project also defines `make server` for the server image. The build uses freestanding x86-64 GCC flags and assembles/links the kernel before staging a hybrid ISO with Limine. Build targets and dependencies can evolve, so consult the `Makefile` and project docs if a command fails.
 
-**128GB identity map.** Instead of a higher-half trick, the kernel creates 64 PDP entries of 1GB each (2MiB pages) identity-mapped at boot. Drivers can use `virt_to_phys()`/`phys_to_virt()` directly without remapping. Limine's framebuffer and ACPI tables are already where the kernel expects them.
+## Repository map
 
-**Limine, not GRUB.** `limine.conf` defines a single entry with `protocol: multiboot1` and `path: /SharkOS`. `make` builds a hybrid ISO with `limine-bios.sys`, `limine-bios-cd.bin`, `limine-uefi-cd.bin` and `BOOTX64.EFI`, then runs `limine bios-install` for GPT embedding. It works on QEMU `-bios OVMF.fd` and on real USB sticks without the old `sudo grub-mkrescue` permission issues.
+```text
+.
+├── assets/       # Project media
+├── docs/         # Architecture, router, firewall and feature documentation
+├── include/      # Kernel and subsystem interfaces
+├── limine/       # Limine boot files
+├── plugins/      # Optional applications and games
+├── src/          # Kernel, drivers, desktop, browser, networking and shell
+├── tests/        # Host-side and subsystem tests
+├── tools/        # Build helpers and test utilities
+├── Makefile
+└── boot.s        # Kernel entry assembly
+```
 
-**Audio was added at the same time.** AC'97 (ICH, `NABMBAR` at `PCI BAR 0x10`) with a 32-entry BDL and 64KB circular DMA, and Intel HDA (`BAR0` MMIO with `GCAP/GCTL/CORB/RIRB/SD` at `0x80` stride `0x20`) are both probed via PCI. Both resample to 48kHz stereo through the same 8-channel mixer.
+## Known limitations
 
----
+- Experimental, single-privilege kernel design; no userspace isolation.
+- No preemptive scheduler or full POSIX compatibility.
+- RAM filesystem contents are volatile; FAT16 support has limited write behavior.
+- The ELF loader handles only the subset of ELF used by SharkOS.
+- Browser features and network concurrency are limited; TLS certificate identity is not validated.
+- Networking and server components are not security-hardened or fuzz-tested for hostile input.
+- Hardware support depends on available drivers; a kernel panic may leave the machine hung.
 
-## How it boots
+## Contributing
 
-1. Firmware (BIOS or UEFI) loads Limine from the ISO. Limine finds `boot/sharkos.bin` on the ISO filesystem.
-2. `_start` in `boot.asm` saves the Multiboot info, zeroes BSS, loads the GDT64, enables paging and long mode, and calls `kmain`.
-3. `kmain` in `src/shell/main.c` runs driver init in order: serial, GDT/IDT/PIC, PIT at 100Hz, RTC, PCI scan, ATA, audio, networking.
-4. The desktop is initialized: framebuffer from Limine, desktop icons from `desktop/icons.c` (now 4 variants per `WINDOW_TYPE`), window manager (16 windows max), start menu and wallpapers.
-5. The main loop polls keyboard/mouse, `net_poll()`, `audio_tick()` every 10ms, and composites the dirty region to the backbuffer before flipping to `lfbptr`.
-
-You can watch this on serial:
+Issues and contributions are welcome. Before submitting a change, keep kernel code freestanding, respect the existing subsystem boundaries, check buffer and pointer bounds, and test changes in QEMU where practical. Boot failures may require serial output for diagnosis:
 
 ```bash
 qemu-system-x86_64 -cdrom sharkos.iso -serial stdio -display none
 ```
 
-Look for `[audio] found ac97/hda ...`, `[net] RTL8139/e1000`, and `[desktop] wallpaper suzuna`.
-
----
-
-## Architecture
-
-**arch/** — GDT64, IDT, PIC remap, PIT, CPU identification, MTRR setup. Interrupts 32-47 are remapped so the keyboard (33), mouse (44) and audio IRQs don't collide with CPU exceptions.
-
-**drivers/** — Keyboard (PS/2), mouse, PCI enumeration, ATA PIO, RTC. `drivers/audio/` holds `audio.c` (PCI scan + `audio_init()`), `mixer.c` (8 channels, linear resample to 48kHz, master volume), `ac97.c` (`NABMBAR` PO `BDBAR/CIV/LVI/SR/PICB/CR`), `hda.c` (MMIO `CORB/RIRB` verbs), `wav.c` (RIFF/WAVE PCM parser) and `pcspkr.c` (PIT channel 2 at `0x42/0x61` fallback).
-
-**lib/** — Physical memory bump allocator, ELF64 loader, SharkAPI, plugin manager. `pmm.c` hands out page-aligned frames from the 128GB pool; `elf.c` validates and maps `PT_LOAD` segments.
-
-**fs/** — In-memory filesystem (`shmfs`) plus an ATA-backed FAT16 mount driver. The mount adapter reads actual FAT16 boot sectors, partition tables, directories and cluster chains; saves update existing allocated clusters. The kernel RAM filesystem supports 128 nodes, 32 children per directory and files up to 64KiB. FAT32, long filenames, cluster allocation and files beyond the RAM limit are not implemented.
-
-**desktop/** — Window manager, desktop grid, icons, theme engine, PNG/JPEG/GIF/WebP decoders, bootscreen and Shark IDE. The IDE opens files from File Manager, highlights common C syntax, shows line numbers, supports arrow navigation and Tab indentation, and saves with Ctrl+S. Right-click on the desktop gives View -> Show Desktop Icons (checked state), Arrange, Refresh, Open Terminal and Settings. Each icon can be Hidden or Deleted, with screen-edge clamping and flat bevels for the WM theme.
-
-**browser/** — Shark Navigator: HTML, CSS, layout, JS and SVG, MIME-aware top-level text/image rendering, URL-encoded GET/POST forms, bounded `fetch()` and synchronous XHR shims, and a single-socket JavaScript WebSocket client. It's intentionally small — not a full Chromium replacement.
-
-**net/** — Custom stack: Ethernet, ARP, IPv4, ICMP, UDP, DHCP, DNS, TCP, HTTP/HTTPS (with `crypto.c`/`tls.c`), an extended stateful firewall and the `rtr` router subsystem (DHCP server, DNS resolver/forwarder, WAN management, NAT/port forwards and a port-69 web console). Drivers for Realtek RTL8139 (`10EC:8139`) and RTL8111/8168/8211/8411 (`10EC:8168`), RTL8169 (`10EC:8169`), AMD PCnet (`1022:2000`) and Intel e1000 (`8086:10D3/1502`).
-
-**shell/** — `nemo-shell`, 90+ commands. Filesystem (`ls/cd/cat/mkdir/rm/cp/mv`), system (`sysinfo/ps/htop/devices/lspci`), networking (`ifconfig/dhcp/ping/dns/wget/curl/netstat`) and storage (`mount/umount`), utilities (`sharkfetch/neofetch/banner/cowsay/fortune`), audio (`audio status/beep/tone/test/wav`), and package management (`spkg install/list/uninstall`).
-
----
-
-## Router (Server image)
-
-The Server build can act as a basic IPv4 router. One command starts a DHCP
-server, DNS resolver, WAN management, NAT with port forwards, and an HTTP
-management console on port 69:
-
-```text
-rtr start
-rtr status
-rtr token my-long-secret      # change the default API token first!
-```
-
-Open `http://192.168.10.1:69/` for a pfSense-style single-page dashboard that
-shows everything at once, including the uplink adapter and the automatically
-assigned LAN port (`rtr ports` lists detected NICs). Or use the JSON API
-(`/api/status`, `/api/fw`, `/api/log`, `/api/cli`) with an `X-Shark-Token`
-header. The firewall gained direction policies, CIDR rules, port ranges,
-state matching, per-rule rate limits, logging, hit counters and profiles;
-`fw docs` and `fw status -v` describe them.
-
-Full details, CLI reference, API examples, architecture and limitations are in
-[docs/SHARKOS-ROUTER.md](docs/SHARKOS-ROUTER.md) and
-[docs/SHARKOS-FIREWALL.md](docs/SHARKOS-FIREWALL.md). The dashboard itself is
-[docs/router_ui.html](docs/router_ui.html) (works offline as a preview).
-
-```bash
-make server              # build the Server ISO
-make test-router         # DHCP/DNS/WAN/NAT/CLI regression tests
-make test-firewall       # firewall regression tests
-```
-
----
-
-## Audio
-
-Audio is probed after ATA at boot screen 73%. If a PCI class `0x0401` (AC97) or `0x0403` (HDA) device exists, its IRQ is unmasked in the PIC and `audio_irq_handler()` is wired to vectors 37-47.
-
-The kernel mixer always runs at 48kHz s16 stereo, 480 frames per tick (10ms, 1920 bytes). Per-channel state is `sample_rate/channels/bits/volume/loop/frac_pos/frac_step`. Resampling is linear interpolation: `frac_step = src_rate * 65536 / 48000`, mono is duplicated to stereo, 8-bit unsigned is shifted to signed 16-bit.
-
-For plugins and games:
-
-```c
-#include "sharkapi.h"
-int h = sharkapi_audio_play(pcm, bytes, 44100, 1, 16, 220);
-sharkapi_audio_play_wav(wav_data, wav_len, 200);
-sharkapi_beep(880, 200);
-sharkapi_audio_stop(h);
-```
-
-In the shell:
-
-```
-audio status
-audio test        # 440Hz square wave through the mixer
-audio tone 523 300
-audio wav /System/Sounds/startup.wav
-audio beep
-```
-
-If no DMA device is present, `audio_tick()` still mixes but discards, and `pcspkr_beep()` is available. Host-side proof is in `tools/audio_harness/` — a standalone `host_mixer.c` that reproduces the kernel mixer and writes `output.wav` (1.5s, 48k stereo, 282KB) without QEMU.
-
----
-
-## Networking
-
-The kernel scans PCI for `10EC:8139`, `10EC:8168/8169`, `1022:2000` or supported `8086:*` devices and brings up the first match. Both main and server kernels provide `devices` and `lspci` to list enumerated PCI devices by vendor/device name. QEMU user-mode networking is enough:
-
-```text
-dhcp
-ifconfig
-ping 10.0.2.2
-dns example.com
-wget https://example.com
-curl -L https://example.com
-curl -v -I https://example.com
-curl -X POST -d 'q=sharkos' https://example.com/search
-curl -o page.html https://example.com
-websocket wss://echo.websocket.events 'hello from SharkOS'
-browser https://example.com
-```
-
-The curl client supports GET, HEAD, POST data, custom headers, redirect following, verbose status output and `-o` downloads; response buffers now hold up to 64KiB and RAM/FAT-backed files up to 64KiB. WebSocket supports `ws://` and `wss://`, masked frames up to 65,535 bytes, incremental fragmented-message reception, ping/pong, and a JavaScript `WebSocket` object with events. The browser displays HTML, plain text, JSON, XML, JavaScript source and supported image types; URL-encoded forms and bounded `fetch()` GET/POST calls work. `fetch()` remains synchronous with basic immediate `then()` handling; XMLHttpRequest has a synchronous compatibility implementation, not real asynchronous scheduling. The network stack permits only one active HTTP/WebSocket connection, so a live WebSocket cannot coexist with fetch/XHR. Streaming, full Promise scheduling, and modern frameworks are not supported. TLS certificate identity is not validated.
-
-## Shark IDE, GCC and FAT16 mounts
-
-Launch Shark IDE from its desktop icon, open a file in File Manager, or run `edit <path>` from the desktop terminal. Ctrl+S saves. The IDE supports basic C syntax highlighting, line numbers, arrow keys and Tab indentation.
-
-The kernel probes ATA PIO drives at boot. Run `mount` to list them, `mount 0` to mount the first FAT16 disk at `/mnt/disk0`, and `cd /mnt/disk0` to browse it. `umount /mnt/disk0` detaches it. Existing files can be read and edited directly; writes must fit the file's existing cluster allocation. Persistent file creation and directory changes are not implemented yet. See [`docs/IDE-STORAGE-TOOLCHAIN.md`](docs/IDE-STORAGE-TOOLCHAIN.md) for QEMU setup and filesystem limits.
-
-GNU GCC builds the freestanding kernel on the Linux host. `tools/sharkcc source.c output.o` applies the kernel's x86-64 freestanding flags to one C source file; `make gcc-info` reports the compiler and target, while `make sharkcc` verifies a GCC smoke build. The shell's `gcc --version` reports the compiler version used for the kernel. GCC is not a kernel-hosted application: SharkOS has no POSIX userspace or C runtime to run the Linux compiler executable.
-
----
-
-## Plugins and games
-
-Plugins are ELF objects built as `.plg` and discovered in `/System/Plugins/`. They expose `plugin_init/cleanup/command/info` and call back into the kernel through SharkAPI.
-
-Included:
-
-- doom (BSP renderer), flappybird, pong, Super Mario Bros 1-1, Geometry Dash
-- sharkcube (builtin), sharkcraft (Minecraft parody with per-theme textures)
-- fnaf — Five Nights at Freddy's 1 port, shipped uninstalled with a desktop icon; double-click runs `spkg install fnaf`
-- python-interp
-
-```text
-spkg list
-spkg install fnaf
-spkg uninstall fnaf
-```
-
-SharkCraft and FNAF demonstrate the new icon system: each `WINDOW_TYPE` resolves `theme_get_id()` (0=Win98, 1=Modern, 2=Kawaii, 3=WM) to a different `micon_*` array.
-
----
-
-## Building
-
-You need a Linux host. Cross or native `x86_64` GCC will work as long as it supports `-m64 -ffreestanding`.
-
-```bash
-sudo apt install build-essential nasm xorriso mtools curl qemu-system-x86 ovmf
-git clone https://github.com/mayshecry/Shark-OS.git
-cd Shark-OS
-make              # builds sharkos.bin and sharkos.iso
-make gcc-info
-make sharkcc
-make server
-```
-
-What `make` does:
-
-- Compiles everything with `-m64 -ffreestanding -Os -Wall -Wextra -fno-pie -fno-stack-protector -mno-red-zone -mcmodel=kernel -Iinclude`
-- Links with `linker.ld` to `sharkos.bin`
-- Fetches Limine 8.x if `limine/` is missing, copies `limine-bios.sys`, `limine-uefi-cd.bin`, `BOOTX64.EFI`
-- Builds the ISO with `xorriso` (`-b boot/limine/limine-bios-cd.bin --efi-boot boot/limine/limine-uefi-cd.bin`) and runs `limine bios-install`
-
-Other targets:
-
-```bash
-make clean        # removes isodir/ arch/ drivers/ fs/ ... sharkos.bin sharkos.iso
-make limine       # re-fetch Limine binaries only
-```
-
-### SharkOS Server image
-
-`make sharkos-server.bin` builds the stripped x86-64 server kernel; `make server` builds its bootable BIOS/UEFI ISO. The image provides a framebuffer text console with keyboard input and mirrors output to the serial port instead of launching the desktop. It creates an empty RAM-backed web root at `/User/www`; no placeholder `index.html` is generated. Requests for `/` serve `/User/www/index.html` when you create it with `nano /User/www/index.html`. `httpd tui` opens the text UI for up to four independent webservers, each with its own port and document-root directory; `httpd status`, `httpd start [port]` and `httpd stop` are also available. HTTP can serve separate directories simultaneously, subject to the shared eight-connection TCP limit. The server image also includes `nano <file>`, `neofetch`, and the `devices`/`lspci` device listing commands. At boot it prints a quick-start tutorial and starts SSH on port 22 with the requested default login `root` / `root123` when a network adapter and RDRAND are available. This default is deliberately weak; change it before exposing the server to an untrusted network. RAM size is read from the Multiboot memory map, and the allocator skips reserved physical-address holes. Website files and server configuration are lost on reboot, and HTTP is plaintext.
-
-For 32-bit x86 machines, `make server32` builds the separate `sharkos-server32.iso` BIOS image. It uses a 32-bit protected-mode kernel and does not require long mode; the desktop image remains 64-bit. The 32-bit server limits its usable RAM to 3 GiB and is BIOS-bootable only. It was boot-tested with QEMU's 32-bit `qemu32` and Pentium III CPU models; the bundled Limine BIOS loader does not boot on the older QEMU Pentium model. Both server builds require RDRAND for SSH host-key generation.
-
-The server image includes an OpenSSH-compatible SSHv2 transport using Curve25519/SHA-256 key exchange, ephemeral Ed25519 host keys, AES-128-CTR, HMAC-SHA2-256 and password authentication. SSH starts on port 22 with the default `root` / `root123` credentials when networking and CPU RDRAND are available. To replace that default, run `sshd stop`, then `sshd password <username>` and enter a 7–63 character password; input is hidden and the credential is held only in RAM. Start the service again with `sshd start [port]`; `sshd status` reports its state. The default is intentionally weak and should be changed before exposing the server to an untrusted network. Each boot generates a fresh host key from the CPU RDRAND instruction; CPUs without RDRAND leave SSH unavailable rather than falling back to the non-cryptographic kernel generator, so clients will see the host-key fingerprint change after every reboot. SSH shell and `exec` support the server CLI command set, excluding games and visual-only commands. The local `htop` command opens a live CPU/RAM monitor and shows HTTP/SSH client counts; press `Z` to exit. In an interactive SSH shell, `htop` also streams a live monitor; press `Q` or `Z` to return to the remote prompt. `httpd tui` prints the server menu remotely, with `httpd tui add <slot> <port> <directory>`, `httpd tui toggle <slot>` and `httpd tui delete <slot>` for remote configuration.
-
-SFTP v3 is available as the SSH `sftp` subsystem and is confined to `/User/www`. Connect with `sftp -P 22 <username>@<server-ip>` (use the port passed to `sshd start` if it is not 22), then use normal SFTP commands such as `put`, `get`, `mkdir`, `rename`, `rm` and `rmdir` to manage the website. Files are RAM-backed and may grow up to 4 MiB each; all website files and SSH credentials are lost on reboot. Start `httpd` separately after transferring files. Up to eight TCP connections are shared between HTTP and SSH.
-
-Common issues:
-
-- `limine/limine: Permission denied` — `chmod +x limine/limine`, it loses the bit when copied via `curl`.
-- `Failed to open device` from xorriso — don't run `sudo make`. It leaves `sharkos.iso` owned by root. `sudo rm -f sharkos.iso && sudo chown -R $USER .` then `make` again.
-- `Boot protocol not specified` / `Blank Entry` on Limine — `limine.conf` must use `/SharkOS` with `protocol: multiboot1`, not `:` syntax. The Makefile already installs it to `isodir/boot/limine/limine.conf` and `isodir/limine.cfg`.
-
----
-
-## Running
-
-QEMU is the easiest way to develop. The single command with video, audio and internet is at the top of this file.
-
-A few variations:
-
-```bash
-# AC97 instead of HDA, with serial logs
-qemu-system-x86_64 -cdrom sharkos.iso -m 512 -soundhw ac97 -serial stdio
-
-# Just video + net, no audio
-qemu-system-x86_64 -cdrom sharkos.iso -m 512 -vga std -netdev user,id=n0 -device e1000,netdev=n0
-
-# UEFI
-qemu-system-x86_64 -cdrom sharkos.iso -m 512 -bios /usr/share/OVMF/OVMF.fd -vga std
-```
-
-VirtualBox: create a type Other/Unknown (64-bit) VM, attach `sharkos.iso` as optical drive, enable EFI, VT-x/AMD-V and audio Intel HD.
-
-Bochs/real hardware: write `sharkos.iso` to USB with `dd` or Rufus. The ISO is El Torito + GPT hybrid so it boots both ways. Real hardware testing will hang on kernel panic — there's no recovery shell once Ring 0 state is corrupt.
-
----
-
-## Project structure
-
-```
-Shark-OS/
-  boot.asm          # long-mode entry, far jump
-  linker.ld         # kernel layout
-  limine.conf       # Limine entry: /SharkOS multiboot1
-  Makefile
-  include/          # kernel.h audio.h sharkapi.h desktop.h theme.h ...
-  src/
-    arch/           # early.c io.c interrupts.c cpu.c mtrr.c
-    drivers/        # keyboard / pci / mouse / rtc / ata / audio/*
-    fs/             # in-memory fs
-    lib/            # pmm / elf / sharkapi / plugin_manager
-    desktop/        # windowmanager / desktop / icons / theme / bootscreen / png/jpeg/gif/webp
-    browser/        # html / css / layout / js / svg / font
-    shell/          # main.c commands.c spkg.c lite.c
-    net/            # net.c crypto.c tls.c
-    sharkscript/    # shs.c
-    doom/ flappybird/ pong/ smb/ geometrydash/ fnaf/
-  plugins/          # doom / flappybird / pong / smb / gdash / sharkcube / sharkcraft / fnaf
-  tools/audio_harness/  # host_mixer.c -> output.wav
-  docs/             # AUDIO.md
-  isodir/           # staged ISO root
-```
-
-Start by reading `include/kernel.h` and `src/shell/main.c:kmain`. For desktop changes, see `src/desktop/desktop.c` and `src/desktop/icons.c`. For networking, `src/net/net.c:net_init()`.
-
----
-
-## Limitations
-
-No privilege separation. No preemptive scheduler (tasks must `yield()`). No persistent filesystem without ATA. No full POSIX. The ELF loader only handles the subset SharkOS emits. The network stack is not fuzzed for hostile input.
-
-These are tradeoffs for a small, hackable codebase, not bugs to file.
-
----
-
-## Contributing
-
-Keep arch code in `src/arch/`, don't add hosted libc dependencies, check buffer bounds before touching `fs/` or `desktop/`, and test both BIOS and UEFI in QEMU before opening a PR. Build the ISO and boot it — if it triple-faults, the screen will be blank and serial is the only log.
-
----
+## Documentation and links
+
+- **Website:** [sharkos.lol](https://sharkos.lol)
+- **Source:** [github.com/mayshecry/Shark-OS](https://github.com/mayshecry/Shark-OS)
+- **Releases:** [GitHub Releases](https://github.com/mayshecry/Shark-OS/releases)
+- **Plugin system:** [`PLUGIN_SYSTEM.md`](PLUGIN_SYSTEM.md)
+- **Automatic plugin discovery:** [`PLUGIN_AUTO_DETECT.md`](PLUGIN_AUTO_DETECT.md)
+- **Router:** [`docs/SHARKOS-ROUTER.md`](docs/SHARKOS-ROUTER.md)
+- **Firewall:** [`docs/SHARKOS-FIREWALL.md`](docs/SHARKOS-FIREWALL.md)
 
 ## License
 
-GPL-3.0. See `LICENSE`.
-
-Created by mayshecry. Thanks to the OSDev community and the Limine project.
-
+SharkOS is distributed under the GNU General Public License, version 3.0. See [`LICENSE`](LICENSE) for the full license text.
