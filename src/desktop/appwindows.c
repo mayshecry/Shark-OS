@@ -34,67 +34,212 @@ static void label_value(int lx, int vx, int y, const char* label,
 #define TERM_CELL_H       16
 #define TERM_MAX_COLS     160
 
-static char terminal_buffer[256] = "";
-static int terminal_buf_len = 0;
-static char terminal_output[TERM_SCROLLBACK] = "";
-static uint8_t terminal_output_colors[TERM_SCROLLBACK];
-static int terminal_output_len = 0;
-static char terminal_capture_store[TERM_CAPTURE_MAX];
-static uint8_t terminal_capture_colors_store[TERM_CAPTURE_MAX];
-static int terminal_blink = 0;
-static int terminal_history_pos = 0;
-int desktop_terminal_cols = 46;
+typedef struct {
+    char input[256];
+    int input_len;
+    char output[TERM_SCROLLBACK];
+    uint8_t output_colors[TERM_SCROLLBACK];
+    int output_len;
+    char capture[TERM_CAPTURE_MAX];
+    uint8_t capture_colors[TERM_CAPTURE_MAX];
+    int blink;
+    int cols;
+    int rows;
+    int img_active;
+    int img_pending;
+    int img_lines;
+    int img_tail;
+    int img_cells;
+    int img_size;
+    int img_xoff;
+    int history_pos;
+    int hot_active;
+} term_state_t;
+
+static term_state_t term_state_pool[MAX_WINDOWS];
+static int term_state_next = 0;
 
 
-static void terminal_output_append(const char* text, const uint8_t* colors, int len) {
-    if (len <= 0) return;
+static term_state_t* term_current = NULL;
+static window_t* term_current_win = NULL;
+
+static void term_cur_rows(int rows) { if (term_current) term_current->rows = rows; }
+static void term_cur_cols(int cols) { if (term_current) term_current->cols = cols; }
+
+int desktop_terminal_cols = 46;   
+int desktop_terminal_rows = 10;
+
+static term_state_t* term_state(window_t* w) {
+    if (!w) return NULL;
+    if (!w->user_data) {
+        
+        term_state_t* st = NULL;
+        for (int i = 0; i < MAX_WINDOWS; i++) {
+            term_state_t* cand = &term_state_pool[i];
+            int taken = 0;
+            for (int j = 0; j < desktop.window_count; j++) {
+                if (&desktop.windows[j] != w && desktop.windows[j].user_data == cand) {
+                    taken = 1;
+                    break;
+                }
+            }
+            if (!taken) { st = cand; break; }
+        }
+        if (!st) return NULL;
+        char* raw = (char*)st;
+        for (size_t i = 0; i < sizeof(*st); i++) raw[i] = 0;
+        st->cols = 46;
+        st->rows = 10;
+        w->user_data = st;
+        term_state_next++;
+    }
+    return (term_state_t*)w->user_data;
+}
+
+static window_t* term_draw_window = NULL; 
+
+int desktop_terminal_output_len(void) {
+    return term_current ? term_current->output_len : 0;
+}
+
+int desktop_terminal_rows_available(void) {
+    return desktop_terminal_rows;
+}
+
+
+int desktop_terminal_grow(int want_rows) {
+    window_t* win = term_current ? term_current_win : term_draw_window;
+    if (!win) return desktop_terminal_rows;
+    if (want_rows > desktop_terminal_rows) {
+        int extra = (want_rows - desktop_terminal_rows) * TERM_CELL_H;
+        int limit = (int)screen_height - (int)TASKBAR_HEIGHT - 8;
+        int new_h = win->rect.height + extra;
+        if (new_h > limit - win->rect.y) new_h = limit - win->rect.y;
+        if (new_h > win->rect.height) {
+            win->rect.height = new_h;
+            window_update_client_rect(win);
+            desktop.dirty = true;
+        }
+        int lines = (win->rect.client_h - 12 - 8) / TERM_CELL_H - 1;
+        desktop_terminal_rows = lines > 0 ? lines : 1;
+        term_cur_rows(desktop_terminal_rows);
+    }
+    return desktop_terminal_rows;
+}
+
+
+int desktop_terminal_widen(int want_cols) {
+    window_t* win = term_current ? term_current_win : term_draw_window;
+    if (!win) return desktop_terminal_cols;
+    if (want_cols > desktop_terminal_cols) {
+        int need_w = want_cols * TERM_CELL_W + 8 + 12 + 12; 
+        int limit = (int)screen_width - win->rect.x - 8;
+        int new_w = need_w;
+        if (new_w > limit) new_w = limit;
+        if (new_w > win->rect.width) {
+            win->rect.width = new_w;
+            window_update_client_rect(win);
+            desktop.dirty = true;
+        }
+        int cols = (win->rect.client_w - 12 - 8) / TERM_CELL_W;
+        if (cols > TERM_MAX_COLS) cols = TERM_MAX_COLS;
+        if (cols < 4) cols = 4;
+        desktop_terminal_cols = cols;
+        term_cur_cols(cols);
+    }
+    return desktop_terminal_cols;
+}
+
+void desktop_terminal_image_attach(int lines, int tail_lines, int cells, int size, int xoff) {
+    term_state_t* st = term_current;
+    if (!st) return;
+    st->img_active = 1;
+    
+    st->img_pending = 1;
+    st->img_lines = lines;
+    st->img_tail = tail_lines;
+    st->img_cells = cells;
+    st->img_size = size;
+    st->img_xoff = xoff;
+}
+
+void desktop_terminal_hot_set(int on) {
+    if (!term_current) return;
+    term_current->hot_active = on ? 1 : 0;
+}
+
+void desktop_terminal_image_detach(void) {
+    if (!term_current) return;
+    term_current->img_active = 0;
+    term_current->img_pending = 0;
+}
+
+static void terminal_output_append(term_state_t* st, const char* text,
+                                   const uint8_t* colors, int len) {
+    if (!st || len <= 0) return;
     if (len >= TERM_SCROLLBACK - 1) {
+
+
+
         int skip = len - (TERM_SCROLLBACK - 1);
         text += skip;
         if (colors) colors += skip;
         len = TERM_SCROLLBACK - 1;
     }
-    if (terminal_output_len + len >= TERM_SCROLLBACK - 1) {
+    if (st->output_len + len >= TERM_SCROLLBACK - 1) {
 
-        int drop = terminal_output_len + len - (TERM_SCROLLBACK - 1);
-        while (drop < terminal_output_len && terminal_output[drop] != '\n') drop++;
-        if (drop < terminal_output_len) drop++;
-        kmemmove(terminal_output, terminal_output + drop, terminal_output_len - drop);
-        kmemmove(terminal_output_colors, terminal_output_colors + drop,
-                 terminal_output_len - drop);
-        terminal_output_len -= drop;
+        int drop = st->output_len + len - (TERM_SCROLLBACK - 1);
+        while (drop < st->output_len && st->output[drop] != '\n') drop++;
+        if (drop < st->output_len) drop++;
+        kmemmove(st->output, st->output + drop, st->output_len - drop);
+        kmemmove(st->output_colors, st->output_colors + drop, st->output_len - drop);
+        st->output_len -= drop;
     }
     for (int i = 0; i < len; i++) {
-        terminal_output[terminal_output_len] = text[i];
-        terminal_output_colors[terminal_output_len] =
-            colors ? colors[i] : VGA_COLOR_LIGHT_GREY;
-        terminal_output_len++;
+        st->output[st->output_len] = text[i];
+        st->output_colors[st->output_len] = colors ? colors[i] : VGA_COLOR_LIGHT_GREY;
+        st->output_len++;
     }
-    terminal_output[terminal_output_len] = '\0';
-    terminal_history_pos++;
+    st->output[st->output_len] = '\0';
+    st->history_pos++;
+    if (st->img_active) {
+        if (st->img_pending) {
+            st->img_pending = 0; 
+        } else {
+            st->img_active = 0; 
+        }
+    }
 }
 
-static void term_append_fixed(const char* text, int len, uint8_t color) {
+static void term_append_fixed(term_state_t* st, const char* text, int len, uint8_t color) {
     uint8_t cols[260];
     if (len > (int)sizeof(cols)) len = (int)sizeof(cols);
     for (int i = 0; i < len; i++) cols[i] = color;
-    terminal_output_append(text, cols, len);
+    terminal_output_append(st, text, cols, len);
 }
 
-static void terminal_output_clear(void) {
-    terminal_output_len = 0;
-    terminal_output[0] = '\0';
-    terminal_history_pos++;
+static void terminal_output_clear(term_state_t* st) {
+    if (!st) return;
+    st->img_active = 0;
+    st->img_pending = 0;
+    st->output_len = 0;
+    st->output[0] = '\0';
 }
 
-static int terminal_layout_lines(int cols, int want, int* out_start, int* out_len) {
+static int terminal_layout_lines(term_state_t* st, int cols, int want,
+                                 int* out_start, int* out_len) {
     int count = 0;
     int i = 0;
+    if (!st) {
+        if (out_start) *out_start = 0;
+        if (out_len) *out_len = 0;
+        return 0;
+    }
     if (cols < 1) cols = 1;
-    while (i < terminal_output_len) {
+    while (i < st->output_len) {
         int start = i;
         int len = 0;
-        while (i < terminal_output_len && terminal_output[i] != '\n' && len < cols) {
+        while (i < st->output_len && st->output[i] != '\n' && len < cols) {
             i++; len++;
         }
         if (want == count) {
@@ -103,23 +248,26 @@ static int terminal_layout_lines(int cols, int want, int* out_start, int* out_le
             return count;
         }
         count++;
-        if (i < terminal_output_len && terminal_output[i] == '\n') i++;
+        if (i < st->output_len && st->output[i] == '\n') i++;
     }
     if (want >= 0) {
-        if (out_start) *out_start = terminal_output_len;
+        if (out_start) *out_start = st->output_len;
         if (out_len) *out_len = 0;
     }
     return count;
 }
 
 void app_window_draw_terminal(window_t* w) {
+    term_draw_window = w;
+    term_state_t* st = term_state(w);
+    if (!st) return;
     int cx = w->rect.client_x;
     int cy = w->rect.client_y;
     int cw = w->rect.client_w;
     int ch = w->rect.client_h;
 
-    terminal_blink++;
-    if (terminal_blink >= 60) terminal_blink = 0;
+    st->blink++;
+    if (st->blink >= 60) st->blink = 0;
 
     w98_fill(cx, cy, cw, ch, W98_BTNFACE);
     w98_surface(cx + 2, cy + 2, cw - 4, ch - 4, W98_BEVEL_SUNKEN,
@@ -134,6 +282,7 @@ void app_window_draw_terminal(window_t* w) {
     int cols = (tw - 8) / TERM_CELL_W;
     if (cols > TERM_MAX_COLS) cols = TERM_MAX_COLS;
     if (cols < 4) cols = 4;
+    st->cols = cols;
     desktop_terminal_cols = cols;
     int max_lines = (th - 8) / TERM_CELL_H;
     if (max_lines < 1) max_lines = 1;
@@ -141,35 +290,49 @@ void app_window_draw_terminal(window_t* w) {
     int clipx0 = tx + 2, clipy0 = ty + 2;
     int clipx1 = tx + tw - 2, clipy1 = ty + th - 2;
 
-    int prompt_chars = 2 + terminal_buf_len;
+    int prompt_chars = 2 + st->input_len;
     int prompt_rows = (prompt_chars + cols - 1) / cols;
     if (prompt_rows < 1) prompt_rows = 1;
 
-    int total = terminal_layout_lines(cols, -1, NULL, NULL);
+    int total = terminal_layout_lines(st, cols, -1, NULL, NULL);
     int avail = max_lines - prompt_rows;
     if (avail < 0) avail = 0;
+    st->rows = avail;
+    desktop_terminal_rows = avail;
     int first = total - avail;
     if (first < 0) first = 0;
 
     int row = 0;
-    if (terminal_hot_active()) {
+    if (st->hot_active) {
         int img_bottom = ty + 4 + (max_lines - 1) * TERM_CELL_H - 2;
         int img_h = img_bottom > ty + 2 ? img_bottom - (ty + 2) : 0;
-        terminal_hot_draw_into(tx + 2, ty + 2, tw - 4, img_h);
+        terminal_hot_draw_rect(tx + 2, ty + 2, tw - 4, img_h);
         row = max_lines - 1;
     } else {
         for (int li = first; li < total && row < avail; li++, row++) {
             int start = 0, len = 0;
-            terminal_layout_lines(cols, li, &start, &len);
+            terminal_layout_lines(st, cols, li, &start, &len);
             if (len > TERM_MAX_COLS) len = TERM_MAX_COLS;
             for (int j = 0; j < len; j++) {
-                char c = terminal_output[start + j];
-                uint32_t fg = vga_to_rgb[terminal_output_colors[start + j] & 0x0F];
+                char c = st->output[start + j];
+                uint8_t cell_color = st->output_colors[start + j];
+                uint32_t fg = vga_to_rgb[cell_color & 0x0F];
+                uint32_t bg = vga_to_rgb[(cell_color >> 4) & 0x0F];
                 term_put_char_win(c, tx + 4 + j * TERM_CELL_W,
-                                  ty + 4 + row * TERM_CELL_H, fg, 0xFF000000,
+                                  ty + 4 + row * TERM_CELL_H, fg, bg,
                                   clipx0, clipy0, clipx1, clipy1);
             }
         }
+    }
+
+    if (!terminal_hot_active() && st->img_active && st->img_size > 0) {
+        int start_line = total - st->img_tail - st->img_lines;
+        int r0 = start_line - first;
+        int ix = tx + 4 + st->img_xoff * TERM_CELL_W;
+        int iy = ty + 4 + r0 * TERM_CELL_H;
+        int bottom = iy + st->img_lines * TERM_CELL_H;
+        int clip_bottom = clipy1 < bottom ? clipy1 : bottom;
+        imgfetch_blit(ix, iy, st->img_size, clipx0, clipy0, clipx1, clip_bottom);
     }
 
     int py = ty + 4 + row * TERM_CELL_H;
@@ -177,14 +340,14 @@ void app_window_draw_terminal(window_t* w) {
                       clipx0, clipy0, clipx1, clipy1);
     int col = 2;
     int prow = 0;
-    for (int i = 0; i < terminal_buf_len; i++) {
+    for (int i = 0; i < st->input_len; i++) {
         if (col >= cols) { col = 0; prow++; }
-        term_put_char_win(terminal_buffer[i], tx + 4 + col * TERM_CELL_W,
+        term_put_char_win(st->input[i], tx + 4 + col * TERM_CELL_W,
                           py + prow * TERM_CELL_H, 0xFFFFFF55, 0xFF000000,
                           clipx0, clipy0, clipx1, clipy1);
         col++;
     }
-    if (terminal_blink < 30) {
+    if (st->blink < 30) {
         if (col >= cols) { col = 0; prow++; }
         int cur_x = tx + 4 + col * TERM_CELL_W;
         int cur_y = py + prow * TERM_CELL_H;
@@ -223,46 +386,52 @@ static bool terminal_cmd_blocked(const char* cmd, char* why, int why_len) {
 }
 
 static void terminal_run_command(window_t* w) {
-    terminal_buffer[terminal_buf_len] = '\0';
+    term_state_t* st = term_state(w);
+    if (!st) return;
+    st->input[st->input_len] = '\0';
 
-    term_append_fixed("$ ", 2, VGA_COLOR_LIGHT_GREEN);
-    term_append_fixed(terminal_buffer, terminal_buf_len, VGA_COLOR_LIGHT_BROWN);
-    terminal_output_append("\n", NULL, 1);
+    term_append_fixed(st, "$ ", 2, VGA_COLOR_LIGHT_GREEN);
+    term_append_fixed(st, st->input, st->input_len, VGA_COLOR_LIGHT_BROWN);
+    terminal_output_append(st, "\n", NULL, 1);
 
     char why[96];
-    if (terminal_cmd_blocked(terminal_buffer, why, sizeof(why))) {
-        terminal_output_append(why, NULL, (int)strlen(why));
-    } else if (strcmp(terminal_buffer, "clear") == 0 || strcmp(terminal_buffer, "cls") == 0) {
-        terminal_output_clear();
+    if (terminal_cmd_blocked(st->input, why, sizeof(why))) {
+        terminal_output_append(st, why, NULL, (int)strlen(why));
+    } else if (strcmp(st->input, "clear") == 0 || strcmp(st->input, "cls") == 0) {
+        terminal_output_clear(st);
     } else {
 
         uint8_t saved_color = terminal_color;
+        term_current = st;
+        term_current_win = w;
+        desktop_terminal_cols = st->cols;
+        desktop_terminal_rows = st->rows;
         terminal_in_desktop_window = true;
-        terminal_capture_begin(terminal_capture_store,
-                               terminal_capture_colors_store,
-                               TERM_CAPTURE_MAX);
-        execute_command(terminal_buffer);
+        terminal_capture_begin(st->capture, st->capture_colors, TERM_CAPTURE_MAX);
+        execute_command(st->input);
         bool cleared = terminal_capture_cleared;
         int len = terminal_capture_len;
         terminal_capture_end();
         terminal_in_desktop_window = false;
         terminal_color = saved_color;
 
-        if (cleared) terminal_output_clear();
+        if (cleared) terminal_output_clear(st);
 
-        const char* out = terminal_capture_store;
-        const uint8_t* out_colors = terminal_capture_colors_store;
+        const char* out = st->capture;
+        const uint8_t* out_colors = st->capture_colors;
         while (len > 0 && *out == '\n') { out++; out_colors++; len--; }
 
         while (len > 1 && out[len - 1] == '\n' && out[len - 2] == '\n') len--;
         if (len > 0) {
-            terminal_output_append(out, out_colors, len);
-            if (out[len - 1] != '\n') terminal_output_append("\n", NULL, 1);
+            terminal_output_append(st, out, out_colors, len);
+            if (out[len - 1] != '\n') terminal_output_append(st, "\n", NULL, 1);
         }
     }
 
-    terminal_buf_len = 0;
-    terminal_buffer[0] = '\0';
+    term_current = NULL;
+    term_current_win = NULL;
+    st->input_len = 0;
+    st->input[0] = '\0';
     w->needs_redraw = true;
     desktop.dirty = true;
 }
@@ -1812,7 +1981,8 @@ void app_window_draw_about(window_t* w) {
     w98_text("Created by Mayshecry", cx + cw / 2 - 66, cy + 128,
              W98_GRAYTEXT, W98_BTNFACE, 1, NULL);
 
-
+                                                                    
+                                                                  
     draw_shark_logo(cx + cw / 2, cy + 200, 46, W98_BTNDKSHADOW);
     draw_shark_logo(cx + cw / 2, cy + 200, 43, W98_LOGO);
 }
@@ -1928,29 +2098,31 @@ void app_window_mouse_network(window_t* w, int mx, int my, int buttons) {
 }
 
 void app_window_keyboard_terminal(window_t* w, char c) {
+    term_state_t* st = term_state(w);
+    if (!st) return;
     if (c == 27) return;
     if (c == '\n') {
-        if (terminal_buf_len > 0) {
+        if (st->input_len > 0) {
             terminal_run_command(w);
         } else {
             static const uint8_t prompt_cols[3] = {
                 VGA_COLOR_LIGHT_GREEN, VGA_COLOR_LIGHT_GREEN, VGA_COLOR_LIGHT_GREY
             };
-            terminal_output_append("$ \n", prompt_cols, 3);
+            terminal_output_append(st, "$ \n", prompt_cols, 3);
         }
         w->needs_redraw = true;
         desktop.dirty = true;
     } else if (c == '\b') {
-        if (terminal_buf_len > 0) {
-            terminal_buf_len--;
-            terminal_buffer[terminal_buf_len] = '\0';
+        if (st->input_len > 0) {
+            st->input_len--;
+            st->input[st->input_len] = '\0';
             w->needs_redraw = true;
             desktop.dirty = true;
         }
     } else if (c >= 32 && c < 127) {
-        if (terminal_buf_len < 255) {
-            terminal_buffer[terminal_buf_len++] = c;
-            terminal_buffer[terminal_buf_len] = '\0';
+        if (st->input_len < 255) {
+            st->input[st->input_len++] = c;
+            st->input[st->input_len] = '\0';
             w->needs_redraw = true;
             desktop.dirty = true;
         }
@@ -1987,13 +2159,8 @@ void app_window_mouse_sharkcube(window_t* w, int mx, int my, int buttons) {
 }
 
 void app_window_keyboard_sharkcraft(window_t* w, char c) {
-    /* SharkCraft manages ESC itself (main menu / pause / chat cancel).
-       It asks the window to close via sharkcraft_wants_close(). */
+    if (c == 27) { window_close_by_ptr(w); return; }
     if (sharkcraft_handle_key(c)) { w->needs_redraw=true; desktop.dirty=true; }
-    if (sharkcraft_wants_close()) {
-        sharkcraft_clear_wants_close();
-        window_close_by_ptr(w);
-    }
 }
 
 void app_window_mouse_sharkcraft(window_t* w, int mx, int my, int buttons) {
