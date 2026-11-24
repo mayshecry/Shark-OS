@@ -220,7 +220,7 @@ void terminal_capture_begin(char* buf, uint8_t* colors, int cap);
 void terminal_capture_end(void);
 
 extern bool terminal_in_desktop_window;
-extern int desktop_terminal_cols;
+extern int desktop_terminal_cols;                                              
 
 #define terminal_row     (panes[active_pane].row)
 #define terminal_column  (panes[active_pane].col)
@@ -375,7 +375,29 @@ void term_put_char_win(char c, int x, int y, uint32_t fg, uint32_t bg,
                        int cx0, int cy0, int cx1, int cy1);
 void draw_pixel(int x, int y, uint32_t color);
 void draw_rect(int x, int y, int w, int h, uint32_t color);
+
+
+void boot_setup_run(void);
+void boot_setup_draw(void);
+extern bool boot_to_cli;
+extern int boot_theme_id;
+
+void imgfetch_overlay_redraw(void);
+void imgfetch_overlay_clear(void);
+void imgfetch_blit(int x, int y, int size, int clipx0, int clipy0, int clipx1, int clipy1);
+
+
+extern int desktop_terminal_rows;
+int desktop_terminal_output_len(void);
+int desktop_terminal_rows_available(void);
+int desktop_terminal_grow(int want_rows);
+int desktop_terminal_widen(int want_cols);
+void desktop_terminal_image_attach(int lines, int tail_lines, int cells, int size, int xoff);
+void desktop_terminal_image_detach(void);
+void desktop_terminal_hot_set(int on);
 void draw_string_px(const char* s, int x, int y, uint32_t fg, uint32_t bg);
+
+
 uint32_t col_px(size_t col);
 uint32_t row_px(size_t row);
 void terminal_putentryat(char c, uint8_t color, size_t x, size_t y);
@@ -393,6 +415,7 @@ void terminal_hot_easter_egg(void);
 bool terminal_hot_active(void);
 void terminal_hot_clear(void);
 void terminal_hot_draw_into(int rx, int ry, int rw, int rh);
+void terminal_hot_draw_rect(int rx, int ry, int rw, int rh);
 void terminal_initialize(void);
 void terminal_draw_scrollback(void);
 void ui_init_metrics(void);
