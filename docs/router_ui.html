@@ -117,13 +117,11 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:3px;padding:11
 
     <div class="grid">
 
-      <!-- System -->
       <section class="card" id="s-system">
         <h2>System Information <em>router</em></h2>
         <div class="body" id="system"></div>
       </section>
 
-      <!-- Interfaces: the pfSense-style assignments widget -->
       <section class="card" id="s-interfaces">
         <h2>Interface Assignments <em id="ifMode">—</em></h2>
         <div class="body">
@@ -132,19 +130,16 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:3px;padding:11
         </div>
       </section>
 
-      <!-- WAN -->
       <section class="card" id="s-wan">
         <h2>WAN / Uplink Adapter <em id="wanName">—</em></h2>
         <div class="body" id="wan"></div>
       </section>
 
-      <!-- LAN -->
       <section class="card" id="s-lan">
         <h2>LAN &amp; DHCP Server <em id="lanName">—</em></h2>
         <div class="body" id="lan"></div>
       </section>
 
-      <!-- Leases + reservations -->
       <section class="card wide" id="s-leases">
         <h2>DHCP Leases &amp; Static Reservations <em id="leaseCount">—</em></h2>
         <div class="body split">
@@ -153,13 +148,11 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:3px;padding:11
         </div>
       </section>
 
-      <!-- DNS -->
       <section class="card" id="s-dns">
         <h2>DNS Resolver <em id="dnsDomain">—</em></h2>
         <div class="body" id="dns"></div>
       </section>
 
-      <!-- Firewall -->
       <section class="card wide" id="s-fw">
         <h2>Firewall <em id="fwSummary">—</em></h2>
         <div class="body">
@@ -174,7 +167,6 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:3px;padding:11
         </div>
       </section>
 
-      <!-- NAT -->
       <section class="card wide" id="s-nat">
         <h2>NAT &amp; Port Forwards <em id="natState">—</em></h2>
         <div class="body split">
@@ -183,19 +175,16 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:3px;padding:11
         </div>
       </section>
 
-      <!-- Traffic -->
       <section class="card" id="s-traffic">
         <h2>Traffic Counters <em>since boot</em></h2>
         <div class="body split" id="traffic"></div>
       </section>
 
-      <!-- Log -->
       <section class="card" id="s-log">
         <h2>Firewall Log <em>newest first</em></h2>
         <div class="body"><pre id="logBox"></pre></div>
       </section>
 
-      <!-- Actions -->
       <section class="card wide" id="s-actions">
         <h2>Quick Actions <em>runs through /api/cli</em></h2>
         <div class="body">
@@ -223,7 +212,6 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:3px;padding:11
         </div>
       </section>
 
-      <!-- Quick configure -->
       <section class="card wide" id="s-config">
         <h2>Quick Configure <em>common settings</em></h2>
         <div class="body split">
@@ -242,7 +230,6 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:3px;padding:11
         </div>
       </section>
 
-      <!-- Console -->
       <section class="card wide" id="s-console">
         <h2>Console <em>rtr / fw commands</em></h2>
         <div class="body">
@@ -258,7 +245,6 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:3px;padding:11
 </div>
 
 <script>
-/* Static demo used when /api/status is unreachable (e.g. offline preview). */
 const DEMO={ok:true,product:"SharkOS Router",running:true,uptime:5123,router_uptime:3210,
  interfaces:{count:2,mode:"dedicated",lan_shared:false,wan:0,lan:1,
   uplink:{ifname:"em0",driver:"Intel PRO/1000 (e1000)",mac:"52:61:72:6b:00:01",pci:"00:03.0",active:true,link:true,role:"wan"},
@@ -310,7 +296,6 @@ function render(d){
  $('crumbMode').textContent=IF?(IF.mode==='dedicated'?'dedicated uplink + LAN':'single-NIC shared mode'):'interfaces unavailable';
  $('crumbUp').textContent=(d.product||'SharkOS Router')+' · '+(IF?IF.count+' adapter(s) detected':'')+' · router up '+dur(d.router_uptime);
 
- /* System */
  $('system').innerHTML=kv([
   ['Hostname','SharkOS Router',1],['Product',d.product||'SharkOS Server',1],
   ['Router state',d.running?tag('running','ok'):tag('stopped','bad')],
@@ -321,7 +306,6 @@ function render(d){
   ['HTTP requests',num(s.http_requests)],
   ['Detected adapters',IF?IF.count:'—']]);
 
- /* Interfaces — pfSense style assignments table */
  $('ifMode').textContent=IF?(IF.count+' detected · '+(IF.mode==='dedicated'?'dedicated':'shared')):'—';
  if(IF&&IF.ports&&IF.ports.length){
   $('ifTable').innerHTML=table(['Interface','Role','Adapter','MAC','Address','Status'],
@@ -344,7 +328,6 @@ function render(d){
  $('wanName').textContent=IF&&IF.uplink?(IF.uplink.ifname+' · '+IF.uplink.driver):'uplink adapter';
  $('lanName').textContent=IF&&!IF.lan_shared&&IF.lan_port?IF.lan_port.ifname:'shared / LAN';
 
- /* WAN */
  $('wan').innerHTML=kv([
   ['Adapter',IF&&IF.uplink?esc(IF.uplink.ifname)+' · '+esc(IF.uplink.driver):'primary NIC',1],
   ['MAC',IF&&IF.uplink?esc(IF.uplink.mac):'—'],
@@ -355,7 +338,6 @@ function render(d){
   ['DHCP client',esc(wan.dhcp_state||'—'),1],['Lease remaining',dur(wan.lease_left)],
   ['Link',onoff(wan.link,'up','down')]]);
 
- /* LAN / DHCP */
  $('lan').innerHTML=kv([
   ['Interface',IF&&!IF.lan_shared&&IF.lan_port?esc(IF.lan_port.ifname):'shared with uplink',1],
   ['IPv4 address',esc(lan.ip||'—')],['Subnet mask',esc(lan.mask||'—')],
@@ -365,14 +347,12 @@ function render(d){
   ['Reservations',num((dhcp.reservations||[]).length)],
   ['Clients gateway',esc(lan.ip||'—')]]);
 
- /* Leases */
  $('leaseCount').textContent=(dhcp.leases||[]).length+' lease(s) · '+(dhcp.reservations||[]).length+' reservation(s)';
  $('leases').innerHTML=table(['IP','MAC','Host','State','Expires'],(dhcp.leases||[]).map(l=>
   [esc(l.ip),esc(l.mac),esc(l.host||'—'),l.bound?tag('bound','ok'):tag('offered','warn'),dur(l.expires)]),'No DHCP leases yet');
  $('reservations').innerHTML=table(['#','MAC','IP','Host',''],(dhcp.reservations||[]).map(r=>
   [r.id,esc(r.mac),esc(r.ip),esc(r.host||'—'),`<button class="btn sm danger" onclick="run('rtr dhcp unreserve ${r.id}')">remove</button>`]),'No static reservations');
 
- /* DNS */
  $('dnsDomain').textContent='.'+(dns.domain||'lan');
  $('dns').innerHTML=kv([
   ['Resolver',onoff(dns.enabled,'enabled','disabled')],
@@ -385,7 +365,6 @@ function render(d){
  $('dns').innerHTML+=`<div style="font-size:11px;color:var(--muted);margin:12px 0 6px;text-transform:uppercase;letter-spacing:.6px">Records &amp; cache</div>`+
   table(['Name','Address','Type'],rec,'No DNS records');
 
- /* Firewall */
  const c=fw.counters||{};
  $('fwSummary').textContent=(fw.rules||[]).length+' rules · '+(fw.services||[]).length+' services';
  $('fwPolicies').innerHTML=kv([
@@ -408,7 +387,6 @@ function render(d){
  $('fwServices').innerHTML=table(['Protocol','Port','Purpose'],
   (fw.services||[]).map(x=>{const p=Number(x.port);return [esc(x.proto),p,p===67?'DHCP server':p===53?'DNS':(http.port&&p===http.port)?'management console':'port forward']}),'No service ports');
 
- /* NAT */
  $('natState').textContent=nat.enabled?'enabled':'disabled';
  $('forwards').innerHTML=table(['#','Proto','WAN','LAN target','Hits','Comment',''],(nat.forwards||[]).map(f=>
   [f.id,esc(f.proto),f.wan_port,esc(f.lan_ip)+':'+f.lan_port,num(f.hits),esc(f.comment||''),
@@ -416,7 +394,6 @@ function render(d){
  $('mappings').innerHTML=table(['Proto','LAN source','WAN port','Remote','Packets'],(nat.mappings||[]).map(m=>
   [m.proto===6?'tcp':m.proto===17?'udp':'icmp',esc(m.lan_ip)+':'+m.lan_port,m.wan_port,esc(m.remote_ip),num(m.packets)]),'No active NAT mappings');
 
- /* Traffic */
  $('traffic').innerHTML=stat([
   ['DHCP discover / offer',num(s.dhcp_discover)+' / '+num(s.dhcp_offer)],
   ['DHCP request / ack',num(s.dhcp_request)+' / '+num(s.dhcp_ack)],
@@ -429,10 +406,8 @@ function render(d){
   ['Dropped frames',num(s.dropped_frames)],
   ['HTTP requests',num(s.http_requests)]]);
 
- /* Log */
  $('logBox').textContent=(d.log||[]).length?(d.log||[]).join('\n'):'No drops logged.';
 
- /* Pre-fill quick configure */
  $('lanIp').value=lan.ip||'';$('lanMask').value=lan.mask||'';
  $('poolStart').value=dhcp.pool_start||'';$('poolEnd').value=dhcp.pool_end||'';$('leaseSecs').value=dhcp.lease||'';
  $('dns1').value=dns.upstream||'';$('dns2').value=dns.secondary||'';$('dnsDomainIn').value=dns.domain||'';
