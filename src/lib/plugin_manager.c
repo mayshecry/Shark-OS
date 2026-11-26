@@ -16,10 +16,6 @@ void plugin_manager_init(void) {
 }
 
 int plugin_load(const char* plugin_name) {
-    if (g_plugin_count >= MAX_PLUGINS) {
-        return -1;
-    }
-
     for (int i = 0; i < g_plugin_count; i++) {
         if (strcmp(g_plugins[i].name, (char*)plugin_name) == 0) {
             if (g_plugins[i].loaded) {
@@ -34,6 +30,7 @@ int plugin_load(const char* plugin_name) {
         }
     }
 
+    if (g_plugin_count >= MAX_PLUGINS) return -1;
     plugin_t* plugin = &g_plugins[g_plugin_count];
     strcpy(plugin->name, (char*)plugin_name);
     plugin->id = g_plugin_count;
@@ -131,7 +128,7 @@ void plugin_auto_detect(void) {
         return;
     }
 
-    for (int i = 0; i < plugins_subdir->num_children; i++) {
+    for (int i = 0; i < plugins_subdir->num_children && g_plugin_count < MAX_PLUGINS; i++) {
         struct fs_node* child = plugins_subdir->children[i];
         if (child->type == FS_FILE) {
             int name_len = strlen(child->name);
