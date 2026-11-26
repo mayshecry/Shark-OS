@@ -8,6 +8,7 @@ with tempfile.TemporaryDirectory() as tmp:
     with boot(w,disk) as g:
         open_terminal(g);g.wait(b'[wm] restored NemoWM');type_text(g,'appearance 1');type_text(g,'wmprefer JawsWM');time.sleep(.6)
     fs,_=check_tree(disk);assert fs['/System/wm.pref']==bytes([1,1,1,0])
+    nemo_prefs=fs["/System/desktop.prefs"]
     with boot(w,disk,efi=True) as g:
         g.wait(b'[wm] restored JawsWM');g.wait(b'[boot] boot screen hide complete');time.sleep(.8)
         def shot():
@@ -29,9 +30,21 @@ with tempfile.TemporaryDirectory() as tmp:
         move(46+200,55+38);click()    # Backdrop page
         move(150,55+78+23+9);click()  # Deep harbor
         sw,sh,rgb=shot();assert pixel(70,sh-3)==bytes([53,73,89])
+        move(150,55+78+4*23+9);click()  # SharkOS Classic wallpaper
+        time.sleep(.7);sw,sh,rgb=shot()
+        def sample_strip():return tuple(pixel(x,sh-2) for x in range(0,sw,7))
+        assert len(set(sample_strip()))>5, 'wallpaper must extend below the old taskbar area'
+        # The fit options follow the six images, on the next list page.
+        move(426,55+345-15);click();move(150,55+78+8*23+9);click() # Fit, index 11
         move(46+283,55+38);click()   # Video page
         move(160,55+78+4*23+9);click();assert shot()[:2]==(1920,1080)
         move(160,55+78+6*23+9);click();assert shot()[:2]==(sw,sh)
+    fs,_=check_tree(disk);assert fs['/System/wm.pref'][3]==10,fs['/System/wm.pref'];assert fs['/System/desktop.prefs']==nemo_prefs
+    with boot(w,disk) as g:
+        g.wait(b'[wm] restored JawsWM');g.wait(b'[desktop] free KiB=');sw,sh,rgb=shot()
+        # Fit can letterbox the bottom; verify the image in the main field.
+        assert len({pixel(x,sh//2) for x in range(80,sw-80,7)})>10
+        px=py=100;move(sw-30,154);click()  # third dock tile: Preferences, Manager page
         move(75,55+38);click()       # Manager page
         move(150,142);click();time.sleep(.5)
     fs,_=check_tree(disk);assert fs['/System/wm.pref'][1]==0,fs.get('/System/wm.pref')
@@ -39,4 +52,4 @@ with tempfile.TemporaryDirectory() as tmp:
         g.wait(b'[wm] restored NemoWM');g.wait(b'[prefs] packages=0 theme=1');open_terminal(g)
         type_text(g,'wmprefer unknown');time.sleep(.3)
     fs,_=check_tree(disk);assert fs['/System/wm.pref'][1]==0
-    print('CLI switch, saved choice, Jaws dock and cascade, Settings switch back and Nemo palette passed')
+    print('Jaws wallpaper, fit, reboot persistence and independent Nemo preferences passed')
