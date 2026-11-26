@@ -32,15 +32,6 @@ int fs_node_sync(struct fs_node* node) {
     return 1;
 }
 
-int ata_drive_count(void) {
-    return 0;
-}
-
-const ata_drive_t* ata_drive_get(int idx) {
-    (void)idx;
-    return NULL;
-}
-
 bool audio_available(void) {
     return 0;
 }
