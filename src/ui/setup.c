@@ -2,7 +2,9 @@
 #include "desktop.h"
 #include "theme.h"
 
-#define SETUP_ROWS 6
+#include "install.h"
+
+#define SETUP_ROWS 7
 
 #define SETUP_BG       0xFF04121Fu
 #define SETUP_PANEL    0xFF0A2138u
@@ -105,6 +107,10 @@ void boot_setup_draw(void) {
             case 1: label = "Desktop theme "; value = setup_theme_value(); break;
             case 2: label = "Terminal theme"; value = setup_term_value(); break;
             case 3: label = "Boot to       "; value = setup_boot_value(); break;
+            case 5:
+                label = "Install to disk";
+                value = install_image_ready() ? "Enter" : "Live ISO only";
+                break;
             case 4: label = "Mouse         "; value = setup_mouse_value(); break;
         }
         int y = row + i * step;
@@ -171,6 +177,7 @@ void boot_setup_run(void) {
 
     setup_sel = 0;
     boot_setup_draw();
+    serial_puts("[setup] ready\n");
 
     for (;;) {
         char c = keyboard_getchar();
@@ -182,6 +189,8 @@ void boot_setup_run(void) {
             if (setup_sel > 0) setup_sel--;
         } else if (c == 0x11) {
             if (setup_sel < SETUP_ROWS - 1) setup_sel++;
+        } else if (setup_sel == 5 && (c == '\r' || c == '\n' || c == ' ')) {
+            install_menu();
         } else if (c == 0x12) {
             setup_change(-1);
         } else if (c == 0x13) {
