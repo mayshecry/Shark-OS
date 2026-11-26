@@ -303,19 +303,17 @@ static const uint32_t *wp_row(const uint8_t* packed,int w,int h,int y){
     strip_source[slot]=packed;strip_index[slot]=i;
  }return px+(y%8)*w;
 }
-static void desktop_wallpaper_rebuild_cache(int w, int h) {
+static void wallpaper_drop(void){
+    pmm_cache_free(wallpaper_cache);wallpaper_cache=NULL;wallpaper_cache_w=wallpaper_cache_h=0;
+}
+static void desktop_wallpaper_rebuild_cache(int w, int h,int id,int fit) {
     if (w <= 0 || h <= 0) return;
 
-    static size_t capacity=0;
-    size_t need=(size_t)w*h;
-    if(need>capacity){
-        size_t cap=capacity && need<=1920u*1080 ? 1920u*1080 : need;
-        uint32_t *newbuf=kmalloc(cap*sizeof(uint32_t));
-        if(!newbuf){wallpaper_cache_w=wallpaper_cache_h=0;return;}
-        wallpaper_cache=newbuf;capacity=cap;
+    if(w!=wallpaper_cache_w || h!=wallpaper_cache_h){
+        wallpaper_drop();wallpaper_cache=pmm_cache_alloc((size_t)w*h*4);
+        if(!wallpaper_cache)return;
+        wallpaper_cache_w=w;wallpaper_cache_h=h;
     }
-    wallpaper_cache_w=w;wallpaper_cache_h=h;
-    int id = desktop.wallpaper_id;
     if (id < 0 || id >= WP_COUNT) id = WP_ID_CLASSIC;
     const wallpaper_entry_t* e = &wallpaper_catalog[id];
     const uint8_t* src = e->pixels;
@@ -323,7 +321,7 @@ static void desktop_wallpaper_rebuild_cache(int w, int h) {
     int sh = e->h;
     if (!src || sw < 2 || sh < 2) return;
 
-    int fit = desktop.wallpaper_fit;
+
     if (fit < W98_WALLFIT_FILL || fit > W98_WALLFIT_STRETCH) {
         fit = W98_WALLFIT_FILL;
     }
@@ -422,27 +420,22 @@ static uint32_t wp_bilerp(const uint32_t* row0,const uint32_t *row1, int sw, int
 }
 
 void desktop_draw_wallpaper(void) {
-    int h = (int)screen_height - TASKBAR_HEIGHT;
-    int w = (int)screen_width;
-    uint32_t stride = (uint32_t)(screen_pitch / 4);
-
-    if (desktop.wallpaper_mode == W98_WALL_DITHER) {
-        w98_fill_dither(0, 0, w, h);
+    const bool jaws=wm_jaws();const int choice=wm_backdrop();
+    int h=(int)screen_height-(jaws?0:TASKBAR_HEIGHT),w=(int)screen_width;
+    uint32_t stride=screen_pitch/4;
+    int mode=jaws?(choice<4?W98_WALL_SOLID:W98_WALL_IMAGE):desktop.wallpaper_mode;
+    if(mode!=W98_WALL_IMAGE){
+        if(wallpaper_cache)wallpaper_drop();
+        if(mode==W98_WALL_DITHER)w98_fill_dither(0,0,w,h);
+        else w98_fill(0,0,w,h,jaws?wm_solid_color():wallpaper_top);
         return;
     }
-
-    if (desktop.wallpaper_mode == W98_WALL_SOLID) {
-        w98_fill(0, 0, w, h, wallpaper_top);
-        return;
+    int id=jaws?(choice-4)%WP_COUNT:desktop.wallpaper_id;
+    int fit=jaws?(choice-4)/WP_COUNT:desktop.wallpaper_fit;
+    if(wallpaper_dirty || w!=wallpaper_cache_w || h!=wallpaper_cache_h){
+        desktop_wallpaper_rebuild_cache(w,h,id,fit);wallpaper_dirty=false;
     }
-
-    if (wallpaper_dirty || !wallpaper_cache ||
-        wallpaper_cache_w != w || wallpaper_cache_h != h) {
-        desktop_wallpaper_rebuild_cache(w, h);
-        wallpaper_dirty = false;
-    }
-
-    if (wallpaper_cache && wallpaper_cache_w == w && wallpaper_cache_h == h) {
+    if(wallpaper_cache){
         for (int y = 0; y < h; y++) {
             memcpy(&lfbptr[y * stride],
                    &wallpaper_cache[y * w],
@@ -936,8 +929,9 @@ void desktop_render(void) {
     desktop.taskbar_dirty = false;
     desktop.icons_dirty = false;
 
-    if(jaws){w98_fill(0,0,screen_width,screen_height,backdrops[backdrop]);w98_blit_rgb(jaws_tiles[0],64,64,0,0,NULL);}
-    else {desktop_draw_wallpaper();desktop_draw_icons();}
+    desktop_draw_wallpaper();
+    if(jaws){w98_blit_rgb(jaws_tiles[0],64,64,0,0,NULL);}
+    else desktop_draw_icons();
     window_draw_all();
     if (desktop.start_menu.visible) start_menu_draw();
     if (desktop.ctx_menu.visible) desktop_context_menu_draw();
