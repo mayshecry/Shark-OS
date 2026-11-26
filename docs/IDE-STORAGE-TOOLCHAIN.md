@@ -61,3 +61,7 @@ CC=x86_64-elf-gcc tools/sharkcc src/example.c example.o
 ```
 
 The `gcc --version` shell command reports the compiler version used to build the kernel. GCC itself is not launched inside SharkOS: this project has no hosted POSIX userspace, process isolation, or C runtime, and a Linux GCC executable cannot run in the freestanding kernel. To build the operating system, use `make` on the Linux host. To compile source files there with the project ABI and flags, use `tools/sharkcc`.
+
+## Native TinyCC
+
+The desktop shell also has a separate in-guest compiler: `cc -c square.c -o square.o` (alias `tcc`). This does not invoke the host GCC wrapper. See [installing SharkOS and compiling in the guest](INSTALL-AND-CC.md) for supported headers, output format and tests.
