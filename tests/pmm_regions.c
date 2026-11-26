@@ -24,5 +24,14 @@ int main(void) {
     pmm_release_leases();assert(pmm_free_memory_bytes()==initial-1024);
     assert(pmm_shadow(1024)==moved && moved[3]==42);
     assert(pmm_free_memory_bytes()==initial-1536);
+    uint64_t before=pmm_free_memory_bytes();
+    for(int pass=0;pass<400;pass++){
+        unsigned char *x=pmm_cache_alloc(256), *y=pmm_cache_alloc(512);
+        assert(x && y && x!=y);memset(y,42,512);
+        void *leased=pmm_lease(2048);assert(leased);
+        pmm_cache_free(x); unsigned char *z=pmm_cache_alloc(128);assert(z);
+        pmm_cache_free(y);pmm_release_leases();pmm_cache_free(z);
+        assert(pmm_free_memory_bytes()==before);
+    }
     return 0;
 }
