@@ -60,10 +60,6 @@ typedef struct {
     int anchor,end,dragging;
 } term_state_t;
 
-static term_state_t term_state_pool[MAX_WINDOWS];
-static int term_state_next = 0;
-
-
 static term_state_t* term_current = NULL;
 static window_t* term_current_win = NULL;
 
@@ -77,31 +73,25 @@ static term_state_t* term_state(window_t* w) {
     if (!w) return NULL;
     if (!w->user_data) {
         
-        term_state_t* st = NULL;
-        for (int i = 0; i < MAX_WINDOWS; i++) {
-            term_state_t* cand = &term_state_pool[i];
-            int taken = 0;
-            for (int j = 0; j < desktop.window_count; j++) {
-                if (&desktop.windows[j] != w && desktop.windows[j].user_data == cand) {
-                    taken = 1;
-                    break;
-                }
-            }
-            if (!taken) { st = cand; break; }
-        }
+        term_state_t* st = pmm_cache_alloc(sizeof(*st));
         if (!st) return NULL;
         char* raw = (char*)st;
         for (size_t i = 0; i < sizeof(*st); i++) raw[i] = 0;
         st->cols = 46;
         st->rows = 10;
         w->user_data = st;
-        term_state_next++;
+
     }
     return (term_state_t*)w->user_data;
 }
 
 static window_t* term_draw_window = NULL; 
 
+void terminal_release_window(window_t *w){
+    if(term_current_win==w){term_current=NULL;term_current_win=NULL;}
+    if(term_draw_window==w)term_draw_window=NULL;
+    pmm_cache_free(w->user_data);w->user_data=NULL;
+}
 int desktop_terminal_output_len(void) {
     return term_current ? term_current->output_len : 0;
 }
