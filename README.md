@@ -234,3 +234,5 @@ Desktop v10: [selection shortcuts and live video settings](docs/SELECTION-VIDEO.
 Desktop v11: [NemoWM, JawsWM and the paged Settings panel](docs/WINDOW-MANAGERS.md).
 
 Desktop v12: [measured RAM use, minimum VM specs and reproducible tests](docs/MEMORY-V12.md).
+
+Desktop v12.1: [on-demand caches and JawsWM wallpapers](docs/PATCH-12.1.md).
