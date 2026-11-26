@@ -55,7 +55,8 @@ static int equal(const uint8_t *src, size_t n) {
             return 0;
     return 1;
 }
-const char *install_disk(int idx, void (*progress)(const char *, unsigned)) {
+const char *install_disk_confirmed(int idx, void (*progress)(const char *, unsigned),
+                                   int (*confirm_erase)(int, const char *)) {
     const ata_drive_t *d = ata_drive_get(idx);
     if (!image)
         return "Installer image unavailable.";
@@ -74,33 +75,51 @@ const char *install_disk(int idx, void (*progress)(const char *, unsigned)) {
         const uint8_t *src=source_at(lba,n);for(unsigned i=0;i<n*512;i++)crc=(crc>>8)^table[(crc^src[i])&255];lba+=n;}
     if (~crc != expected)
         return "Image checksum failed. No data written.";
-    if (!ata_read_sectors(idx, d->sectors - 1, 1, block) || !blank(512))
-        return "Disk tail unreadable or in use. No data written.";
-    for (int pass = 0; pass < 2; pass++) {
-        unsigned last = 101;
-        for (uint32_t lba = pass ? 1 : 0; lba < sectors;) {
-            uint8_t n = sectors - lba > 128 ? 128 : sectors - lba;
-            unsigned percent = (uint64_t)lba * 100 / sectors;
-            if (percent != last) {
-                progress(pass ? "Writing and verifying" : "Checking unused space", percent);
-                last = percent;
-            }
-            const uint8_t *src = pass?source_at(lba,n):NULL;
-            if (pass && !ata_write_sectors(idx, lba, n, src))
-                return "Write failed. Target is incomplete.";
-            if (!ata_read_sectors(idx, lba, n, block))
-                return pass ? "Read-back failed. Target is incomplete."
-                            : "Read failed. No data written.";
-            if (!pass && !blank(n * 512u))
-                return "Target contains data. No data written.";
-            if (pass && !equal(src, n * 512u))
-                return "Verification failed. Target is incomplete.";
-            lba += n;
+    const char *blocked = NULL;
+    if (!ata_read_sectors(idx, d->sectors - 1, 1, block))
+        blocked = "Disk tail unreadable. No data written.";
+    else if (!blank(512))
+        blocked = "Disk tail contains data. No data written.";
+    unsigned last = 101;
+    for (uint32_t lba = 0; !blocked && lba < sectors;) {
+        unsigned n = sectors-lba > 128 ? 128 : sectors-lba;
+        unsigned percent = (uint64_t)lba*100/sectors;
+        if (percent != last) { progress("Checking unused space", percent); last = percent; }
+        if (!ata_read_sectors(idx,lba,n,block)) blocked = "Target unreadable. No data written.";
+        else if (!blank(n*512u)) blocked = "Target contains data. No data written.";
+        lba += n;
+    }
+    if (blocked) {
+        if (!confirm_erase) return blocked;
+        if (!confirm_erase(idx,blocked)) return "Cancelled. No data written.";
+        /* Invalidate a possible backup GPT header. Never touch another disk,
+           or claim success based on a write we could not read back. */
+        if (d->sectors > sectors) {
+            static const uint8_t zero[512];
+            if (!ata_write_sectors(idx,d->sectors-1,1,zero) ||
+                !ata_read_sectors(idx,d->sectors-1,1,block) || !blank(512))
+                return "Disk tail erase or verification failed. Target may be incomplete.";
         }
+    }
+    last = 101;
+    for (uint32_t lba = 1; lba < sectors;) {
+        unsigned n = sectors-lba > 128 ? 128 : sectors-lba;
+        unsigned percent = (uint64_t)lba*100/sectors;
+        if (percent != last) { progress("Writing and verifying", percent); last = percent; }
+        const uint8_t *src=source_at(lba,n);
+        if (!ata_write_sectors(idx,lba,n,src)) return "Write failed. Target is incomplete.";
+        if (!ata_read_sectors(idx,lba,n,block)) return "Read-back failed. Target is incomplete.";
+        if (!equal(src,n*512u)) return "Verification failed. Target is incomplete.";
+        lba += n;
     }
     const uint8_t *mbr=source_at(0,1);
     if (!ata_write_sectors(idx, 0, 1, mbr) || !ata_read_sectors(idx, 0, 1, block) ||
         !equal(mbr, 512))
         return "Boot record verification failed.";
     return "Installed. Remove the live media and boot the disk.";
+}
+
+/* Existing CLI/server callers keep blank-target-only policy. */
+const char *install_disk(int idx,void (*progress)(const char *,unsigned)) {
+    return install_disk_confirmed(idx,progress,NULL);
 }
