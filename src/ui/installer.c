@@ -1,6 +1,7 @@
 #include "kernel.h"
 #include "ata.h"
 #include "install.h"
+#include "store.h"
 #define BG 0xff091e32u
 static char key(void) {
     char c;
@@ -58,6 +59,38 @@ static void describe(int row, int i) {
     text[pos] = 0;
     line(row, text);
 }
+static int read_phrase(const char *expected) {
+    char typed[20]={0};
+    unsigned n = 0;
+    for (;;) {
+        char c = key();
+        if (c == 27)
+            return -1;
+        if (c == '\n' || c == '\r') {
+            return !strcmp(expected, typed);
+        }
+        if (c == '\b' && n)
+            typed[--n] = 0;
+        else if (c >= 32 && n < sizeof typed - 1) {
+            typed[n++] = c;
+            typed[n] = 0;
+        } else if (c >= 32) {
+            return 0;
+        }
+        draw_rect(16, 212, 160, 20, BG);
+        line(10, typed);
+    }
+}
+static int confirm_erase(int idx,const char *reason) {
+    char phrase[]="erase 0";phrase[6]+=(char)idx;
+    clear();line(1,"Erase and reinstall?");describe(2,idx);line(3,reason);
+    line(4,"This replaces the partition table and old OS.");
+    line(5,"Files on this disk may be lost. Back up first.");
+    line(6,"Not a secure wipe. Read/write failures still stop installation.");
+    line(7,"Esc or Enter alone: cancel. To erase, type exactly:");line(8,phrase);
+    serial_puts("[install] Erase and reinstall? ");serial_puts(reason);serial_puts("\n");
+    return read_phrase(phrase)==1;
+}
 void install_menu(void) {
     if (!install_image_ready()) {
         message("No installer payload. Boot the desktop live ISO.");
@@ -69,7 +102,7 @@ void install_menu(void) {
         return;
     }
     clear();
-    line(2, "Select a blank target by number. Esc cancels.");
+    line(2, "Select a target disk by number. Esc cancels.");
     for (int i = 0; i < count; i++)
         describe(4 + i, i);
     int idx;
@@ -90,41 +123,21 @@ void install_menu(void) {
         message("Disk too small for this install image.");
         return;
     }
+    if(store_installed() || fat16_drive_mounted(idx)){message("Boot the live ISO and unmount this disk first.");return;}
     clear();
     describe(2, idx);
     line(4, "This writes a boot partition to the selected disk.");
-    line(5, "Use a spare blank disk only. Back up any data first.");
+    line(5, "Blank disks install normally. Used disks need a second confirmation.");
     char summary[48] = "Image size (MiB): ";
     int_to_string((install_size() + 1048575u) >> 20, summary + 18);
     line(6, summary);
-    char expected[] = "install 0", typed[10] = {0};
+    char expected[] = "install 0";
     expected[8] += (char)idx;
     line(7, "Type the phrase below, then Enter. Esc cancels.");
     line(8, expected);
-    unsigned n = 0;
-    for (;;) {
-        char c = key();
-        if (c == 27)
-            return;
-        if (c == '\n' || c == '\r') {
-            if (strcmp(expected, typed)) {
-                message("Confirmation did not match. No data written.");
-                return;
-            }
-            break;
-        }
-        if (c == '\b' && n)
-            typed[--n] = 0;
-        else if (c >= 32 && n < sizeof typed - 1) {
-            typed[n++] = c;
-            typed[n] = 0;
-        } else if (c >= 32) {
-            message("Confirmation too long. No data written.");
-            return;
-        }
-        draw_rect(16, 212, 160, 20, BG);
-        line(10, typed);
-    }
+    int confirmed=read_phrase(expected);
+    if (confirmed<0)return;
+    if (!confirmed){message("Confirmation did not match. No data written.");return;}
     clear();
-    message(install_disk(idx, progress));
+    message(install_disk_confirmed(idx,progress,confirm_erase));
 }
