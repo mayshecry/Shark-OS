@@ -276,3 +276,8 @@ int fat16_is_mounted(struct fs_node* node) {
     for (int i = 0; i < FAT16_MOUNTS; i++) if (mounts[i].active && mounts[i].mountpoint == node) return 1;
     return 0;
 }
+
+int fat16_drive_mounted(int drive) {
+    for (int i=0;i<FAT16_MOUNTS;i++) if(mounts[i].active && mounts[i].drive==drive)return 1;
+    return 0;
+}
