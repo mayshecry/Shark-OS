@@ -183,6 +183,8 @@ typedef struct {
     uint32_t* pixels;
     int w, h;
     int failed;
+    const uint8_t *original;
+    int original_len;
     int req_w, req_h;
     uint32_t color;
 } br_image_t;
@@ -282,6 +284,8 @@ int br_box_count(void);
 br_box_t* br_box(int i);
 void br_layout_reset_images(void);
 br_image_t* br_image_get(int i);
+extern uint8_t br_picture[BR_IMG_MAX_BYTES];
+extern int br_picture_len, br_picture_complete;
 int br_image_request(const char* src);
 int br_image_request_sized(const char* src, int want_w, int want_h);
 int br_svg_looks_like(const uint8_t* data, int len);
