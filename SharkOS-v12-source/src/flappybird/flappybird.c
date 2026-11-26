@@ -1,0 +1,534 @@
+
+
+#include "kernel.h"
+#include "flappybird.h"
+#include "desktop.h"
+
+uint8_t flappybird_screen[FLAPPYBIRD_SCREEN_H][FLAPPYBIRD_SCREEN_W];
+uint32_t flappybird_palette[256];
+
+#define COL_BLACK   0
+#define COL_WHITE   15
+#define COL_GREY    8
+#define COL_DGREY   1
+#define COL_SKY     144
+#define COL_GROUND  80
+#define COL_GRASS   48
+#define COL_PIPE    112
+#define COL_PBRIM   120
+#define COL_BIRD    240
+#define COL_WING    250
+#define COL_EYE     255
+#define COL_DEAD    244
+#define COL_ACCENT  252
+
+#define FIX_SHIFT 8
+#define FIX_ONE (1 << FIX_SHIFT)
+#define to_fix(x) ((x) * FIX_ONE)
+#define to_int(x) ((x) >> FIX_SHIFT)
+
+typedef enum { MENU, PLAYING, GAMEOVER, QUIT } state_t;
+typedef struct { int x; int y; } pipe_t;
+
+static state_t state = MENU;
+
+static int bird_x_fix, bird_y_fix, bird_vel_fix;
+static int alive;
+
+static int window_x = 0, window_y = 0, window_w = 640, window_h = 480;
+static pipe_t pipes[16];
+static int pipe_count;
+static int score, best_score;
+static int running;
+static int auto_play = 0;
+static uint32_t last_tick_time = 0;
+static void set_px(int x, int y, uint8_t c) {
+    if (x >= 0 && x < 320 && y >= 0 && y < 200)
+        flappybird_screen[y][x] = c;
+}
+
+static void fill_rect(int x, int y, int w, int h, uint8_t c) {
+    for (int j = 0; j < h; j++)
+        for (int i = 0; i < w; i++)
+            set_px(x + i, y + j, c);
+}
+
+static void draw_bird(int x, int y, uint8_t bc) {
+    fill_rect(x, y, 12, 8, bc);
+    fill_rect(x + 8, y + 2, 4, 3, bc - 10);
+    set_px(x + 2, y + 2, COL_WHITE);
+    set_px(x + 2, y + 3, COL_BLACK);
+    set_px(x + 10, y + 2, bc + 5);
+    set_px(x + 11, y + 2, bc + 5);
+    set_px(x + 10, y + 3, bc + 5);
+    set_px(x + 11, y + 3, bc + 5);
+    fill_rect(x - 2, y + 2, 2, 3, bc - 5);
+}
+
+static void draw_pipe(pipe_t *p) {
+    int gt = p->y - 65;
+    int gb = p->y + 65;
+
+    fill_rect(p->x, 0, 28, gt, COL_PIPE);
+    fill_rect(p->x - 3, gt - 8, 34, 8, COL_PBRIM);
+    for (int r = 0; r < gt; r += 8)
+        fill_rect(p->x + 10, r, 3, 4, COL_PBRIM);
+
+    int lh = 200 - gb;
+    if (lh > 0) {
+        fill_rect(p->x, gb, 28, lh, COL_PIPE);
+        fill_rect(p->x - 3, gb, 34, 8, COL_PBRIM);
+        for (int r = gb + 8; r < 200; r += 8)
+            fill_rect(p->x + 10, r, 3, 4, COL_PBRIM);
+    }
+}
+
+static void draw_scene(void) {
+    fill_rect(0, 0, 320, 155, COL_SKY);
+    fill_rect(0, 155, 320, 45, COL_GROUND);
+    fill_rect(0, 153, 320, 2, COL_GRASS);
+    for (int y = 157; y < 200; y += 6)
+        for (int x = 0; x < 320; x += 12)
+            set_px(x, y, COL_GRASS);
+    for (int i = 0; i < pipe_count; i++)
+        draw_pipe(&pipes[i]);
+
+    int by = to_int(bird_y_fix);
+    if (alive)
+        draw_bird(60, by, COL_BIRD);
+    else
+        draw_bird(60, by, COL_DEAD);
+}
+
+static void draw_font_char(int x, int y, char c, uint8_t fg) {
+    extern uint8_t font8x8[96][8];
+    unsigned char uc = (unsigned char)c;
+    if (uc < 32 || uc >= 128) return;
+    int idx = uc - 32;
+    for (int r = 0; r < 8; r++) {
+        uint8_t bits = font8x8[idx][r];
+        for (int b = 0; b < 8; b++) {
+            if (bits & (0x80 >> b))
+                set_px(x + b, y + r, fg);
+        }
+    }
+}
+
+static void draw_number(int x, int y, int val, uint8_t col) {
+    if (val > 9999) val = 9999;
+    char tmp[6];
+    int len = 0;
+    if (val == 0) {
+        tmp[len++] = '0';
+    } else {
+        int v = val;
+        while (v > 0 && len < 5) {
+            tmp[len++] = '0' + (v % 10);
+            v /= 10;
+        }
+    }
+    for (int i = len - 1; i >= 0; i--) {
+        draw_font_char(x, y, tmp[i], col);
+        x += 8;
+    }
+}
+
+static void draw_hud(void) {
+    for (int i = 0; i < 5; i++)
+        draw_font_char(4 + i*8, 4, "SCORE"[i], COL_WHITE);
+    draw_number(4, 14, score, COL_WHITE);
+    for (int i = 0; i < 4; i++)
+        draw_font_char(250 + i*8, 4, "BEST"[i], COL_ACCENT);
+    draw_number(250, 14, best_score, COL_ACCENT);
+}
+
+static void blit(void) {
+    uint32_t stride = (uint32_t)(screen_pitch / 4);
+
+    int scale = 2;
+    if (scale < 1) scale = 1;
+
+    int max_y = (window_h / scale);
+    int max_x = (window_w / scale);
+
+    if (max_y > 200) max_y = 200;
+    if (max_x > 320) max_x = 320;
+
+    for (int y = 0; y < max_y; y++) {
+        for (int sy = 0; sy < scale && window_y + y * scale + sy < window_y + window_h; sy++) {
+            int fy = window_y + y * scale + sy;
+            if (fy < 0) continue;
+            if (fy >= (int)screen_height) continue;
+            for (int x = 0; x < max_x; x++) {
+                uint32_t color = flappybird_palette[flappybird_screen[y][x]];
+                for (int sx = 0; sx < scale && window_x + x * scale + sx < window_x + window_w; sx++) {
+                    int fx = window_x + x * scale + sx;
+                    if (fx < 0) continue;
+                    if (fx >= (int)screen_width) continue;
+                    lfbptr[fy * stride + fx] = color;
+                }
+            }
+        }
+    }
+}
+
+void flappybird_set_window_rect(int x, int y, int w, int h) {
+    window_x = x;
+    window_y = y;
+    window_w = w;
+    window_h = h;
+}
+
+static void build_pal(void) {
+    for (int i = 0; i < 256; i++)
+        flappybird_palette[i] = 0;
+    flappybird_palette[0]  = 0x000000;
+    flappybird_palette[1]  = 0x222222;
+    flappybird_palette[8]  = 0x555555;
+    flappybird_palette[15] = 0xFFFFFF;
+    flappybird_palette[COL_SKY]    = 0x87CEEB;
+    flappybird_palette[COL_GROUND] = 0x8B5A2B;
+    flappybird_palette[COL_GRASS]  = 0x228B22;
+    flappybird_palette[COL_PIPE]   = 0x2ECC71;
+    flappybird_palette[COL_PBRIM]  = 0x1A6B3C;
+    flappybird_palette[COL_BIRD]   = 0xFFD700;
+    flappybird_palette[COL_WING]   = 0xFF8C00;
+    flappybird_palette[COL_EYE]    = 0xFFFFFF;
+    flappybird_palette[COL_DEAD]   = 0xE74C3C;
+    flappybird_palette[COL_ACCENT] = 0x00FFFF;
+    for (int i = 0; i < 256; i++)
+        if (flappybird_palette[i] == 0 && i != 0)
+            flappybird_palette[i] = 0x333333;
+    flappybird_palette[0] = 0x000000;
+}
+
+static void spawn_pipe(void) {
+    if (pipe_count >= 16) return;
+
+    int spawn_x = (pipe_count == 0) ? 380 : 320;
+
+    pipes[pipe_count].x = spawn_x;
+    pipes[pipe_count].y = 100 + (score * 7 % 40) - 20;
+    if (pipes[pipe_count].y < 80) pipes[pipe_count].y = 80;
+    if (pipes[pipe_count].y > 120) pipes[pipe_count].y = 120;
+    pipe_count++;
+}
+
+static void flap(void);
+static void init_game(void) {
+    bird_x_fix = to_fix(60);
+    bird_y_fix = to_fix(100);
+    bird_vel_fix = 0;
+    alive = 1;
+    pipe_count = 0;
+    score = 0;
+}
+
+static void auto_flap(void) {
+    if (!alive || !auto_play) return;
+
+    int by = to_int(bird_y_fix);
+
+    for (int i = 0; i < pipe_count; i++) {
+        int pipe_x = pipes[i].x;
+        int gap_y = pipes[i].y;
+
+        if (pipe_x > 40 && pipe_x < 80) {
+            int target_y = gap_y - 10;
+            if (by > target_y && bird_vel_fix > 0) {
+                flap();
+                return;
+            }
+        }
+    }
+
+    if (by > 100 && bird_vel_fix > 0) {
+        flap();
+    }
+}
+
+static void update(void) {
+    if (!alive) return;
+
+    bird_vel_fix += to_fix(1) / 4;
+
+    if (bird_vel_fix > to_fix(6)) bird_vel_fix = to_fix(6);
+
+    if (bird_y_fix < to_fix(10)) bird_y_fix = to_fix(10);
+
+    bird_y_fix += bird_vel_fix;
+
+    int by = to_int(bird_y_fix);
+
+    if (by < 0) { by = 0; bird_y_fix = 0; bird_vel_fix = to_fix(1); }
+
+    if (by > 148) {
+        alive = 0;
+        if (score > best_score) best_score = score;
+        return;
+    }
+
+    for (int i = 0; i < pipe_count; i++) {
+        pipes[i].x -= 2;
+
+        if (pipes[i].x + 28 < 60 && pipes[i].y > 0 && pipes[i].y < 500) {
+            score++;
+            pipes[i].y += 1000;
+        }
+
+        if (60 + 3 < pipes[i].x + 28 && 60 + 9 > pipes[i].x) {
+            int gt = pipes[i].y - 65;
+            int gb = pipes[i].y + 65;
+
+            if (by + 1 < gt || by + 7 > gb) {
+                alive = 0;
+                if (score > best_score) best_score = score;
+                return;
+            }
+        }
+    }
+
+    {
+        int wi = 0;
+        for (int i = 0; i < pipe_count; i++) {
+            if (pipes[i].x > -40) {
+                if (pipes[i].y > 500) pipes[i].y -= 1000;
+                pipes[wi++] = pipes[i];
+            }
+        }
+        pipe_count = wi;
+    }
+
+    if (pipe_count == 0 || pipes[pipe_count - 1].x < 200) {
+        spawn_pipe();
+    }
+}
+
+static int check_first_pipe_collision(void) {
+    if (pipe_count == 0) return 0;
+    int gt = pipes[0].y - 55;
+    int gb = pipes[0].y + 55;
+    int by = to_int(bird_y_fix);
+
+    if (by + 8 <= gt || by >= gb) return 1;
+    return 0;
+}
+
+static void flap(void) {
+    if (!alive) return;
+    bird_vel_fix = to_fix(-7);
+}
+
+static void draw_menu(void) {
+
+    fill_rect(0, 0, 320, 155, COL_SKY);
+    fill_rect(0, 155, 320, 45, COL_GROUND);
+    fill_rect(0, 153, 320, 2, COL_GRASS);
+    for (int y = 157; y < 200; y += 6)
+        for (int x = 0; x < 320; x += 12)
+            set_px(x, y, COL_GRASS);
+
+    int tx = 320 / 2 - 7 * 4;
+    int ty = 40;
+    const char* title = "FLAPPY BIRD";
+    for (int i = 0; title[i]; i++)
+        draw_font_char(tx + i * 8, ty, title[i], COL_BIRD);
+
+    tx = 320 / 2 - 8 * 4;
+    ty = 52;
+    const char* sub = "SharkOS Edition";
+    for (int i = 0; sub[i]; i++)
+        draw_font_char(tx + i * 8, ty, sub[i], COL_ACCENT);
+
+    draw_bird(320 / 2 - 6, 68, COL_BIRD);
+
+    tx = 320 / 2 - 6 * 4;
+    ty = 90;
+    const char* best = "BEST SCORE:";
+    for (int i = 0; best[i]; i++)
+        draw_font_char(tx + i * 8, ty, best[i], COL_WHITE);
+    draw_number(320 / 2 - 2 * 4, 102, best_score, COL_ACCENT);
+
+    ty = 125;
+    const char* inst1 = "Press SPACE to start";
+    for (int i = 0; inst1[i]; i++)
+        draw_font_char(320 / 2 - 10 * 4 + i * 8, ty, inst1[i], COL_WHITE);
+
+    ty = 135;
+    const char* inst2 = "ESC to quit";
+    for (int i = 0; inst2[i]; i++)
+        draw_font_char(320 / 2 - 5 * 4 + i * 8, ty, inst2[i], COL_GREY);
+
+    blit();
+}
+
+static void render_frame(void) {
+    if (state == MENU) {
+        draw_menu();
+    } else {
+        draw_scene();
+        draw_hud();
+        blit();
+    }
+}
+
+void flappybird_init(void) {
+    running = 1;
+    best_score = 0;
+    score = 0;
+    pipe_count = 0;
+    state = MENU;
+    build_pal();
+    init_game();
+
+    memset(flappybird_screen, 0, sizeof(flappybird_screen));
+}
+
+void flappybird_cleanup(void) {
+    running = 0;
+    state = QUIT;
+}
+
+void flappybird_run(void) {
+    if (!running) return;
+
+    while (keyboard_getchar() != 0) yield();
+
+    state = MENU;
+    auto_play = 0;
+
+    const uint32_t STEP_INTERVAL = 16;
+    uint32_t last = uptime_ticks;
+
+    while (running) {
+        char c;
+        int action = 0;
+        int keys_processed = 0;
+        while (keys_processed < 4 && (c = keyboard_getchar()) != 0) {
+            keys_processed++;
+            if (c == 27) { running = 0; state = QUIT; flappybird_restore_kernel_mode(); return; }
+            if ((c == ' ' || c == '\n' || c == 'w' || c == 'W') && !action) {
+                action = 1;
+                if (state == MENU) {
+                    init_game();
+                    state = PLAYING;
+                    while (keyboard_getchar() != 0);
+                } else if (state == PLAYING) {
+                    flap();
+                } else if (state == GAMEOVER) {
+                    state = MENU;
+                    init_game();
+                }
+            }
+        }
+
+        uint32_t now = uptime_ticks;
+        if (now - last >= STEP_INTERVAL) {
+            if (state == PLAYING) {
+                if (auto_play) auto_flap();
+                update();
+                if (!alive) state = GAMEOVER;
+            }
+            render_frame();
+            last = now;
+        }
+
+        yield();
+    }
+
+    flappybird_cleanup();
+    flappybird_restore_kernel_mode();
+}
+
+void flappybird_draw_frame(void) {
+    render_frame();
+}
+
+void flappybird_handle_key(int key) {
+    if (key == 27) { running = 0; state = QUIT; return; }
+
+    if (state == MENU) {
+        static int cheat_idx = 0;
+        const char* target = "1337";
+        if (key == target[cheat_idx]) {
+            cheat_idx++;
+            if (cheat_idx == 4) {
+                auto_play = 1;
+                init_game();
+                state = PLAYING;
+                while (keyboard_getchar() != 0);
+                cheat_idx = 0;
+                return;
+            }
+        } else {
+            cheat_idx = 0;
+        }
+    }
+
+    if (key == ' ' || key == '\n') {
+        if (state == MENU) {
+            init_game();
+            state = PLAYING;
+        } else if (state == PLAYING) {
+            flap();
+        } else if (state == GAMEOVER) {
+            state = MENU;
+            init_game();
+        }
+    }
+}
+
+void flappybird_set_kernel_mode(void) {
+}
+
+void flappybird_tick(void) {
+    if (state == QUIT) return;
+
+    uint32_t now = uptime_ticks;
+    if (now - last_tick_time < 16) {
+        render_frame();
+        return;
+    }
+    last_tick_time = now;
+
+    char c;
+    int keys_processed = 0;
+    while (keys_processed < 4 && (c = keyboard_getchar()) != 0) {
+        keys_processed++;
+        if (c == 27) { running = 0; state = QUIT; flappybird_restore_kernel_mode();
+            if (current_kernel_mode == KERNEL_MODE_DESKTOP) desktop.dirty = true;
+            return;
+        }
+
+        if (c == ' ' || c == '\n' || c == 'w' || c == 'W') {
+            if (state == MENU) {
+                init_game();
+                state = PLAYING;
+
+                while (keyboard_getchar() != 0) { }
+            } else if (state == PLAYING) {
+                flap();
+            } else if (state == GAMEOVER) {
+                state = MENU;
+                init_game();
+            }
+        }
+    }
+
+    if (state == PLAYING) {
+        if (auto_play) auto_flap();
+        update();
+        if (!alive) state = GAMEOVER;
+    }
+    render_frame();
+}
+
+void flappybird_restore_kernel_mode(void) {
+    if (current_kernel_mode == KERNEL_MODE_DESKTOP) {
+        desktop.dirty = true;
+        return;
+    }
+    terminal_initialize();
+    redraw_all_panes();
+    print_prompt();
+}
