@@ -9,6 +9,10 @@ void execute_elf(uint8_t* data, const char* arg) {
         terminal_writestring("Not a valid ELF binary.\n");
         return;
     }
+    if (data[16] == 1 && data[17] == 0) {
+        terminal_writestring("Relocatable object: link it before execution.\n");
+        return;
+    }
     if (ei_class == 2) {
         Elf64_Ehdr* header = (Elf64_Ehdr*)data;
         if (header->e_type == 2 || header->e_type == 3) {
