@@ -157,3 +157,40 @@ void *pmm_shadow(size_t need){
     if(base){memcpy(next,base,cap);pmm_regions[pmm_region_count++]=(pmm_memory_region_t){(uintptr_t)base,(uintptr_t)base+cap};pmm_free_bytes+=cap;}
     base=next;cap=need;return next;
 }
+
+/* Individually releasable UI caches. Reserve a return descriptor up front:
+ * freeing a cache must work even if unrelated kmalloc/leases intervene. */
+#define CACHE_OWNERS 24
+static struct { uintptr_t addr; size_t size; unsigned slot; } owners[CACHE_OWNERS];
+static int has_lease(unsigned i) {
+    for (unsigned j=0; j<nlease; j++) if (lease[j].region==i) return 1;
+    return 0;
+}
+static int held_slot(unsigned i) {
+    for (unsigned j=0; j<CACHE_OWNERS; j++) if (owners[j].addr && owners[j].slot==i) return 1;
+    return 0;
+}
+void *pmm_cache_alloc(size_t n) {
+    if (!n || n>(size_t)-16) return NULL;
+    n=(n+15)&~(size_t)15;
+    unsigned owner=0; while(owner<CACHE_OWNERS && owners[owner].addr)owner++;
+    if(owner==CACHE_OWNERS)return NULL;
+    unsigned slot=0;
+    while(slot<pmm_region_count && (pmm_regions[slot].start!=pmm_regions[slot].end || has_lease(slot) || held_slot(slot)))slot++;
+    if(slot==PMM_REGION_CAPACITY)return NULL;
+    void *p=kmalloc(n);if(!p)return NULL;
+    if(slot==pmm_region_count)pmm_region_count++;
+    pmm_regions[slot]=(pmm_memory_region_t){0,0};
+    owners[owner].addr=(uintptr_t)p;owners[owner].size=n;owners[owner].slot=slot;return p;
+}
+void pmm_cache_free(void *p) {
+    if(!p)return;
+    unsigned k=0;while(k<CACHE_OWNERS && owners[k].addr!=(uintptr_t)p)k++;
+    if(k==CACHE_OWNERS)return;
+    uint64_t a=owners[k].addr,b=a+owners[k].size;
+    unsigned slot=owners[k].slot;pmm_free_bytes+=owners[k].size;owners[k].addr=0;
+    /* Never move a region's high end while a Navigator lease refers to it. */
+    for(unsigned i=0;i<pmm_region_count;i++)if(i!=slot && !held_slot(i) && !has_lease(i) && pmm_regions[i].end==a){a=pmm_regions[i].start;pmm_regions[i]=(pmm_memory_region_t){0,0};break;}
+    for(unsigned i=0;i<pmm_region_count;i++)if(i!=slot && pmm_regions[i].start==b){pmm_regions[i].start=a;pmm_activate_region(i);return;}
+    pmm_regions[slot]=(pmm_memory_region_t){a,b};pmm_activate_region(slot);
+}
