@@ -2,6 +2,7 @@
 
 #include "browser_internal.h"
 #include "tls.h"
+#include "store.h"
 
 browser_state_t brs;
 br_node_t* br_doc = NULL;
@@ -120,7 +121,22 @@ void br_resolve_url(const char* base, const char* rel, char* out, int max) {
     if (rel[0] == '/' && rel[1] == '/') { br_strlcpy(out, br_streq_prefix(base, "https://") ? "https:" : "http:", max); br_strlcat(out, rel, max); return; }
     if (!is_net_url(base)) {
 
-        if (br_streq_prefix(base, "file:")) { br_strlcpy(out, "file:", max); br_strlcat(out, rel, max); return; }
+        if (br_streq_prefix(base, "file:")) {
+            const char *last = base + 5;
+            if (*rel != '/')
+                for (const char *q = base + 5; *q; q++)
+                    if (*q == '/')
+                        last = q + 1;
+            int prefix = last - base;
+            if (prefix >= max) {
+                out[0] = 0;
+                return;
+            }
+            memcpy(out, base, prefix);
+            out[prefix] = 0;
+            br_strlcat(out, rel, max);
+            return;
+        }
         br_strlcpy(out, rel, max);
         return;
     }
@@ -167,22 +183,30 @@ void br_resolve_url(const char* base, const char* rel, char* out, int max) {
     br_strlcat(out, rel, max);
 }
 
-int br_fetch_resource(const char* url, uint8_t* out, int max) {
-    if (is_net_url(url)) {
-        if (!net_configured) return -1;
-        int n = net_http_get(url, out, (uint32_t)max);
-        return n;
-    }
+static int br_read_file(const char *url, uint8_t *out, int max) {
     if (br_streq_prefix(url, "file:")) {
         const char* name = url + 5;
-        while (*name == '/') name++;
-        struct fs_node* f = search_path(name);
-        if (!f) return -1;
+        struct fs_node *f = *name == '/' ? fs_resolve_path(name) : search_path(name);
+        if (!f || f->type != FS_FILE)
+            return -1;
         int n = f->content_len;
-        if (n > max) n = max;
+        if (n > max)
+            return -1;
         for (int i = 0; i < n; i++) out[i] = (uint8_t)f->content[i];
         return n;
     }
+    return -1;
+}
+
+int br_fetch_resource(const char *url, uint8_t *out, int max) {
+    if (is_net_url(url)) {
+        if (!net_configured)
+            return -1;
+        int n = net_http_get(url, out, (uint32_t)max);
+        return n;
+    }
+    if (!is_net_url(brs.url))
+        return br_read_file(url, out, max);
     return -1;
 }
 
@@ -201,7 +225,8 @@ static const char home_page[] =
     "</style></head><body>"
     "<div class=hero><h1>Shark Navigator</h1><p>A small web browser built into SharkOS</p></div>"
     "<div class=card><h2>Search the web</h2>"
-    "<form action=\"https://www.bing.com/search\"><input name=q size=40 placeholder=\"search terms\"> <input type=submit value=Search></form>"
+    "<form action=\"https://www.bing.com/search\"><input name=q size=40 placeholder=\"search terms\"> <input "
+    "type=submit value=Search></form>"
     "<p class=small>Bing serves real results to browsers without JavaScript; Google only answers with an "
     "&quot;enable JavaScript&quot; page, so its front page loads here but searching there does not.</p></div>"
     "<div class=card><h2>Go somewhere</h2>"
@@ -211,18 +236,24 @@ static const char home_page[] =
     "<li><a href=\"https://www.google.com/\">google.com</a> - the front page renders; results need JavaScript</li>"
     "<li><a href=\"https://wiby.me/\">wiby.me</a> - a search engine for simple pages (https)</li>"
     "<li><a href=\"https://legiblenews.com/\">Legible News</a> - plain-HTML news (https)</li>"
-    "<li><a href=\"http://info.cern.ch/hypertext/WWW/TheProject.html\">info.cern.ch</a> - the first web page (plain http)</li>"
+    "<li><a href=\"http://info.cern.ch/hypertext/WWW/TheProject.html\">info.cern.ch</a> - the first web page "
+    "(plain http)</li>"
     "<li><a href=\"about:demo\">about:demo</a> - CSS + JavaScript feature demo (works offline)</li>"
     "<li><a href=\"file:readme.txt\">file:readme.txt</a> - a file from the SharkOS file system</li>"
     "</ul></div>"
     "<div class=card><h2>How to use it</h2>"
     "<p>Click the address bar (or press <b>Ctrl+L</b>), type a URL and press <b>Enter</b>. "
     "Scroll with the <b>arrow keys</b> or the scrollbar, press <b>Esc</b> to stop typing.</p>"
+    "<p>Download an image: Ctrl+click it, or open the image and press Ctrl+S. Find it in /Downloads.</p>"
     "<p>Toolbar: <b>Back</b>, <b>Fwd</b>, <b>Reload</b>, <b>Home</b> and the <b>Go</b> button. "
     "The <b>Links</b> button opens the bookmark menu.</p>"
     "<p class=small>Supports HTML 4-ish markup, a useful subset of CSS, a JavaScript interpreter with DOM access, "
-    "PNG/GIF/JPEG/WebP/SVG images, TrueType and @font-face fonts, GET/POST forms, synchronous <code>fetch()</code>/XHR, and single-connection <code>WebSocket</code>, <code>http://</code> and <code>https://</code> (TLS 1.3, AES-128-GCM, X25519) over the built-in TCP/IP stack (DHCP configured at boot). "
-    "Note: certificates are <b>not</b> validated - the connection is encrypted but the server's identity is taken on trust.</p>"
+    "PNG/GIF/JPEG/WebP/SVG images, TrueType and @font-face fonts, GET/POST forms, synchronous "
+    "<code>fetch()</code>/XHR, and single-connection <code>WebSocket</code>, <code>http://</code> and "
+    "<code>https://</code> (TLS 1.3, AES-128-GCM, X25519) over the built-in TCP/IP stack (DHCP configured at "
+    "boot). "
+    "Note: certificates are <b>not</b> validated - the connection is encrypted but the server's identity is taken "
+    "on trust.</p>"
     "</div>"
     "<div class=card><h2>Status</h2><p id=net>Network: <span id=netstate>checking...</span></p>"
     "<script>"
@@ -500,7 +531,26 @@ static void extract_title(void) {
     }
 }
 
+/* Positions in the current layout: box index and UTF-8 byte offset. */
+static uint64_t sel_a,sel_b;static int selecting;
+static uint64_t textpos(unsigned box,unsigned off){return ((uint64_t)box<<32)|off;}
+static void selection_clear(void){sel_a=sel_b=0;selecting=0;}
+static bool text_span(int box,int len,int *start,int *end){
+    uint64_t lo=sel_a<sel_b?sel_a:sel_b,hi=sel_a<sel_b?sel_b:sel_a;
+    if(lo==hi || textpos(box,len)<=lo || textpos(box,0)>=hi)return false;
+    *start=(lo>>32)==(unsigned)box?(unsigned)lo:0;*end=(hi>>32)==(unsigned)box?(unsigned)hi:len;
+    return *start>=0 && *end<=len && *end>*start;
+}
+static void copy_page_span(void){
+    char buf[4096];int used=0,prev_y=-1;
+    for(int i=0;i<br_box_count() && used<4095;i++){
+        br_box_t *b=br_box(i);int a,z;if(b->kind!=BR_BOX_TEXT || !b->text || !text_span(i,b->text_len,&a,&z))continue;
+        if(used && buf[used-1]!=' ' && b->text[a]!=' ')buf[used++]=prev_y==b->y?' ':'\n';
+        if(z-a>4095-used)z=a+4095-used;memcpy(buf+used,b->text+a,z-a);used+=z-a;prev_y=b->y;
+    }desktop_copy_text(buf,used);
+}
 static void layout_now(void) {
+    selection_clear();
     if (!br_doc) return;
     br_css_reset();
     collect_styles(br_doc);
@@ -515,6 +565,7 @@ static void layout_now(void) {
 }
 
 static void relayout_cheap(void) {
+    selection_clear();
     if (!br_doc) return;
     br_css_compute(br_doc);
     br_layout(br_doc, brs.layout_width);
@@ -597,7 +648,7 @@ static void check_meta_refresh(void) {
 }
 
 static void parse_and_show(void) {
-    br_css_set_noscript(0);
+    br_css_set_noscript(br_js_disabled);
     br_dom_reset();
     br_layout_reset_images();
     br_font_reset_page();
@@ -622,16 +673,12 @@ static void parse_and_show(void) {
     if (brs.needs_layout) { extract_title(); set_window_title(); relayout_cheap(); }
     else { set_window_title(); }
     page_needs_js = 0;
-    if (!pending_nav && page_is_blank()) {
-        if (br_find_first(br_doc, "noscript")) {
-
-            br_css_set_noscript(1);
-            layout_now();
-            br_js_console("page is empty without JavaScript - showing its <noscript> content");
-        } else if (br_find_first(br_doc, "script")) {
-            page_needs_js = 1;
-            br_js_console("page is empty: it is built entirely by scripts this browser cannot run");
-        }
+    /* noscript depends on the scripting setting, not on whether a script
+       succeeded in building a visible page. Never activate its redirects
+       as a fallback for unsupported JavaScript. */
+    if (!br_js_disabled && !pending_nav && page_is_blank() && br_find_first(br_doc,"script")) {
+        page_needs_js=1;
+        br_js_console("JavaScript is on; this page requires browser features not supported yet.");
     }
     if (!pending_nav) check_meta_refresh();
     else brs.needs_layout = pending_nav;
@@ -710,6 +757,94 @@ static void page_apply_charset(void) {
     br_page_src[br_page_len] = 0;
 }
 
+uint8_t br_picture[BR_IMG_MAX_BYTES];
+int br_picture_len, br_picture_complete;
+static const char *picture_ext(const uint8_t *p, int n) {
+    if (n < 8)
+        return NULL;
+    if (p[0] == 137 && p[1] == 'P' && p[2] == 'N' && p[3] == 'G')
+        return "png";
+    if (p[0] == 255 && p[1] == 216)
+        return "jpg";
+    if (p[0] == 'G' && p[1] == 'I' && p[2] == 'F')
+        return "gif";
+    if (n >= 12 && p[0] == 'R' && p[1] == 'I' && p[2] == 'F' && p[3] == 'F' && p[8] == 'W' && p[9] == 'E' &&
+        p[10] == 'B' && p[11] == 'P')
+        return "webp";
+    if (br_svg_looks_like(p, n))
+        return "svg";
+    return NULL;
+}
+static int wrap_picture(int n, int complete) {
+    const char *html = "<html><head><title>Image viewer</title></head><body><img src=\"shark:image\"><p>Save: "
+                       "Ctrl+S. On a webpage, Ctrl+click an image.</p></body></html>";
+    if (n <= 0 || n > BR_IMG_MAX_BYTES)
+        html = "<html><body>Image exceeds the 256 KiB viewer limit.</body></html>";
+    else {
+        memcpy(br_picture, br_page_src, n);
+        br_picture_len = n;
+        br_picture_complete = complete;
+    }
+    br_strlcpy(br_page_src, html, BR_PAGE_MAX);
+    return strlen(html);
+}
+static void save_picture(const uint8_t *bytes, int n, const char *url) {
+    const char *ext = bytes ? picture_ext(bytes, n) : NULL;
+    if (!ext) {
+        br_status("No complete image to save");
+        return;
+    }
+    struct fs_node *dir = find_node(root, "Downloads");
+    if (!dir)
+        dir = create_node("Downloads", FS_DIRECTORY, root);
+    if (!dir || dir->type != FS_DIRECTORY) {
+        br_status("Cannot open /Downloads");
+        return;
+    }
+    const char *base = url, *end = url;
+    while (*end && *end != '?' && *end != '#') {
+        if (*end == '/')
+            base = end + 1;
+        end++;
+    }
+    char stem[17], name[32], number[12];
+    int k = 0;
+    if (!br_streq_prefix(url, "data:") && !br_streq_prefix(url, "shark:"))
+        for (; base < end && *base != '.' && k < 16; base++) {
+            char c = *base;
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_')
+                stem[k++] = c;
+        }
+    stem[k] = 0;
+    if (!k)
+        strcpy(stem, "image");
+    for (int i = 0;; i++) {
+        strcpy(name, stem);
+        if (i) {
+            br_itoa(i, number);
+            br_strlcat(name, "-", 32);
+            br_strlcat(name, number, 32);
+        }
+        br_strlcat(name, ".", 32);
+        br_strlcat(name, ext, 32);
+        if (!find_node(dir, name))
+            break;
+    }
+    struct fs_node *f = create_node(name, FS_FILE, dir);
+    if (!f || fs_node_write(f, 0, bytes, n)) {
+        if (f)
+            fs_node_remove(f);
+        br_status("Cannot save image: filesystem full");
+        return;
+    }
+    char msg[128] = "Saved /Downloads/";
+    br_strlcat(msg, name, sizeof msg);
+    if (!store_installed())
+        br_strlcat(msg, " (RAM only)", sizeof msg);
+    else if (!store_sync())
+        br_strlcat(msg, " (RAM only: sync failed)", sizeof msg);
+    br_status(msg);
+}
 static int br_wrap_remote_content(int n){
     const char* ct=net_http_last_content_type;
     const char* mime=NULL;
@@ -718,35 +853,9 @@ static int br_wrap_remote_content(int n){
     else if(my_strstr_ci(ct,"image/gif"))mime="image/gif";
     else if(my_strstr_ci(ct,"image/webp"))mime="image/webp";
     else if(my_strstr_ci(ct,"image/svg+xml"))mime="image/svg+xml";
-    if(mime){
-        static const char alphabet[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        char prefix[192]="<html><head><title>Image</title></head><body style=\"margin:0;text-align:center;background:#333\"><img style=\"max-width:100%;height:auto\" src=\"data:";
-        br_strlcat(prefix,mime,sizeof(prefix));
-        br_strlcat(prefix,";base64,",sizeof(prefix));
-        int pl=(int)strlen(prefix);
-        const char* suffix="\"></body></html>";
-        int sl=(int)strlen(suffix);
-        int enc=((n+2)/3)*4;
-        if(n<0)return -1;
-        if(n>256*1024||pl+enc+sl>=BR_PAGE_MAX){
-            const char* too_large="<html><body><p>This image exceeds SharkOS Navigator's display limit.</p></body></html>";
-            n=(int)strlen(too_large); memcpy(br_page_src,too_large,(size_t)n); br_page_src[n]=0; return n;
-        }
-        for(int end=n;end>0;){
-            int start=((end-1)/3)*3;
-            uint32_t v=(uint8_t)br_page_src[start]<<16;
-            if(start+1<n)v|=(uint32_t)(uint8_t)br_page_src[start+1]<<8;
-            if(start+2<n)v|=(uint8_t)br_page_src[start+2];
-            char q[4]={alphabet[(v>>18)&63],alphabet[(v>>12)&63],start+1<n?alphabet[(v>>6)&63]:'=',start+2<n?alphabet[v&63]:'='};
-            memcpy(br_page_src+pl+(start/3)*4,q,4);
-            end=start;
-        }
-        memcpy(br_page_src,prefix,(size_t)pl);
-        memcpy(br_page_src+pl+enc,suffix,(size_t)sl);
-        n=pl+enc+sl;
-        br_page_src[n]=0;
-        return n;
-    }
+    if (mime)
+        return wrap_picture(n,
+                            net_http_last_complete && net_http_last_status >= 200 && net_http_last_status < 300);
 
     int json=my_strstr_ci(ct,"application/json")!=NULL||my_strstr_ci(ct,"+json")!=NULL;
     int xml=my_strstr_ci(ct,"application/xml")!=NULL||my_strstr_ci(ct,"text/xml")!=NULL||my_strstr_ci(ct,"+xml")!=NULL;
@@ -783,7 +892,15 @@ static int br_wrap_remote_content(int n){
 
 static int redirect_depth = 0;
 
+extern int br_js_acquire(void),br_layout_acquire(void),br_html_acquire(void),br_css_acquire(void);
+static int scratch; /* -1: no room; retry after closing and reopening */
+static int browser_acquire(void){
+    if(!scratch){scratch=br_js_acquire() && br_layout_acquire() && br_css_acquire() && br_html_acquire()?1:-1;
+        if(scratch<0)pmm_release_leases();}
+    return scratch==1;
+}
 void br_navigate(const char* url_in, int push_history) {
+    if(!browser_acquire())return;
     char url[BR_URL_MAX];
     br_strlcpy(url, url_in, sizeof(url));
 
@@ -809,6 +926,10 @@ void br_navigate(const char* url_in, int push_history) {
     int automatic = nav_is_auto;
     nav_is_auto = 0;
     brs.refresh_pending = 0;
+    if (automatic && is_net_url(brs.url) && br_streq_prefix(full, "file:")) {
+        br_status("Remote pages cannot open local files automatically");
+        return;
+    }
     if (automatic) {
 
         if (++auto_nav_chain > 8) { br_status("Redirect loop stopped"); br_js_console("automatic redirect chain too long, stopped"); return; }
@@ -826,6 +947,7 @@ void br_navigate(const char* url_in, int push_history) {
     if (!br_streq(full, "about:source")) { source_copy_len = br_page_len; memcpy(source_copy, br_page_src, (size_t)br_page_len); }
     br_js_close_network();
 
+    br_picture_len = br_picture_complete = 0;
     int ok = 1;
     if (br_streq(full, "about:home") || br_streq(full, "about:") || br_streq(full, "about:blank")) {
         if (br_streq(full, "about:blank")) { br_strlcpy(br_page_src, "<html><head><title>about:blank</title></head><body></body></html>", BR_PAGE_MAX); }
@@ -842,8 +964,10 @@ void br_navigate(const char* url_in, int push_history) {
         build_error_page(full, "Unknown about: page. Try about:home, about:demo, about:console or about:source.");
         ok = 0;
     } else if (br_streq_prefix(full, "file:")) {
-        int n = br_fetch_resource(full, (uint8_t*)br_page_src, BR_PAGE_MAX - 1);
-        if (n < 0) { build_error_page(full, "File not found in the SharkOS file system (looked in the current directory and /System/Bin)."); ok = 0; }
+        int n = br_read_file(full, (uint8_t *)br_page_src, BR_PAGE_MAX - 1);
+        if (n < 0) { build_error_page(full, "File not found in the SharkOS file system (looked in the current directory and /System/Bin)."); ok = 0;
+        } else if (picture_ext((uint8_t *)br_page_src, n))
+            br_page_len = wrap_picture(n, 1);
         else {
             br_page_src[n] = 0; br_page_len = n;
 
@@ -975,7 +1099,7 @@ void br_navigate(const char* url_in, int push_history) {
             br_strlcat(st, " (unverified)", sizeof(st));
         }
         if (br_page_len >= BR_PAGE_MAX - 1) br_strlcat(st, " (truncated)", sizeof(st));
-        if (page_needs_js) br_strlcat(st, " - page needs JavaScript", sizeof(st));
+        if (page_needs_js) br_strlcat(st, " - JavaScript on; unsupported page scripts", sizeof(st));
     }
     br_status(st);
 }
@@ -1214,6 +1338,11 @@ static void draw_page(window_t* w) {
             if (bg) { if ((bg >> 24) == 0xFF) fill_clipped(sx, sy - 1, b->w, b->h + 2, bg, &clip); else blend_clipped(sx, sy - 1, b->w, b->h + 2, bg, &clip); }
             int baseline = sy + b->baseline;
             draw_text_run(b, b->text, b->text_len, sx, baseline, fg, &clip);
+            int aa,zz;if(text_span(i,b->text_len,&aa,&zz)){
+                int px=b->font_px>0?b->font_px:16;
+                int left=br_font_text_width(b->face,px,b->text,aa),right=br_font_text_width(b->face,px,b->text,zz);
+                fill_clipped(sx+left,sy,right-left,b->h,W98_HIGHLIGHT,&clip);draw_text_run(b,b->text+aa,zz-aa,sx+left,baseline,W98_HIGHLIGHTTEXT,&clip);
+            }
             if (b->underline || (b->link && hover >= 0 && b->link->id == hover)) fill_clipped(sx, baseline + 2, b->w, 1, fg, &clip);
             if (b->strike) fill_clipped(sx, baseline - b->baseline / 3, b->w, 1, fg, &clip);
             break;
@@ -1384,6 +1513,8 @@ static void draw_toolbar(window_t* w) {
     w98_button(bx, by, BR_BTN_W, BR_BTN_H, "Home", brs.pressed_btn == 13, 1, 0); bx += BR_BTN_W + 2;
     w98_button(bx, by, BR_BTN_W, BR_BTN_H, "Links v", brs.pressed_btn == 14, 1, 0); bx += BR_BTN_W + 2;
 
+    if (cw >= 364)
+        w98_button(bx, by, BR_BTN_W, BR_BTN_H, "Save", brs.pressed_btn == 16, br_picture_complete, 0);
     int lx = x + cw - 26, ly = y + 4;
     w98_fill(lx, ly, 22, 22, W98_ACTIVE_TITLE);
     if (brs.loading) w98_fill(lx + 6, ly + 6, 10, 10, 0xFFFFFF00u);
@@ -1484,6 +1615,7 @@ static void draw_alert(window_t* w) {
 }
 
 void app_window_draw_browser(window_t* w) {
+    if(!browser_acquire()){w98_text("Not enough RAM for Navigator",w->rect.client_x+6,w->rect.client_y+8,W98_BTNTEXT,W98_BTNFACE,1,NULL);return;}
     if (brs.win != w) {
 
         if (!brs.win || brs.win->type != WINDOW_TYPE_BROWSER || brs.history_len == 0) {
@@ -1563,6 +1695,9 @@ static int toolbar_button_at(window_t* w, int mx, int my) {
         if (my >= ay - 1 && my < ay + 21 && mx >= ax + aw + 4 && mx < ax + aw + 44) return 15;
         return -1;
     }
+    if (w->rect.client_w >= 364 && br_picture_complete && mx >= x + 4 + 5 * (BR_BTN_W + 2) &&
+        mx < x + 4 + 5 * (BR_BTN_W + 2) + BR_BTN_W)
+        return 16;
     for (int i = 0; i < 5; i++) {
         int bx = x + 4 + i * (BR_BTN_W + 2);
         if (mx >= bx && mx < bx + BR_BTN_W) return 10 + i;
@@ -1577,14 +1712,38 @@ static void activate_button(int id) {
     case 12: br_navigate(brs.url, 0); break;
     case 13: br_navigate("about:home", 1); break;
     case 14: brs.menu_open = !brs.menu_open; br_request_repaint(); break;
+    case 16:
+        save_picture(br_picture_complete ? br_picture : NULL, br_picture_len, brs.url);
+        break;
     case 15: br_navigate(brs.address, 1); break;
     }
 }
 
+static uint64_t page_point(window_t *w,int mx,int my){
+    int x=mx-w->rect.client_x,y=my-viewport_top(w)+brs.scroll_y;
+    int best=-1,score=0x7fffffff;
+    for(int i=0;i<br_box_count();i++){br_box_t *b=br_box(i);if(b->kind!=BR_BOX_TEXT || !b->text || !b->text_len)continue;
+        int dy=y<b->y?b->y-y:y>b->y+b->h?y-b->y-b->h:0,dx=x<b->x?b->x-x:x>b->x+b->w?x-b->x-b->w:0;
+        int d=(dy>100000?100000:dy)*1024+(dx>1023?1023:dx);if(d<score){score=d;best=i;if(!d)break;}}
+    if(best<0)return 0;
+    br_box_t *b=br_box(best);int k=0,px=b->font_px>0?b->font_px:16;
+    int left=0;while(k<b->text_len){int t=k+1;while(t<b->text_len && (b->text[t]&0xc0)==0x80)t++;
+        int width=br_font_text_width(b->face,px,b->text+k,t-k);if(x-b->x<left+(width+1)/2)break;left+=width;k=t;}
+    return textpos(best,k);
+}
 void app_window_mouse_browser(window_t* w, int mx, int my, int buttons) {
+    if(scratch!=1)return;
     if (brs.win != w) return;
     if (buttons) auto_nav_chain = 0;
-    if (!(buttons & 1)) return;
+    if(selecting){
+        sel_b=page_point(w,mx,my);
+        if(!(buttons&1)){
+            selecting=0;br_box_t *b=box_at(w,mx,my);
+            if(sel_a==sel_b && b && b->kind==BR_BOX_TEXT && b->node){br_node_t *n=b->node;if(n->type==BR_NODE_TEXT)n=n->parent;if(n){br_js_dispatch_click(n);run_pending_nav(0);}}
+        }
+        br_request_repaint();return;
+    }
+    if(!(buttons&1))return;selection_clear();
     int x = w->rect.client_x, y = w->rect.client_y;
 
     if (brs.alert_open) {
@@ -1665,7 +1824,14 @@ void app_window_mouse_browser(window_t* w, int mx, int my, int buttons) {
         brs.address_focus = 0;
         br_box_t* b = box_at(w, mx, my);
         if (!b) { brs.focus_input = -1; br_request_repaint(); return; }
+        if(b->kind==BR_BOX_TEXT && b->text){brs.focus_input=-1;sel_a=sel_b=page_point(w,mx,my);selecting=1;br_request_repaint();return;}
         br_node_t* n = b->node;
+        if (ctrl_pressed && b->kind == BR_BOX_IMAGE) {
+            br_image_t *im = br_image_get(b->img_index);
+            if (im)
+                save_picture(im->original, im->original_len, br_streq(im->src, "shark:image") ? brs.url : im->src);
+            return;
+        }
         if (b->kind == BR_BOX_INPUT) {
             brs.focus_input = n ? n->id : -1;
 
@@ -1714,12 +1880,39 @@ static int is_text_field(const br_node_t* k) {
 }
 
 void app_window_keyboard_browser(window_t* w, char c) {
+    if(scratch!=1)return;
     auto_nav_chain = 0;
     if (brs.win != w) return;
     if (brs.alert_open) { if (c == '\n' || c == 27 || c == ' ') { brs.alert_open = 0; br_request_repaint(); } return; }
     if (brs.menu_open && c == 27) { brs.menu_open = 0; br_request_repaint(); return; }
 
+    if(c==1){if(brs.address_focus)brs.address_select_all=1;else if(brs.focus_input<0){sel_a=0;sel_b=textpos(br_box_count(),0);}br_request_repaint();return;}
+    if(c==3 && !brs.address_focus && brs.focus_input<0 && sel_a!=sel_b){copy_page_span();return;}
+    if (c==3 || c==22) {
+        if(brs.address_focus){
+            if(c==3)desktop_copy_text(brs.address,strlen(brs.address));
+            else for(const char *p=desktop_paste_text();*p;p++)if(*p>=32 && *p<127)address_insert(*p);
+        } else if(brs.focus_input>=0){
+            br_node_t *n=br_dom_node(brs.focus_input);
+            if(!n || !is_text_field(n))return;
+            const char *v=n->value?n->value:br_attr(n,"value");if(!v)v="";
+            if(c==3){const char *type=br_attr(n,"type"); if(!type || !br_strieq(type,"password"))desktop_copy_text(v,strlen(v));}
+            else if(!br_attr(n,"readonly") && !br_attr(n,"disabled")){
+                char field[201];unsigned used=strlen(v),lim=200;
+                const char *max=br_attr(n,"maxlength");if(max && br_atoi(max)>=0 && br_atoi(max)<200)lim=br_atoi(max);
+                if(used>=lim)return;
+                memcpy(field,v,used);
+                for(const char *p=desktop_paste_text();*p && used<lim;++p)if(*p>=32 && *p<127)field[used++]=*p;
+                field[used]=0;char *nv=br_strdup(field);if(nv){n->value=nv;br_js_dispatch_input(n);}
+            }
+        }
+        br_request_repaint(); return;
+    }
     if (ctrl_pressed) {
+        if (c == 's' || c == 'S') {
+            save_picture(br_picture_complete ? br_picture : NULL, br_picture_len, brs.url);
+            return;
+        }
         if (c == 'l' || c == 'L' || c == 12) { brs.address_focus = 1; brs.address_select_all = 1; brs.address_cursor = (int)strlen(brs.address); brs.focus_input = -1; br_request_repaint(); return; }
         if (c == 'r' || c == 'R' || c == 18) { br_navigate(brs.url, 0); return; }
         if (c == 'h' || c == 'H' || c == 8) { br_navigate("about:home", 1); return; }
@@ -1736,6 +1929,18 @@ void app_window_keyboard_browser(window_t* w, char c) {
                 for (int i = brs.address_cursor - 1; i < al; i++) brs.address[i] = brs.address[i + 1];
                 brs.address_cursor--;
             }
+            br_request_repaint();
+            return;
+        }
+        if (c == 0x12 || c == 0x13) {
+            int len = strlen(brs.address);
+            if (brs.address_select_all)
+                brs.address_cursor = c == 0x12 ? 0 : len;
+            else if (c == 0x12 && brs.address_cursor > 0)
+                brs.address_cursor--;
+            else if (c == 0x13 && brs.address_cursor < len)
+                brs.address_cursor++;
+            brs.address_select_all = 0;
             br_request_repaint();
             return;
         }
@@ -1802,6 +2007,7 @@ void app_window_keyboard_browser(window_t* w, char c) {
 }
 
 void browser_close(void) {
+    br_js_close_network();br_doc=NULL;pmm_release_leases();scratch=0;
     brs.win = NULL;
     brs.history_len = 0;
     brs.alert_open = 0;
@@ -1823,7 +2029,7 @@ static window_t* find_browser_window(void) {
 
 void browser_tick(void) {
     window_t* w = find_browser_window();
-    if (!w) { if (brs.win) browser_close(); return; }
+    if (!w || scratch!=1)return; /* minimized is not closed */
     if (brs.win != w) {
 
         if (brs.win && brs.history_len > 0) brs.win = w;
@@ -1836,7 +2042,7 @@ void browser_tick(void) {
     if (last_mouse_buttons & 1 && !(buttons & 1)) {
         int pb = brs.pressed_btn;
         brs.pressed_btn = 0;
-        if (pb >= 10 && pb <= 15) {
+        if (pb >= 10 && pb <= 16) {
             if (toolbar_button_at(w, mx, my) == pb) activate_button(pb);
             br_request_repaint();
         } else if (pb >= 100) {
@@ -1846,7 +2052,8 @@ void browser_tick(void) {
                 run_pending_nav(0);
             }
             br_request_repaint();
-        } else if (pb) br_request_repaint();
+        } else if (pb)
+            br_request_repaint();
     }
     if (!(last_mouse_buttons & 1) && (buttons & 1) && brs.pressed_btn == 3) {
         drag_start_y = my; drag_start_scroll = brs.scroll_y;
