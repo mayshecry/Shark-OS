@@ -94,4 +94,11 @@ void init_descriptor_tables(void) {
     idtp32.limit = sizeof(idt32) - 1;
     idtp32.base = (uint32_t)(uintptr_t)idt32;
     idt_load(&idtp32);
+    /* BIOS maps IRQ0 to vector 8. Move it away from CPU exceptions
+       before enabling interrupts; the server polls its peripherals. */
+    outb(0x20, 0x11); outb(0xa0, 0x11);
+    outb(0x21, 0x20); outb(0xa1, 0x28);
+    outb(0x21, 4);    outb(0xa1, 2);
+    outb(0x21, 1);    outb(0xa1, 1);
+    outb(0x21, 0xfe); outb(0xa1, 0xff);
 }
