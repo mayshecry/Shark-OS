@@ -3,7 +3,7 @@
 <p align="center"> > A freestanding x86-64 hobby operating system built from scratch in C and assembly. < </p>
 
 <p align="center">
-  <img src="sharkos-fish-promo.gif" alt="SharkOS pixel-art shark promo animation" width="720">
+  <img src="assets/imgfetch_logo.png" alt="SharkOS pixel-art shark promo animation" width="720">
 </p>
 
 <p align="center">
@@ -15,6 +15,8 @@
 SharkOS is an experimental operating system not a Linux distribution, and not an application running on top of another OS. Its kernel, drivers, memory manager, filesystem, shell, desktop, browser and networking components are built into a freestanding system image. It boots through Limine on BIOS and UEFI systems and can be tried in QEMU or VirtualBox.
 
 The project is designed to be hands-on and hackable. It deliberately keeps the shell, desktop, drivers and plugins in kernel space; this keeps the system architecture compact, but it also means a faulty pointer or plugin can crash the whole machine. **SharkOS is experimental and should not be used to store important data or exposed as a production server.**
+
+The desktop startup setup now offers **Install to disk** alongside the tiling selector. The desktop shell can compile and link C locally with **`cc hello.c`**, then run **`./hello`** (TinyCC). See the [installer and native compiler guide](docs/INSTALL-AND-CC.md) for disposable-disk testing, supported hardware and compiler limits.
 
 ## At a glance
 
@@ -61,7 +63,7 @@ Exact command availability can differ between the desktop and server images; use
 
 ### Filesystem and storage
 
-The kernel provides an in-memory filesystem for the running session and an ATA PIO-backed **FAT16** mount driver. The RAM filesystem is intentionally small (up to 128 nodes, 32 children per directory and files up to 64 KiB). FAT16 volumes can be mounted and existing files read or edited, but writes are limited by the file’s existing allocated clusters. Persistent file creation and directory changes are not implemented; FAT32 and long filenames are also not supported. RAM-backed content is lost on reboot.
+Live sessions keep their working files in RAM. A desktop disk installed with the updated installer instead saves its file tree and window mode to a dedicated partition. Boot that disk without the ISO to skip setup. Hold **F2** and tap **G** to toggle tiling. Explorer opens text and images; Shark Navigator saves images to `/Downloads`. See the [storage and desktop guide](docs/INSTALL-AND-CC.md#files-explorer-and-image-downloads) for limits, shortcuts and recovery. Manually mounted FAT16 volumes still use the separate FAT driver and its existing write limits.
 
 ### Browser and networking
 
@@ -156,7 +158,7 @@ A multimedia QEMU configuration with audio is shown in the repository’s releas
 A Linux host is required. Install a C toolchain and the ISO/boot utilities:
 
 ```bash
-sudo apt install build-essential nasm xorriso mtools curl qemu-system-x86 ovmf
+sudo apt install build-essential nasm python3 gzip bzip2 xorriso mtools curl qemu-system-x86 qemu-utils ovmf
 ```
 
 Clone and build:
@@ -189,7 +191,7 @@ The default `make` target builds the desktop ISO (`sharkos.iso`). The project al
 
 - Experimental, single-privilege kernel design; no userspace isolation.
 - No preemptive scheduler or full POSIX compatibility.
-- RAM filesystem contents are volatile; FAT16 support has limited write behavior.
+- Live sessions are volatile; installed snapshots and FAT16 mounts have separate capacity limits.
 - The ELF loader handles only the subset of ELF used by SharkOS.
 - Browser features and network concurrency are limited; TLS certificate identity is not validated.
 - Networking and server components are not security-hardened or fuzz-tested for hostile input.
@@ -216,3 +218,19 @@ qemu-system-x86_64 -cdrom sharkos.iso -serial stdio -display none
 ## License
 
 SharkOS is distributed under the GNU General Public License, version 3.0. See [`LICENSE`](LICENSE) for the full license text.
+
+For installed desktop RAM measurements and the lower-memory BIOS guest test, see [Desktop memory](docs/DESKTOP-MEMORY.md).
+
+For Realtek gigabit Ethernet, RTL8821CE detection and the hardware test procedure, see [Realtek adapters](docs/REALTEK.md).
+
+Server images: see [CLI installation](docs/SERVER-INSTALL.md).
+
+V8: `make -j2 all server server32` produces three compact bootable ISOs and `.iso.xz` downloads. See [AHCI support and tests](docs/DISK-DETECTION.md).
+
+Desktop v9: [settings, optional apps, Explorer and clipboard](docs/DESKTOP-V9.md).
+
+Desktop v10: [selection shortcuts and live video settings](docs/SELECTION-VIDEO.md).
+
+Desktop v11: [NemoWM, JawsWM and the paged Settings panel](docs/WINDOW-MANAGERS.md).
+
+Desktop v12: [measured RAM use, minimum VM specs and reproducible tests](docs/MEMORY-V12.md).
