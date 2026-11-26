@@ -98,10 +98,20 @@ static sfx mat_scale(const mat_t* m) {
 
 typedef struct { int32_t x0, y0, x1, y1; int8_t dir; } edge_t;
 
-static edge_t edges[SVG_MAX_EDGES];
+struct svg_work {
+    edge_t edges[SVG_MAX_EDGES];
+    int order[SVG_MAX_EDGES],active[SVG_MAX_EDGES];
+    sfx xs[SVG_MAX_PTS],ys[SVG_MAX_PTS];
+};
+static struct svg_work *svg_work;
+#define edges (svg_work->edges)
+#define edge_order (svg_work->order)
+#define active (svg_work->active)
+#define pts_x (svg_work->xs)
+#define pts_y (svg_work->ys)
 static int edge_count;
-static int edge_order[SVG_MAX_EDGES];
-static int active[SVG_MAX_EDGES];
+
+
 static int cov[SVG_MAX_W + 2];
 static int32_t cross_x[SVG_MAX_CROSS];
 static int8_t  cross_w[SVG_MAX_CROSS];
@@ -238,7 +248,7 @@ static void raster_fill(uint32_t color, int opacity, int evenodd) {
 }
 
 
-static sfx pts_x[SVG_MAX_PTS], pts_y[SVG_MAX_PTS];
+
 static int pts_n;
 static int sub_start[512];
 static int sub_closed[512];
@@ -1189,6 +1199,7 @@ int br_svg_render(const char* src, int len, int want_w, int want_h, uint32_t cur
     if (H > 4096) H = 4096;
     if ((size_t)W * (size_t)H > max_pixels) return -1;
 
+    if (svg_work || !(svg_work=pmm_cache_alloc(sizeof(*svg_work)))) return -1;
     out_px = out; out_w = W; out_h = H;
     memset(out, 0, (size_t)W * H * 4);
     sub_lines = H <= 48 ? 16 : H <= 200 ? 8 : 4;
@@ -1235,5 +1246,6 @@ int br_svg_render(const char* src, int len, int want_w, int want_h, uint32_t cur
     if (!root.self_closing) render_children(root.after, end, &st);
 
     *out_w_p = W; *out_h_p = H;
+    pmm_cache_free(svg_work);svg_work=NULL;
     return 0;
 }
