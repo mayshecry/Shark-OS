@@ -2,9 +2,17 @@
 
 #include "browser_internal.h"
 
-static br_node_t dom_pool[BR_MAX_NODES];
+struct html_scratch {
+    br_node_t dom_pool[BR_MAX_NODES];
+    char text_pool[BR_TEXT_POOL];
+};
+static struct html_scratch *pool;
+int br_html_acquire(void){pool=pmm_lease(sizeof(*pool));return pool!=NULL;}
+#define dom_pool (pool->dom_pool)
+#define text_pool (pool->text_pool)
+
 static int node_count = 0;
-static char text_pool[BR_TEXT_POOL];
+
 static int text_used = 0;
 
 void br_dom_reset(void) {
