@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+    printf '%s\n' 'Usage: tools/sharkcc source.c [output.o]' >&2
+    exit 2
+fi
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+source=$1
+output=${2:-"${source%.*}.o"}
+compiler=${CC:-gcc}
+exec "$compiler" -m64 -std=gnu99 -ffreestanding -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables -mno-red-zone -mgeneral-regs-only -fomit-frame-pointer -fmerge-all-constants -fno-unwind-tables -fno-exceptions -mcmodel=kernel -I"$root/include" -c "$source" -o "$output"
