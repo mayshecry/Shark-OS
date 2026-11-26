@@ -1,4 +1,6 @@
 #include "kernel.h"
+#include "desktop.h"
+#include "store.h"
 #include "plugin_manager.h"
 
 #define MAX_PLUGIN_DESC 512
@@ -69,6 +71,8 @@ int spkg_install(const char* pkg_name) {
                 plugin_t* plugin = plugin_get_by_name((char*)pkg_name);
                 if (plugin && plugin->loaded) {
                     g_packages[i].installed = 1;
+                    desktop_packages_refresh();
+                    if (!desktop_prefs_capture() || (store_installed() && !store_sync())) terminal_writestring("Warning: package change is RAM-only.\n");
                     terminal_writestring("Installation successful!\n");
                     return 0;
                 }
@@ -99,6 +103,8 @@ int spkg_uninstall(const char* pkg_name) {
 
             plugin_unload(i);
             g_packages[i].installed = 0;
+            desktop_packages_refresh();
+            if (!desktop_prefs_capture() || (store_installed() && !store_sync())) terminal_writestring("Warning: package change is RAM-only.\n");
             terminal_writestring("Uninstall successful!\n");
             return 0;
         }
