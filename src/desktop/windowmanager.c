@@ -96,6 +96,7 @@ static bool window_anim_disp(window_t* w, window_rect_t* out) {
 }
 
 void window_update_client_rect(window_t* w) {
+    wm_fit(w);
     w->rect.client_x = w->rect.x + W98_CLIENT_INSET;
     w->rect.client_y = w->rect.y + W98_CLIENT_TOP;
     w->rect.client_w = w->rect.width - W98_CLIENT_INSET * 2;
@@ -244,6 +245,7 @@ int window_create(window_type_t type, const char* title, int x, int y, int w, in
     switch (type) {
         case WINDOW_TYPE_TERMINAL:
             win->draw_func = app_window_draw_terminal;
+            win->mouse_func = app_window_mouse_terminal;
             win->keyboard_func = app_window_keyboard_terminal;
             break;
         case WINDOW_TYPE_DOOM:
@@ -291,6 +293,7 @@ int window_create(window_type_t type, const char* title, int x, int y, int w, in
             break;
         case WINDOW_TYPE_NOTEPAD:
             win->draw_func = app_window_draw_notepad;
+            win->mouse_func = app_window_mouse_notepad;
             win->keyboard_func = app_window_keyboard_notepad;
             break;
         case WINDOW_TYPE_FILEMANAGER:
@@ -441,8 +444,8 @@ void window_maximize(int idx) {
 
     win->rect.x = -W98_BORDER_W - W98_FRAME_PAD;
     win->rect.y = -W98_BORDER_W - W98_FRAME_PAD;
-    win->rect.width = (int)screen_width + (W98_BORDER_W + W98_FRAME_PAD) * 2;
-    win->rect.height = (int)(screen_height - TASKBAR_HEIGHT)
+    win->rect.width = (int)screen_width - (wm_jaws()?64:0) + (W98_BORDER_W + W98_FRAME_PAD) * 2;
+    win->rect.height = (int)(screen_height - (wm_jaws()?0:TASKBAR_HEIGHT))
                        + (W98_BORDER_W + W98_FRAME_PAD) * 2;
     win->state = WINDOW_STATE_MAXIMIZED;
     win->needs_redraw = true;
@@ -664,6 +667,7 @@ void window_draw_frame(window_t* w) {
     char fit[WINDOW_TITLE_MAX];
     w98_text_fit(w->title, fit, sizeof(fit), text_max, 1);
 
+    if(wm_jaws()){int center=tb_x+(tb_w-w98_text_width(fit,1))/2;if(center>text_x && center+w98_text_width(fit,1)<tb_x+tb_w-55)text_x=center;}
     if (w->has_focus) {
         if (theme_current->title_gradient) {
             w98_text_alpha_bold(fit, text_x, tb_y + (tb_h - w98_text_height(1)) / 2, title_fg,
