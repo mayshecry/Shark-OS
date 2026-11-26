@@ -311,6 +311,10 @@ typedef struct {
 
 void init_descriptor_tables(void);
 void pmm_init(uint64_t mem_size_bytes);
+void *pmm_shadow(size_t bytes);
+void *pmm_lease(size_t bytes);
+void pmm_release_leases(void);
+void pmm_allow_low_desktop(uintptr_t end);
 void pmm_init_regions(const pmm_memory_region_t* regions, uint32_t count);
 uint64_t pmm_free_memory_bytes(void);
 void pmm_reserve(uintptr_t base, size_t len);
