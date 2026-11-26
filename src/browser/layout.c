@@ -12,7 +12,21 @@ extern int jpeg_decode_buf(const uint8_t* data, size_t len, int* out_w, int* out
                            uint32_t* pixels, size_t max_pixels,
                            uint8_t* scratch, size_t scratch_len);
 
-static br_box_t boxes[BR_MAX_BOXES];
+struct layout_scratch {
+    br_box_t boxes[BR_MAX_BOXES];
+    uint32_t img_arena[BR_IMG_ARENA_PIXELS];
+    uint8_t img_buf[BR_IMG_MAX_BYTES];
+    uint8_t img_scratch[BR_IMG_SCRATCH_BYTES];
+    uint8_t originals[1024 * 1024];
+};
+static struct layout_scratch *pool;
+int br_layout_acquire(void){pool=pmm_lease(sizeof(*pool));return pool!=NULL;}
+#define boxes (pool->boxes)
+#define img_arena (pool->img_arena)
+#define img_buf (pool->img_buf)
+#define img_scratch (pool->img_scratch)
+#define originals (pool->originals)
+
 static int box_count = 0;
 
 int br_box_count(void) { return box_count; }
@@ -20,13 +34,16 @@ br_box_t* br_box(int i) { return (i >= 0 && i < box_count) ? &boxes[i] : NULL; }
 
 static br_image_t images[BR_MAX_IMAGES];
 static int image_count = 0;
-static uint8_t img_buf[BR_IMG_MAX_BYTES];
 
-static uint32_t img_arena[BR_IMG_ARENA_PIXELS];
+
+
+
+static size_t originals_used;
 static size_t img_arena_used = 0;
-static uint8_t img_scratch[BR_IMG_SCRATCH_BYTES];
+
 
 void br_layout_reset_images(void) {
+    originals_used = 0;
     image_count = 0;
     img_arena_used = 0;
     memset(images, 0, sizeof(images));
@@ -81,11 +98,15 @@ static int decode_data_url(const char* url, uint8_t* dst, size_t cap) {
     while (*comma && *comma != ',') comma++;
     if (!*comma) return -1;
     int is_b64 = 0;
-    for (const char* q = url; q < comma - 6; q++) if (br_streq_prefix(q, ";base64")) { is_b64 = 1; break; }
+    for (const char *q = url; comma - q >= 7; q++)
+        if (br_streq_prefix(q, ";base64")) {
+            is_b64 = 1;
+            break;
+        }
     const char* p = comma + 1;
     size_t n = 0;
     if (is_b64) {
-        int acc = 0, bits = 0;
+        unsigned acc = 0, bits = 0;
         for (; *p; p++) {
             int v = b64val(*p);
             if (v < 0) { if (*p == '=') break; continue; }
@@ -153,14 +174,34 @@ int br_image_request_sized(const char* src, int want_w, int want_h) {
     char abs[BR_URL_MAX];
     br_resolve_url(brs.url, src, abs, sizeof(abs));
     int n;
-    if (br_streq_prefix(abs, "data:") || br_streq_prefix(src, "data:")) {
+    int complete = 1;
+    if (br_streq(src, "shark:image") && br_picture_len) {
+        n = br_picture_len;
+        memcpy(img_buf, br_picture, n);
+        complete = br_picture_complete;
+    } else if (br_streq_prefix(abs, "data:") || br_streq_prefix(src, "data:")) {
         n = decode_data_url(br_streq_prefix(src, "data:") ? src : abs, img_buf, sizeof(img_buf));
     } else {
         if (!br_subres_allowed()) { im->failed = 1; return image_count++; }
         br_status("Loading image...");
         n = br_fetch_resource(abs, img_buf, sizeof(img_buf));
+        if (br_streq_prefix(abs, "http://") || br_streq_prefix(abs, "https://"))
+            complete = net_http_last_complete && net_http_last_status >= 200 && net_http_last_status < 300;
     }
     decode_into_arena(im, n, want_w, want_h, 0xFF000000u);
+    if (!im->failed && br_streq(src, "shark:image")) {
+        serial_puts("[picture] decoded ");
+        serial_putdec(im->w);
+        serial_puts("x");
+        serial_putdec(im->h);
+        serial_puts("\n");
+    }
+    if (!im->failed && complete && n > 0 && (size_t)n <= sizeof originals - originals_used) {
+        im->original = originals + originals_used;
+        im->original_len = n;
+        memcpy(originals + originals_used, img_buf, n);
+        originals_used += n;
+    }
     return image_count++;
 }
 
