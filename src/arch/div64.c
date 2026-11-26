@@ -14,3 +14,9 @@ uint64_t __udivdi3(uint64_t numerator, uint64_t denominator) {
     }
     return quotient;
 }
+
+uint64_t __udivmoddi4(uint64_t value, uint64_t divisor, uint64_t *rest) {
+    uint64_t quotient = __udivdi3(value, divisor);
+    if (rest) *rest = value - quotient * divisor;
+    return quotient;
+}
