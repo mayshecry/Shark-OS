@@ -27,3 +27,6 @@ uint32_t sys_frames_rendered;
 uint32_t sys_frames_per_sec;
 bool terminal_in_desktop_window;
 int desktop_terminal_cols = 80;
+
+/* The shared filesystem store has no desktop preferences in server mode. */
+bool tiling_enabled, legacy_mode, lite_mode = true;
