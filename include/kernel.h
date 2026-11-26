@@ -311,6 +311,8 @@ typedef struct {
 
 void init_descriptor_tables(void);
 void pmm_init(uint64_t mem_size_bytes);
+void *pmm_cache_alloc(size_t bytes);
+void pmm_cache_free(void *);
 void *pmm_shadow(size_t bytes);
 void *pmm_lease(size_t bytes);
 void pmm_release_leases(void);
@@ -369,6 +371,7 @@ int fs_node_remove(struct fs_node* node);
 int fs_node_sync(struct fs_node* node);
 int fat16_mount(int drive, struct fs_node* mountpoint);
 int fat16_unmount(struct fs_node* mountpoint);
+int fat16_drive_mounted(int drive);
 int fat16_is_mounted(struct fs_node* node);
 void fs_initialize(void);
 void fs_cache_clear(void);
