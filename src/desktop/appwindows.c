@@ -11,11 +11,14 @@
 #include "geometrydash.h"
 #include "net.h"
 #include "icon_data.h"
+#include "browser.h"
+#include "store.h"
 
 static void kmemmove(void* dst, const void* src, int n) {
     char* d = (char*)dst;
     const char* s = (const char*)src;
-    for (int i = 0; i < n; i++) d[i] = s[i];
+    if(d>s && d<s+n){for(int i=n;i-->0;)d[i]=s[i];}
+    else for (int i = 0; i < n; i++) d[i] = s[i];
 }
 static void kstrcat(char* dst, const char* src) {
     while (*dst) dst++;
@@ -54,6 +57,7 @@ typedef struct {
     int img_xoff;
     int history_pos;
     int hot_active;
+    int anchor,end,dragging;
 } term_state_t;
 
 static term_state_t term_state_pool[MAX_WINDOWS];
@@ -257,6 +261,18 @@ static int terminal_layout_lines(term_state_t* st, int cols, int want,
     return count;
 }
 
+static int bounded(int v,int lo,int hi){return v<lo?lo:v>hi?hi:v;}
+static int within(int pos,int a,int b){return a<b?(pos>=a&&pos<b):(pos>=b&&pos<a);}
+void app_window_mouse_terminal(window_t *w,int mx,int my,int buttons){
+    term_state_t *st=term_state(w);if(!st)return;
+    if(!(buttons&1)){st->dragging=0;return;} if(!st->cols || st->hot_active)return;
+    int total=terminal_layout_lines(st,st->cols,-1,NULL,NULL),first=total>st->rows?total-st->rows:0;
+    int row=bounded((my-w->rect.client_y-10)/TERM_CELL_H,0,1000),col=bounded((mx-w->rect.client_x-10+4)/TERM_CELL_W,0,st->cols);
+    int pos;
+    if(row<total-first){int begin,len;terminal_layout_lines(st,st->cols,first+row,&begin,&len);pos=begin+bounded(col,0,len);}
+    else pos=st->output_len+bounded((row-total+first)*st->cols+col-2,0,st->input_len);
+    if(!st->dragging)st->anchor=pos;st->end=pos;st->dragging=1;w->needs_redraw=desktop.dirty=true;
+}
 void app_window_draw_terminal(window_t* w) {
     term_draw_window = w;
     term_state_t* st = term_state(w);
@@ -318,6 +334,7 @@ void app_window_draw_terminal(window_t* w) {
                 uint8_t cell_color = st->output_colors[start + j];
                 uint32_t fg = vga_to_rgb[cell_color & 0x0F];
                 uint32_t bg = vga_to_rgb[(cell_color >> 4) & 0x0F];
+                if(within(start+j,st->anchor,st->end)){fg=W98_HIGHLIGHTTEXT;bg=W98_HIGHLIGHT;}
                 term_put_char_win(c, tx + 4 + j * TERM_CELL_W,
                                   ty + 4 + row * TERM_CELL_H, fg, bg,
                                   clipx0, clipy0, clipx1, clipy1);
@@ -343,7 +360,7 @@ void app_window_draw_terminal(window_t* w) {
     for (int i = 0; i < st->input_len; i++) {
         if (col >= cols) { col = 0; prow++; }
         term_put_char_win(st->input[i], tx + 4 + col * TERM_CELL_W,
-                          py + prow * TERM_CELL_H, 0xFFFFFF55, 0xFF000000,
+                          py + prow * TERM_CELL_H, 0xFFFFFF55, within(st->output_len+i,st->anchor,st->end)?W98_HIGHLIGHT:0xFF000000,
                           clipx0, clipy0, clipx1, clipy1);
         col++;
     }
@@ -490,249 +507,7 @@ static const settings_color_opt_t settings_colors[] = {
 };
 #define SETTINGS_COLOR_COUNT 8
 
-#define SETTINGS_ROW_H 16
-
-static int settings_hover = -1;
-
-#define SETTINGS_THUMB_CELL_W (WALLPAPER_THUMB_W + 4)
-#define SETTINGS_THUMB_CELL_H (WALLPAPER_THUMB_H + 4)
-#define SETTINGS_THUMB_STEP_X (SETTINGS_THUMB_CELL_W + 8)
-#define SETTINGS_THUMB_STEP_Y (SETTINGS_THUMB_CELL_H + 8)
-
-static void settings_thumb_pos(int cx, int thumb_y, int i, int* tx, int* ty) {
-    *tx = cx + 10 + (i % 3) * SETTINGS_THUMB_STEP_X;
-    *ty = thumb_y + (i / 3) * SETTINGS_THUMB_STEP_Y;
-}
-
-static void settings_layout(window_t* w, int* theme_y, int* radio_y,
-                            int* swatch_y, int* thumb_y, int* fit_y,
-                            int* btn_y) {
-    int cy = w->rect.client_y;
-    int ch = w->rect.client_h;
-
-    *theme_y = cy + 38;
-    *radio_y = *theme_y + THEME_COUNT * SETTINGS_ROW_H + 20;
-    *swatch_y = *radio_y + 3 * SETTINGS_ROW_H + 22;
-    *thumb_y = *swatch_y + SETTINGS_COLOR_COUNT * SETTINGS_ROW_H + 22;
-    *fit_y = *thumb_y + 2 * SETTINGS_THUMB_STEP_Y + 14;
-    *btn_y = cy + ch - 30;
-}
-
-static void settings_draw_radio(int x, int y, bool on, const char* label,
-                                bool hovered) {
-
-    w98_surface(x, y, 12, 12, W98_BEVEL_SUNKEN, W98_WINDOW);
-    if (on) {
-        w98_fill(x + 4, y + 4, 4, 4, W98_BTNTEXT);
-    }
-    uint32_t bg = hovered ? W98_BTNFACE : W98_BTNFACE;
-    w98_text(label, x + 18, y + 2, W98_BTNTEXT, bg, 1, NULL);
-}
-
-void app_window_draw_settings(window_t* w) {
-    int cx = w->rect.client_x;
-    int cy = w->rect.client_y;
-    int cw = w->rect.client_w;
-
-    int theme_y, radio_y, swatch_y, thumb_y, fit_y, btn_y;
-    settings_layout(w, &theme_y, &radio_y, &swatch_y, &thumb_y, &fit_y,
-                    &btn_y);
-
-    settings_hover = -1;
-    int mxp = desktop_mouse_x, myp = desktop_mouse_y;
-    for (int i = 0; i < THEME_COUNT; i++) {
-        int ry = theme_y + i * SETTINGS_ROW_H;
-        if (mxp >= cx && mxp < cx + cw && myp >= ry && myp < ry + SETTINGS_ROW_H) {
-            settings_hover = 20 + i;
-        }
-    }
-    for (int i = 0; i < 3; i++) {
-        int ry = radio_y + i * SETTINGS_ROW_H;
-        if (mxp >= cx && mxp < cx + cw && myp >= ry && myp < ry + SETTINGS_ROW_H) {
-            settings_hover = i;
-        }
-    }
-    for (int i = 0; i < SETTINGS_COLOR_COUNT; i++) {
-        int ry = swatch_y + i * SETTINGS_ROW_H;
-        if (mxp >= cx && mxp < cx + cw && myp >= ry && myp < ry + SETTINGS_ROW_H) {
-            settings_hover = 10 + i;
-        }
-    }
-    for (int i = 0; i < desktop_wallpaper_count(); i++) {
-        int tx, ty;
-        settings_thumb_pos(cx, thumb_y, i, &tx, &ty);
-        if (mxp >= tx - 3 && mxp < tx + SETTINGS_THUMB_CELL_W + 3 &&
-            myp >= ty - 3 && myp < ty + SETTINGS_THUMB_CELL_H + 3) {
-            settings_hover = 30 + i;
-        }
-    }
-    for (int i = 0; i < 3; i++) {
-        int fx = cx + 10 + i * 90;
-        if (mxp >= fx && mxp < fx + 86 && myp >= fit_y && myp < fit_y + 14) {
-            settings_hover = 40 + i;
-        }
-    }
-    if (mxp >= cx + cw / 2 - 37 && mxp < cx + cw / 2 - 37 + 75 &&
-        myp >= btn_y && myp < btn_y + 23) {
-        settings_hover = 99;
-    }
-
-    w98_fill(cx, cy, cw, w->rect.client_h, W98_BTNFACE);
-
-    w98_text_bold("Settings - Customize", cx + cw / 2 - 60, cy + 6,
-                  W98_BTNTEXT, W98_BTNFACE, 1, NULL);
-    w98_bevel(cx + 4, cy + 18, cw - 8, 2, W98_BEVEL_ETCHED);
-
-    w98_text_bold("Theme:", cx + 8, theme_y - 12, W98_BTNTEXT,
-                  W98_BTNFACE, 1, NULL);
-    for (int i = 0; i < THEME_COUNT; i++) {
-        bool on = (theme_get_id() == i);
-        settings_draw_radio(cx + 10, theme_y + i * SETTINGS_ROW_H, on,
-                            theme_get_name(i), settings_hover == 20 + i);
-    }
-
-    w98_text_bold("Wallpaper:", cx + 8, radio_y - 14, W98_BTNTEXT,
-                  W98_BTNFACE, 1, NULL);
-    const char* modes[3] = { "Teal (dithered)", "Solid colour",
-                             "Bundled image" };
-    for (int i = 0; i < 3; i++) {
-        bool on = (desktop.wallpaper_mode == i);
-        settings_draw_radio(cx + 10, radio_y + i * SETTINGS_ROW_H, on,
-                            modes[i], settings_hover == i);
-    }
-
-    w98_text_bold("Solid colour:", cx + 8, swatch_y - 14, W98_BTNTEXT,
-                  W98_BTNFACE, 1, NULL);
-    for (int i = 0; i < SETTINGS_COLOR_COUNT; i++) {
-        int ry = swatch_y + i * SETTINGS_ROW_H;
-        bool current = (settings_colors[i].color == wallpaper_top);
-
-        if (settings_hover == 10 + i) {
-            w98_fill(cx + 6, ry, cw - 12, SETTINGS_ROW_H - 1, W98_HIGHLIGHT);
-        }
-
-        w98_surface(cx + 10, ry, 16, 14, W98_BEVEL_SUNKEN,
-                    settings_colors[i].color);
-
-        uint32_t fg = (settings_hover == 10 + i) ? W98_HIGHLIGHTTEXT
-                                                 : W98_BTNTEXT;
-        uint32_t bg = (settings_hover == 10 + i) ? W98_HIGHLIGHT
-                                                 : W98_BTNFACE;
-        w98_text(settings_colors[i].label, cx + 32, ry + 3, fg, bg, 1, NULL);
-        if (current) {
-            w98_text("<- Active", cx + 32 +
-                     w98_text_width(settings_colors[i].label, 1) + 6,
-                     ry + 3, W98_GRAYTEXT, bg, 1, NULL);
-        }
-    }
-
-    w98_text_bold("Wallpaper image:", cx + 8, thumb_y - 14, W98_BTNTEXT,
-                  W98_BTNFACE, 1, NULL);
-    w98_text(desktop_wallpaper_name(desktop.wallpaper_id),
-             cx + 8 + w98_text_width("Wallpaper image:", 1) + 8,
-             thumb_y - 14, W98_GRAYTEXT, W98_BTNFACE, 1, NULL);
-    for (int i = 0; i < desktop_wallpaper_count(); i++) {
-        int tx, ty;
-        settings_thumb_pos(cx, thumb_y, i, &tx, &ty);
-        bool selected = (desktop.wallpaper_id == i);
-
-        if (selected) {
-            w98_fill(tx - 3, ty - 3, SETTINGS_THUMB_CELL_W + 6,
-                     SETTINGS_THUMB_CELL_H + 6, W98_HIGHLIGHT);
-        }
-        w98_surface(tx - 2, ty - 2, SETTINGS_THUMB_CELL_W + 4,
-                    SETTINGS_THUMB_CELL_H + 4, W98_BEVEL_SUNKEN,
-                    0xFF000000u);
-        w98_blit_rgb(desktop_wallpaper_thumb(i), WALLPAPER_THUMB_W,
-                     WALLPAPER_THUMB_H, tx, ty, NULL);
-        if (!selected && settings_hover == 30 + i) {
-            w98_fill(tx - 3, ty - 3, SETTINGS_THUMB_CELL_W + 6, 1,
-                     W98_BTNSHADOW);
-            w98_fill(tx - 3, ty + SETTINGS_THUMB_CELL_H + 2,
-                     SETTINGS_THUMB_CELL_W + 6, 1, W98_BTNSHADOW);
-            w98_fill(tx - 3, ty - 3, 1, SETTINGS_THUMB_CELL_H + 6,
-                     W98_BTNSHADOW);
-            w98_fill(tx + SETTINGS_THUMB_CELL_W + 2, ty - 3, 1,
-                     SETTINGS_THUMB_CELL_H + 6, W98_BTNSHADOW);
-        }
-    }
-
-    w98_text_bold("Scaling:", cx + 8, fit_y - 14, W98_BTNTEXT,
-                  W98_BTNFACE, 1, NULL);
-    const char* fits[3] = { "Fill", "Fit", "Stretch" };
-    for (int i = 0; i < 3; i++) {
-        settings_draw_radio(cx + 10 + i * 90, fit_y,
-                            desktop.wallpaper_fit == i, fits[i],
-                            settings_hover == 40 + i);
-    }
-
-    w98_button(cx + cw / 2 - 37, btn_y, 75, 23, "Shut Down...",
-               settings_hover == 99, true, false);
-}
-
-void app_window_mouse_settings(window_t* w, int mx, int my, int buttons) {
-    (void)w;
-    if (!(buttons & 1)) return;
-
-    int theme_y, radio_y, swatch_y, thumb_y, fit_y, btn_y;
-    settings_layout(w, &theme_y, &radio_y, &swatch_y, &thumb_y, &fit_y,
-                    &btn_y);
-    int cx = w->rect.client_x;
-    int cw = w->rect.client_w;
-
-    for (int i = 0; i < THEME_COUNT; i++) {
-        int ry = theme_y + i * SETTINGS_ROW_H;
-        if (mx >= cx && mx < cx + cw && my >= ry && my < ry + SETTINGS_ROW_H) {
-            theme_set(i);
-            return;
-        }
-    }
-
-    for (int i = 0; i < 3; i++) {
-        int ry = radio_y + i * SETTINGS_ROW_H;
-        if (mx >= cx && mx < cx + cw && my >= ry && my < ry + SETTINGS_ROW_H) {
-            desktop_set_wallpaper_mode(i);
-            return;
-        }
-    }
-
-    for (int i = 0; i < SETTINGS_COLOR_COUNT; i++) {
-        int ry = swatch_y + i * SETTINGS_ROW_H;
-        if (mx >= cx && mx < cx + cw && my >= ry && my < ry + SETTINGS_ROW_H) {
-            uint32_t color = settings_colors[i].color;
-            uint8_t r = (color >> 16) & 0xFF;
-            uint8_t g = (color >> 8) & 0xFF;
-            uint8_t b = color & 0xFF;
-            desktop_set_wallpaper_color(color,
-                0xFF000000u | ((r / 2) << 16) | ((g / 2) << 8) | (b / 2));
-            desktop_set_wallpaper_mode(W98_WALL_SOLID);
-            return;
-        }
-    }
-
-    for (int i = 0; i < desktop_wallpaper_count(); i++) {
-        int tx, ty;
-        settings_thumb_pos(cx, thumb_y, i, &tx, &ty);
-        if (mx >= tx - 3 && mx < tx + SETTINGS_THUMB_CELL_W + 3 &&
-            my >= ty - 3 && my < ty + SETTINGS_THUMB_CELL_H + 3) {
-            desktop_set_wallpaper(i);
-            return;
-        }
-    }
-
-    for (int i = 0; i < 3; i++) {
-        int fx = cx + 10 + i * 90;
-        if (mx >= fx && mx < fx + 86 && my >= fit_y && my < fit_y + 14) {
-            desktop_set_wallpaper_fit(i);
-            return;
-        }
-    }
-
-    if (mx >= cx + cw / 2 - 37 && mx < cx + cw / 2 - 37 + 75 &&
-        my >= btn_y && my < btn_y + 23) {
-        shutdown();
-    }
-}
+#include "settings.inc"
 
 static int faq_wrap_text(const char* prefix, const char* text, int x, int y,
                          int max_w, int indent, int y_limit, uint32_t fg,
@@ -1078,14 +853,11 @@ static void tm_draw_performance(window_t* w, tm_layout_t* L, const w98_rect_t* c
 
     tm_draw_bar(x, y, cw / 2 - 40, 14, (int)sys_cpu_percent, "CPU Usage:", clip);
 
-    extern char _kernel_end[];
-    uint32_t total = total_system_memory > 0xFFFFFFFFull ? 0xFFFFFFFFu
-                                                         : (uint32_t)total_system_memory;
-
-    uint32_t used = (uint32_t)(free_memory_start - 0x100000u);
-    (void)_kernel_end;
-    if (total && used > total) used = total;
-    int mem_pct = total ? (int)((used / 1024u) * 100u / (total / 1024u ? total / 1024u : 1u)) : 0;
+    uint64_t total_bytes = total_system_memory, free_bytes = pmm_free_memory_bytes();
+    uint64_t used_bytes = total_bytes > free_bytes ? total_bytes - free_bytes : 0;
+    uint32_t total = total_bytes > 0xffffffffu ? 0xffffffffu : (uint32_t)total_bytes;
+    uint32_t used = used_bytes > 0xffffffffu ? 0xffffffffu : (uint32_t)used_bytes;
+    int mem_pct = total_bytes ? (int)(used_bytes * 100 / total_bytes) : 0;
     tm_draw_bar(col2, y, cw / 2 - 40, 14, mem_pct, "Memory Usage:", clip);
     y += 34;
 
@@ -1102,7 +874,7 @@ static void tm_draw_performance(window_t* w, tm_layout_t* L, const w98_rect_t* c
     int_to_string(sys_frames_rendered, num); tm_cat(buf, num);
     w98_text(buf, x, y, W98_BTNTEXT, W98_BTNFACE, 1, clip);
 
-    strcpy(buf, "Kernel + heap: ");
+    strcpy(buf, "Used/reserved: ");
     tm_fmt_kb(used, num); tm_cat(buf, num);
     w98_text(buf, col2, y, W98_BTNTEXT, W98_BTNFACE, 1, clip);
     y += 11;
@@ -1327,8 +1099,8 @@ void app_window_draw_fastfetch(window_t* w) {
 
     char buf[64];
     uint32_t total_mb = (uint32_t)(total_system_memory >> 20);
-    uint32_t free_kb = (uint32_t)(total_system_memory * 3 / 4);
-    uint32_t avail_kb = (uint32_t)(total_system_memory * 7 / 8);
+    uint32_t free_kb = (uint32_t)(pmm_free_memory_bytes() >> 10);
+    uint32_t avail_kb = (uint32_t)(total_system_memory >> 10) - free_kb;
     uint32_t up_secs = uptime_ticks / TICKS_PER_SEC;
     uint32_t hours = up_secs / 3600;
     uint32_t mins = (up_secs % 3600) / 60;
@@ -1352,7 +1124,7 @@ void app_window_draw_fastfetch(window_t* w) {
     y += line_h;
     label_value(label_x, value_x, y, "Shell:", "nemo-shell", W98_BTNTEXT);
     y += line_h;
-    label_value(label_x, value_x, y, "Arch:", "x86 (32-bit)", W98_BTNTEXT);
+    label_value(label_x, value_x, y, "Arch:", "x86-64", W98_BTNTEXT);
     y += line_h + 4;
     label_value(label_x, value_x, y, "CPU:", cpu_model, W98_BTNTEXT);
     y += line_h;
@@ -1366,7 +1138,7 @@ void app_window_draw_fastfetch(window_t* w) {
     kstrcat(buf, " MB");
     w98_text(buf, value_x, y, W98_BTNTEXT, W98_BTNFACE, 1, NULL);
     y += line_h;
-    label_value(label_x, value_x, y, "Memory Avail:", "", W98_BTNTEXT);
+    label_value(label_x, value_x, y, "Memory Used:", "", W98_BTNTEXT);
     int_to_string((uint32_t)(avail_kb >> 10), buf);
     kstrcat(buf, " MB");
     w98_text(buf, value_x, y, W98_BTNTEXT, W98_BTNFACE, 1, NULL);
@@ -1402,6 +1174,7 @@ static char notepad_buffer[MAX_FILE_CONTENT_SIZE] = "";
 static int notepad_len = 0;
 static char notepad_path[128] = "";
 static int notepad_cursor = 0;
+static int np_anchor=-1,np_drag;
 static int notepad_view_line = 0;
 static bool notepad_dirty = false;
 static bool notepad_highlight_dirty = true;
@@ -1418,11 +1191,18 @@ static void notepad_save(void) {
         strcpy(notepad_status, "File exceeds filesystem limit");
         return;
     }
-    memcpy(notepad_file->content, notepad_buffer, (size_t)notepad_len);
-    notepad_file->content[notepad_len] = 0;
-    notepad_file->content_len = notepad_len;
+    if(notepad_file->disk_backed){
+        if ((unsigned)notepad_len >= notepad_file->content_capacity) {strcpy(notepad_status,"Mounted file capacity exceeded");return;}
+        memcpy(notepad_file->content,notepad_buffer,notepad_len); notepad_file->content_len=notepad_len;notepad_file->content[notepad_len]=0;
+    } else if(fs_node_write(notepad_file,0,notepad_buffer,notepad_len) || fs_node_truncate(notepad_file,notepad_len)) {
+        strcpy(notepad_status,"Not enough file space");return;
+    }
     if (!fs_node_sync(notepad_file)) {
         strcpy(notepad_status, "Disk full or file too large");
+        return;
+    }
+    if (store_installed() && !store_sync()) {
+        strcpy(notepad_status, "Not saved to installed disk");
         return;
     }
     notepad_dirty = false;
@@ -1431,6 +1211,7 @@ static void notepad_save(void) {
 
 void notepad_open_node(struct fs_node* file) {
     if (!file || file->type != FS_FILE) return;
+    np_anchor=-1;np_drag=0;
     notepad_file = file;
     notepad_len = file->content_len;
     if (notepad_len >= (int)sizeof(notepad_buffer)) notepad_len = (int)sizeof(notepad_buffer) - 1;
@@ -1608,6 +1389,15 @@ static void notepad_metrics(window_t* w, int* ta_x, int* ta_y, int* ta_w,
     *visible_lines = (*ta_h - 8) / 11;
 }
 
+void app_window_mouse_notepad(window_t *w,int mx,int my,int buttons){
+    if(!(buttons&1)){np_drag=0;return;}
+    int ax,ay,aw,ah,tx,cols,rows;notepad_metrics(w,&ax,&ay,&aw,&ah,&tx,&cols,&rows);
+    if(rows<1 || cols<1 || (!np_drag && (my<ay || my>=ay+ah)))return;
+    int pos=notepad_line_start(notepad_view_line+bounded((my-ay-4)/11,0,rows-1));
+    int col=bounded((mx-tx+3)/6,0,cols);while(col-->0 && pos<notepad_len && notepad_buffer[pos]!='\n')pos++;
+    if(!np_drag && (!shift_pressed || np_anchor<0))np_anchor=shift_pressed?notepad_cursor:pos;
+    np_drag=1;notepad_cursor=pos;w->needs_redraw=desktop.dirty=true;
+}
 static void notepad_draw_line(window_t* w, int logical_line) {
     int ta_x, ta_y, ta_w, ta_h, text_x, max_chars, visible_lines;
     notepad_metrics(w, &ta_x, &ta_y, &ta_w, &ta_h, &text_x, &max_chars, &visible_lines);
@@ -1627,13 +1417,14 @@ static void notepad_draw_line(window_t* w, int logical_line) {
     int run_start = 0;
     while (run_start < line_len) {
         uint32_t color = notepad_colors[line_start + run_start];
-        int run_end = run_start + 1;
-        while (run_end < line_len && notepad_colors[line_start + run_end] == color) run_end++;
+        int sel=np_anchor>=0 && within(line_start+run_start,np_anchor,notepad_cursor);
+        int run_end=run_start+1;
+        while(run_end<line_len && notepad_colors[line_start+run_end]==color && sel==(np_anchor>=0 && within(line_start+run_end,np_anchor,notepad_cursor)))run_end++;
         char run[96];
         int run_len = run_end - run_start;
         for (int i = 0; i < run_len; i++) run[i] = notepad_buffer[line_start + run_start + i];
         run[run_len] = 0;
-        w98_text(run, text_x + run_start * 6, y, color, W98_WINDOW, 1, NULL);
+        w98_text(run, text_x + run_start * 6, y, sel?W98_HIGHLIGHTTEXT:color, sel?W98_HIGHLIGHT:W98_WINDOW, 1, NULL);
         run_start = run_end;
     }
 }
@@ -1762,7 +1553,28 @@ void app_window_keyboard_notepad(window_t* w, char c) {
     bool redraw_all = false;
     bool handled = true;
 
-    if (ctrl_pressed && (c == 's' || c == 'S')) {
+    int lo=np_anchor<notepad_cursor?np_anchor:notepad_cursor, hi=np_anchor>notepad_cursor?np_anchor:notepad_cursor;
+    bool selected=np_anchor>=0 && lo<hi, arrow=(c>=0x10 && c<=0x13);
+    if(c==1){np_anchor=0;notepad_cursor=notepad_len;desktop.dirty=w->needs_redraw=true;return;}
+    if(selected && c==3){desktop_copy_text(notepad_buffer+lo,hi-lo);strcpy(notepad_status,"Selection copied");desktop.dirty=true;return;}
+    if(arrow){if(shift_pressed && np_anchor<0)np_anchor=notepad_cursor;if(!shift_pressed)np_anchor=-1;redraw_all=selected || shift_pressed;}
+    if(selected && !(ctrl_pressed && (c=='s'||c=='S')) && (c==22 || c=='\b' || c=='\t' || c=='\n' || c>=32)){
+        if(c==22 && (!*desktop_paste_text() || strlen(desktop_paste_text())>=sizeof notepad_buffer-(notepad_len-hi+lo)))return;
+        kmemmove(notepad_buffer+lo,notepad_buffer+hi,notepad_len-hi);notepad_len-=hi-lo;notepad_buffer[notepad_len]=0;notepad_cursor=lo;
+        np_anchor=-1;redraw_all=changed_text=true;if(c=='\b')c=0;
+    } else if(!arrow && c!=3 && !(ctrl_pressed && (c=='s'||c=='S')))np_anchor=-1;
+    if (c==3) {
+        int a=notepad_cursor,b=a; while(a && notepad_buffer[a-1]!='\n')a--;
+        while(b<notepad_len && notepad_buffer[b]!='\n')b++;
+        desktop_copy_text(notepad_buffer+a,b-a); strcpy(notepad_status,"Copied current line");
+    } else if(c==22) {
+        const char *t=desktop_paste_text(); unsigned n=strlen(t);
+        if (n && n<sizeof notepad_buffer-notepad_len) {
+            kmemmove(notepad_buffer+notepad_cursor+n,notepad_buffer+notepad_cursor,notepad_len-notepad_cursor);
+            memcpy(notepad_buffer+notepad_cursor,t,n);notepad_len+=n;notepad_cursor+=n;notepad_buffer[notepad_len]=0;
+            changed_text=redraw_all=true;
+        }
+    } else if (ctrl_pressed && (c == 's' || c == 'S')) {
         notepad_save();
     } else if (c == 0x12) {
         if (notepad_cursor > 0) notepad_cursor--;
@@ -1829,7 +1641,7 @@ void app_window_keyboard_notepad(window_t* w, char c) {
         handled = false;
     }
 
-    if (!handled) return;
+    if (!handled && !changed_text) return;
     if (changed_text) {
         notepad_dirty = true;
         notepad_highlight_dirty = true;
@@ -1842,121 +1654,357 @@ void app_window_keyboard_notepad(window_t* w, char c) {
     (void)old_col;
 }
 
-static struct fs_node* fm_current_dir = NULL;
-static int fm_hovered_item = -1;
-static int fm_items_y[21];
-
-#define FM_STATUS_H 18
-
-void app_window_draw_filemanager(window_t* w) {
-    int cx = w->rect.client_x;
-    int cy = w->rect.client_y;
-    int cw = w->rect.client_w;
-    int ch = w->rect.client_h;
-
-    w98_fill(cx, cy, cw, ch, W98_BTNFACE);
-
-    if (!fm_current_dir) fm_current_dir = root;
-
-    char path[128] = "";
-    struct fs_node* tmp = fm_current_dir;
-    char parts[8][32];
-    int pcount = 0;
-    while (tmp && tmp != root && pcount < 8) {
-        strcpy(parts[pcount], tmp->name); pcount++; tmp = tmp->parent;
-    }
-    for (int i = pcount - 1; i >= 0; i--) {
-        if (path[0]) kstrcat(path, "\\");
-        kstrcat(path, parts[i]);
-    }
-    if (path[0] == '\0') strcpy(path, "C:\\");
-
-    w98_surface(cx + 2, cy + 2, cw - 4, 16, W98_BEVEL_SUNKEN, W98_WINDOW);
-    w98_text(path, cx + 6, cy + 6, W98_WINDOWTEXT, W98_WINDOW, 1, NULL);
-
-    int lv_y = cy + 22;
-    int lv_h = ch - 22 - FM_STATUS_H - 4;
-    w98_surface(cx + 2, lv_y, cw - 4, lv_h, W98_BEVEL_SUNKEN, W98_WINDOW);
-
-    int y = lv_y + 4;
-    int max_items = (lv_h - 8) / 16;
-    if (max_items > 20) max_items = 20;
-    fm_hovered_item = -1;
-    fm_items_y[0] = y;
-
-    bool hov0 = (desktop_mouse_x >= cx + 6 && desktop_mouse_x < cx + cw - 6 &&
-                 desktop_mouse_y >= y && desktop_mouse_y < y + 16);
-    if (hov0) {
-        fm_hovered_item = 0;
-        w98_fill(cx + 4, y, cw - 8, 16, W98_HIGHLIGHT);
-    }
-    w98_icon_blit_small(desktop_icon_get_folder(), ICON_SIZE, 16, cx + 6,
-                        y, NULL);
-    w98_text("..", cx + 26, y + 4,
-             hov0 ? W98_HIGHLIGHTTEXT : W98_WINDOWTEXT,
-             hov0 ? W98_HIGHLIGHT : W98_WINDOW, 1, NULL);
-    y += 16;
-
-    for (int i = 0; i < fm_current_dir->num_children && i < max_items - 1;
-         i++) {
-        struct fs_node* child = fm_current_dir->children[i];
-        fm_items_y[i + 1] = y;
-
-        bool hovered = (desktop_mouse_x >= cx + 6 &&
-                        desktop_mouse_x < cx + cw - 6 &&
-                        desktop_mouse_y >= y && desktop_mouse_y < y + 16);
-        if (hovered) {
-            fm_hovered_item = i + 1;
-            w98_fill(cx + 4, y, cw - 8, 16, W98_HIGHLIGHT);
-        }
-
-        const uint32_t* glyph =
-            (child->type == FS_DIRECTORY) ? desktop_icon_get_folder()
-                                          : desktop_icon_get_file();
-        w98_icon_blit_small(glyph, ICON_SIZE, 16, cx + 6, y, NULL);
-        w98_text(child->name, cx + 26, y + 4,
-                 hovered ? W98_HIGHLIGHTTEXT : W98_WINDOWTEXT,
-                 hovered ? W98_HIGHLIGHT : W98_WINDOW, 1, NULL);
-        y += 16;
-    }
-
-    int sb_y = cy + ch - FM_STATUS_H - 2;
-    w98_bevel(cx + 2, sb_y, cw - 4, FM_STATUS_H, W98_BEVEL_SUNKEN);
-    char status[40];
-    int_to_string((uint32_t)(fm_current_dir->num_children + 1), status);
-    kstrcat(status, " object(s)");
-    w98_text(status, cx + 8, sb_y + 5, W98_BTNTEXT, W98_BTNFACE, 1, NULL);
+static struct fs_node *fm_dir, *fm_target;
+static int fm_sel, fm_top, fm_mode, fm_anchor;
+static uint64_t fm_mask;
+static uint64_t filebit(int row){return row>0 && row<=64?1ULL<<(row-1):0;}
+static void fm_select(int row,bool range,bool toggle){
+    uint64_t mask=filebit(row);
+    if(range && fm_anchor>0 && row>0){mask=0;for(int i=1;i<=64;i++)if(within(i,row,fm_anchor)||i==row||i==fm_anchor)mask|=filebit(i);}
+    else fm_anchor=row;
+    fm_mask=toggle?(fm_mask^mask):mask;fm_sel=row;
 }
 
-void app_window_mouse_filemanager(window_t* w, int mx, int my, int buttons) {
-    (void)mx; (void)my;
-    if (!(buttons & 1)) return;
-    if (!fm_current_dir) fm_current_dir = root;
-    if (fm_hovered_item == 0) {
-        if (fm_current_dir && fm_current_dir->parent) {
-            fm_current_dir = fm_current_dir->parent;
+static char fm_name[32], fm_msg[100];
+static struct fs_node *fm_clicked;
+static uint32_t fm_click_tick;
+static void fm_enter(struct fs_node *dir) {
+    fm_dir = dir;fm_anchor=0;fm_mask=0;
+    fm_sel = fm_top = fm_mode = 0;
+    fm_clicked = fm_target = NULL;
+    fm_msg[0] = 0;
+}
+static void fm_check(void) {
+    if (!fm_dir || !fm_dir->allocated || fm_dir->type != FS_DIRECTORY)
+        fm_enter(root);
+    if (fm_sel > fm_dir->num_children)
+        fm_sel = fm_dir->num_children;
+}
+static int fm_path(struct fs_node *n, char *out, int cap) {
+    struct fs_node *chain[MAX_NODES];
+    int d = 0, p = 0;
+    while (n && n != root && d < MAX_NODES) {
+        chain[d++] = n;
+        n = n->parent;
+    }
+    if (n != root)
+        return 0;
+    if (!d)
+        out[p++] = '/';
+    while (d) {
+        const char *s = chain[--d]->name;
+        if (p + strlen(s) + 2 > (unsigned)cap)
+            return 0;
+        out[p++] = '/';
+        while (*s)
+            out[p++] = *s++;
+    }
+    out[p] = 0;
+    return 1;
+}
+static int fm_rows(window_t *w) {
+    int n = (w->rect.client_h - 104) / 16;
+    return n < 1 ? 1 : n;
+}
+static const char *fm_type(struct fs_node *n) {
+    if (n->type == FS_DIRECTORY)
+        return "Folder";
+    const char *dot = NULL;
+    for (char *p = n->name; *p; p++)
+        if (*p == '.')
+            dot = p;
+    if (dot && (!strcasecmp(dot, ".png") || !strcasecmp(dot, ".jpg") || !strcasecmp(dot, ".jpeg") ||
+                !strcasecmp(dot, ".gif") || !strcasecmp(dot, ".webp") || !strcasecmp(dot, ".svg")))
+        return "Image";
+    if (dot && (!strcasecmp(dot, ".htm") || !strcasecmp(dot, ".html")))
+        return "Web page";
+    for (int i = 0; i < n->content_len; i++)
+        if (!n->content[i])
+            return "Binary";
+    return "Text";
+}
+static void fm_open(void) {
+    if (!fm_sel) {
+        if (fm_dir->parent)
+            fm_enter(fm_dir->parent);
+        return;
+    }
+    struct fs_node *n = fm_dir->children[fm_sel - 1];
+    if (n->type == FS_DIRECTORY) {
+        fm_enter(n);
+        return;
+    }
+    const char *type = fm_type(n);
+    if (!strcmp(type, "Image") || !strcmp(type, "Web page")) {
+        char url[512] = "file:";
+        if (!fm_path(n, url + 5, sizeof url - 5)) {
+            strcpy(fm_msg, "Path too long to open");
+            return;
         }
-    } else if (fm_hovered_item > 0 &&
-               fm_hovered_item <= fm_current_dir->num_children) {
-        struct fs_node* child = fm_current_dir->children[fm_hovered_item - 1];
-        if (child && child->type == FS_DIRECTORY) {
-            fm_current_dir = child;
-        } else if (child && child->type == FS_FILE) {
-            notepad_open_node(child);
+        browser_open_url(url);
+        return;
+    }
+    if (!strcmp(type, "Binary")) {
+        strcpy(fm_msg, "Binary file: not opened as text");
+        return;
+    }
+    if (n->content_len >= MAX_FILE_CONTENT_SIZE) {
+        strcpy(fm_msg, "Too large for the text editor");
+        return;
+    }
+    if(!desktop_app_available(WINDOW_TYPE_NOTEPAD)){strcpy(fm_msg,"To edit text: spkg install ide");return;}
+    notepad_open_node(n);
+}
+static void fm_edit(int mode) {
+    for (struct fs_node *p = fm_dir; p; p = p->parent)
+        if (fat16_is_mounted(p)) {
+            strcpy(fm_msg, "Use the shell for mounted FAT volumes");
+            return;
+        }
+    if(mode>=3 && (fm_mask & (fm_mask-1))){strcpy(fm_msg,"Select only one item for this operation");return;}
+    if (mode >= 3 && (!fm_sel || !(fm_mask&filebit(fm_sel)))) {
+        strcpy(fm_msg, "Select an item first");
+        return;
+    }
+    fm_mode = mode;
+    fm_target = fm_sel ? fm_dir->children[fm_sel - 1] : NULL;
+    fm_name[0] = 0;
+    fm_msg[0] = 0;
+    if (mode == 3)
+        strcpy(fm_name, fm_target->name);
+}
+static void fm_apply(void) {
+    int mode = fm_mode;
+    fm_mode = 0;
+    if (mode >= 3 &&
+        (!fm_target || !fm_target->allocated || fm_target->parent != fm_dir || fat16_is_mounted(fm_target))) {
+        strcpy(fm_msg, "Item unavailable");
+        return;
+    }
+    if (mode == 4) {
+        if (fm_target == current_dir || fm_target == notepad_file || fs_node_remove(fm_target)) {
+            strcpy(fm_msg, "Cannot delete: open or not empty");
+            return;
+        }
+        fm_sel = 0;
+    } else {
+        if (!fm_name[0] || !strcmp(fm_name, ".") || !strcmp(fm_name, "..") || strchr(fm_name, '/') ||
+            strchr(fm_name, '\\')) {
+            strcpy(fm_msg, "Invalid name");
+            return;
+        }
+        struct fs_node *dup = find_node(fm_dir, fm_name);
+        if (dup && !(mode == 3 && dup == fm_target)) {
+            strcpy(fm_msg, "That name is in use");
+            return;
+        }
+        if (mode == 3) {
+            strcpy(fm_target->name, fm_name);
+            fs_cache_clear();
+        } else if (!create_node(fm_name, mode == 1 ? FS_DIRECTORY : FS_FILE, fm_dir)) {
+            strcpy(fm_msg, "Filesystem full");
+            return;
+        } else
+            fm_sel = fm_dir->num_children;
+    }
+    fm_select(fm_sel,false,false);fm_clicked = NULL;
+    store_sync();
+    strcpy(fm_msg, store_status());
+}
+static const char *places[]={"This PC","Home","Documents","Downloads"};
+static struct fs_node *fm_place(int i) {
+    struct fs_node *home=find_node(root,current_user);
+    if(!home)home=find_node(root,"User");
+    if(i==0)return root;
+    if(i==1)return home;
+    if(i==2)return home?find_node(home,"Documents"):NULL;
+    return find_node(root,"Downloads");
+}
+static uint8_t copied_data[256*1024];
+static struct {char name[32];unsigned offset,len;} copied[MAX_CHILDREN];
+static int copied_count;
+static void fm_copy(void){
+    unsigned used=0;int count=0;
+    for(int i=0;i<fm_dir->num_children;i++)if(fm_mask&filebit(i+1)){
+        struct fs_node *n=fm_dir->children[i];
+        if(n->type!=FS_FILE || (unsigned)n->content_len>sizeof copied_data-used){strcpy(fm_msg,"Copy files only, up to 256 KiB total");return;}
+        used+=n->content_len;count++;
+    }
+    if(!count){strcpy(fm_msg,"Select files to copy");return;}
+    copied_count=0;used=0;
+    for(int i=0;i<fm_dir->num_children;i++)if(fm_mask&filebit(i+1)){
+        struct fs_node *n=fm_dir->children[i];int j=copied_count++;strcpy(copied[j].name,n->name);
+        copied[j].offset=used;copied[j].len=n->content_len;memcpy(copied_data+used,fs_node_data(n),n->content_len);used+=n->content_len;
+    }
+    strcpy(fm_msg,"Selection copied. Open destination and paste.");
+}
+static void fm_paste(void){
+    if(!copied_count){strcpy(fm_msg,"No files copied");return;}
+    for(struct fs_node *p=fm_dir;p;p=p->parent)if(fat16_is_mounted(p)){strcpy(fm_msg,"Cannot paste into mounted FAT volume");return;}
+    if(copied_count>MAX_CHILDREN-fm_dir->num_children){strcpy(fm_msg,"Folder is full");return;}
+    struct fs_node *made[MAX_CHILDREN];int done=0;uint64_t added=0;
+    for(int j=0;j<copied_count;j++){
+        char name[32];strcpy(name,copied[j].name);
+        for(unsigned i=1;find_node(fm_dir,name);i++){
+            char num[12];int_to_string(i,num);strcpy(name,"Copy");kstrcat(name,num);kstrcat(name,"-");
+            int k=strlen(name);for(int q=0;k<31 && copied[j].name[q];)name[k++]=copied[j].name[q++];name[k]=0;
+        }
+        struct fs_node *n=create_node(name,FS_FILE,fm_dir);if(!n)goto fail;made[done++]=n;
+        if(fs_node_write(n,0,copied_data+copied[j].offset,copied[j].len))goto fail;
+        added|=filebit(fm_dir->num_children);
+    }
+    fm_anchor=fm_sel=fm_dir->num_children;fm_mask=added;strcpy(fm_msg,"Files pasted");
+    if(store_installed() && !store_sync())strcpy(fm_msg,"Pasted in RAM; disk save failed");return;
+fail:
+    while(done)fs_node_remove(made[--done]);strcpy(fm_msg,"Paste failed: filesystem full");
+}
+static const char *fm_tools[] = {"Up", "Folder", "File", "Rename", "Delete"};
+void app_window_draw_filemanager(window_t *w) {
+    fm_check();
+    int x = w->rect.client_x, y = w->rect.client_y, cw = w->rect.client_w, ch = w->rect.client_h;
+    w98_rect_t clip = {x + 3, y + 2, cw - 6, ch - 4};
+    int bw = (cw - 8) / 5;
+    if (bw > 66)
+        bw = 66;
+    w98_fill(x, y, cw, ch, W98_BTNFACE);
+    for (int i = 0; i < 5; i++)
+        w98_button(x + 3 + i * bw, y + 2, bw - 1, 18, fm_tools[i], 0, !fm_mode, 0);
+    char path[512];
+    if (!fm_path(fm_dir, path, sizeof path))
+        strcpy(path, ".../");
+    w98_surface(x + 3, y + 23, cw - 6, 19, W98_BEVEL_SUNKEN, W98_WINDOW);
+    w98_text(path, x + 8, y + 28, W98_WINDOWTEXT, W98_WINDOW, 1, &clip);
+    w98_surface(x + 3, y + 45, cw - 6, ch - 85, W98_BEVEL_SUNKEN, W98_WINDOW);
+    int side=cw>=460?116:0;
+    if(side){
+        w98_fill(x+5,y+47,side-3,ch-89,W98_BTNFACE);
+        w98_text_bold("Quick access",x+10,y+51,W98_BTNTEXT,W98_BTNFACE,1,&clip);
+        for(int i=0;i<4;i++)w98_text(places[i],x+14,y+75+i*20,W98_BTNTEXT,W98_BTNFACE,1,&clip);
+    }
+    w98_fill(x+5+side,y+47,cw-10-side,16,W98_BTNFACE);
+    w98_text("Name",x+25+side,y+51,W98_BTNTEXT,W98_BTNFACE,1,&clip);
+    if(cw>=310)w98_text("Size",x+cw-90,y+51,W98_BTNTEXT,W98_BTNFACE,1,&clip);
+    int rows = fm_rows(w);
+    if (fm_sel < fm_top)
+        fm_top = fm_sel;
+    if (fm_sel >= fm_top + rows)
+        fm_top = fm_sel - rows + 1;
+    for (int row = 0; row < rows && fm_top + row <= fm_dir->num_children; row++) {
+        int i = fm_top + row, yy = y + 64 + row * 16;
+        struct fs_node *n = i ? fm_dir->children[i - 1] : NULL;
+        uint32_t bg = ((fm_mask&filebit(i)) || (!i && !fm_sel)) ? W98_HIGHLIGHT : W98_WINDOW,
+                 fg = ((fm_mask&filebit(i)) || (!i && !fm_sel)) ? W98_HIGHLIGHTTEXT : W98_WINDOWTEXT;
+        w98_fill(x + 5 + side, yy, cw - 10 - side, 16, bg);
+        w98_icon_blit_small(!n || n->type == FS_DIRECTORY ? desktop_icon_get_folder() : desktop_icon_get_file(),
+                            ICON_SIZE, 16, x + 7 + side, yy, &clip);
+        w98_text(n ? n->name : "..", x + 29 + side, yy + 4, fg, bg, 1, &clip);
+        if (n && cw >= 310) {
+            char size[32] = "Folder";
+            if (n->type == FS_FILE) {
+                int_to_string(n->content_len, size);
+                kstrcat(size, " bytes");
+            }
+            w98_text(size, x + cw - 90, yy + 4, fg, bg, 1, &clip);
+        }
+    }
+    char line[128];
+    if (fm_mode) {
+        strcpy(line, fm_mode == 1   ? "New folder: "
+                     : fm_mode == 2 ? "New file: "
+                     : fm_mode == 3 ? "Rename: "
+                                    : "Delete? Enter=yes, Esc=no: ");
+        kstrcat(line, fm_mode == 4 ? fm_target->name : fm_name);
+    } else if (fm_msg[0])
+        strcpy(line, fm_msg);
+    else {
+        int selected=0;for(int i=1;i<=fm_dir->num_children;i++)if(fm_mask&filebit(i))selected++;
+        int_to_string(selected,line);kstrcat(line," selected / ");int_to_string(fm_dir->num_children,line+strlen(line));
+        kstrcat(line, " items  |  ");
+        kstrcat(line, store_status());
+    }
+    w98_text(line, x + 6, y + ch - 32, W98_BTNTEXT, W98_BTNFACE, 1, &clip);
+    w98_text(fm_mode ? "Enter confirms / Esc cancels" : "Enter: open   Ctrl+C: copy file   Ctrl+V: paste", x + 6,
+             y + ch - 16, W98_BTNTEXT, W98_BTNFACE, 1, &clip);
+}
+void app_window_mouse_filemanager(window_t *w, int mx, int my, int buttons) {
+    static bool held;
+    if(!(buttons&1)){held=false;return;}if(held || fm_mode)return;held=true;
+    fm_check();
+    int x = mx - w->rect.client_x, y = my - w->rect.client_y;
+    int bw = (w->rect.client_w - 8) / 5;
+    if (bw > 66)
+        bw = 66;
+    if(w->rect.client_w>=460 && x>=3 && x<119 && y>=45){
+        if(y>=70 && y<150){struct fs_node *p=fm_place((y-70)/20);if(p && p->type==FS_DIRECTORY)fm_enter(p);}
+        w->needs_redraw=desktop.dirty=true;return;
+    }
+    if (y >= 2 && y < 20 && x >= 3 && bw > 0 && x < 3 + bw * 5) {
+        int i = (x - 3) / bw;
+        if (!i) {
+            if (fm_dir->parent)
+                fm_enter(fm_dir->parent);
+        } else
+            fm_edit(i);
+    } else if (y >= 64 && (y - 64) / 16 < fm_rows(w)) {
+        int i = fm_top + (y - 64) / 16;
+        if (i > fm_dir->num_children)
+            return;
+        fm_select(i,shift_pressed,ctrl_pressed);
+        fm_msg[0] = 0;
+        struct fs_node *n = i ? fm_dir->children[i - 1] : fm_dir;
+        if(ctrl_pressed || shift_pressed)fm_clicked=NULL;
+        else if (fm_clicked == n && uptime_ticks - fm_click_tick < 500) {
+            fm_clicked = NULL;
+            fm_open();
+        } else {
+            fm_clicked = n;
+            fm_click_tick = uptime_ticks;
         }
     }
     w->needs_redraw = true;
+    desktop.dirty = true;
 }
-
-void app_window_keyboard_filemanager(window_t* w, char c) {
-    if (!fm_current_dir) fm_current_dir = root;
-    if (c == 27) return;
-    else if (c == '\b' || c == 8) {
-        if (fm_current_dir && fm_current_dir->parent) {
-            fm_current_dir = fm_current_dir->parent;
+void app_window_keyboard_filemanager(window_t *w, char c) {
+    fm_check();
+    if (fm_mode) {
+        size_t n = strlen(fm_name);
+        if (c == 27)
+            fm_mode = 0;
+        else if (c == '\n')
+            fm_apply();
+        else if (fm_mode != 4) {
+            if (c == '\b' && n)
+                fm_name[n - 1] = 0;
+            else if (c >= 32 && c < 127 && n < 31) {
+                fm_name[n] = c;
+                fm_name[n + 1] = 0;
+            }
         }
+    } else {
+        fm_msg[0] = 0;
+        fm_clicked = NULL;
+        if(c==1){fm_mask=0;for(int i=1;i<=fm_dir->num_children;i++)fm_mask|=filebit(i);fm_anchor=fm_sel=fm_dir->num_children?1:0;}
+        else if(c==3)fm_copy();
+        else if(c==22)fm_paste();
+        else if (c == 0x10 && fm_sel > 0)
+            fm_select(fm_sel-1,shift_pressed,false);
+        else if (c == 0x11 && fm_sel < fm_dir->num_children)
+            fm_select(fm_sel+1,shift_pressed,false);
+        else if (c == '\n')
+            fm_open();
+        else if (c == '\b' && fm_dir->parent)
+            fm_enter(fm_dir->parent);
+        else if (c == 'n')
+            fm_edit(1);
+        else if (c == 'f')
+            fm_edit(2);
+        else if (c == 'r')
+            fm_edit(3);
+        else if (c == 'd')
+            fm_edit(4);
     }
     w->needs_redraw = true;
+    desktop.dirty = true;
 }
 
 void app_window_draw_about(window_t* w) {
@@ -2100,6 +2148,30 @@ void app_window_mouse_network(window_t* w, int mx, int my, int buttons) {
 void app_window_keyboard_terminal(window_t* w, char c) {
     term_state_t* st = term_state(w);
     if (!st) return;
+    if(c==1){st->anchor=st->output_len;st->end=st->output_len+st->input_len;w->needs_redraw=desktop.dirty=true;return;}
+    if(c==3) {
+        int a=st->anchor,b=st->end;if(a>b){int t=a;a=b;b=t;}
+        if(a==b)desktop_copy_text(st->input,st->input_len);
+        else {char tmp[4096];int k=0;for(int i=a;i<b && i<st->output_len+st->input_len && k<4095;i++)tmp[k++]=i<st->output_len?st->output[i]:st->input[i-st->output_len];desktop_copy_text(tmp,k);}
+        return;
+    }
+    if(st->anchor!=st->end && st->anchor>=st->output_len && st->end>=st->output_len && (c==22 || c=='\b' || c>=32)){
+        int a=st->anchor-st->output_len,b=st->end-st->output_len;if(a>b){int t=a;a=b;b=t;}
+        if(b<=st->input_len){
+            int old=st->input_len; kmemmove(st->input+a,st->input+b,old-b+1);st->input_len-=b-a;
+            /* Insert the replacement at the beginning of the selected span. */
+            char ins[256];int n=0;if(c==22){for(const char *p=desktop_paste_text();*p && n<255-st->input_len;p++)if(*p>=32 && *p<127)ins[n++]=*p;}
+            else if(c!='\b')ins[n++]=c;
+            kmemmove(st->input+a+n,st->input+a,st->input_len-a+1);memcpy(st->input+a,ins,n);st->input_len+=n;
+            st->anchor=st->end=0;w->needs_redraw=desktop.dirty=true;return;
+        }
+    }
+    st->anchor=st->end=0;
+    if(c==22) {
+        for(const char *t=desktop_paste_text();*t && st->input_len<255;t++)
+            if(*t>=32 && *t<127)st->input[st->input_len++]=*t;
+        st->input[st->input_len]=0;w->needs_redraw=desktop.dirty=true;return;
+    }
     if (c == 27) return;
     if (c == '\n') {
         if (st->input_len > 0) {
