@@ -1,4 +1,5 @@
 #include "kernel.h"
+#include "store.h"
 #include "sharkscript.h"
 #include "plugin_manager.h"
 #include "doom.h"
@@ -691,7 +692,8 @@ static void cmd_help(const char* args) {
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("SYSTEM      - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    terminal_writestring("whoami, sysinfo, kernelinfo, colors, devices/lspci, ps, taskmanager, kill, exec\n");
+    terminal_writestring("whoami, sysinfo, kernelinfo, colors, devices/lspci, ps, taskmanager, kill, "
+                         "cc file.c [-o program], cc -c file.c, run program\n");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     terminal_writestring("NETWORK     - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
@@ -705,6 +707,7 @@ static void cmd_help(const char* args) {
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     terminal_writestring("clear, colors, credits, help, neofetch, sharkfetch, imgfetch, whatis, fortune, cowsay, sl, banner, doom, browser [url]\n");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    terminal_writestring("DESKTOP     - wmprefer [NemoWM|JawsWM], wm [tiling|floating], video\n");
     terminal_writestring("POWER       - ");
     terminal_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     terminal_writestring("poweroff, reboot\n");
@@ -800,6 +803,8 @@ static const char* pci_vendor_name(uint16_t vendor) {
 }
 
 static const char* pci_device_name(uint16_t vendor, uint16_t device) {
+    if (vendor == 0x10EC && (device == 0xB821 || device == 0xC821))
+        return "RTL8821CE Wi-Fi (detected only; no wireless driver)";
     if (vendor == 0x10EC && device == 0x8168) return "RTL8111/8168/8211/8411 Gigabit Ethernet";
     if (vendor == 0x10EC && device == 0x8169) return "RTL8169 Gigabit Ethernet";
     if (vendor == 0x10EC && device == 0x8139) return "RTL8139 Fast Ethernet";
@@ -909,6 +914,13 @@ static void cmd_devices(const char* args) {
                 terminal_writestring(pci_device_name(vendor, device));
                 terminal_writestring(" rev ");
                 int_to_string(revision, number); terminal_writestring(number);
+                if (vendor == 0x10ec && class_code == 2) {
+                    uint32_t sub = pci_config_read(bus, slot, func, 0x2c);
+                    terminal_writestring(" subsystem ");
+                    cmd_devices_hex(sub);
+                    terminal_putchar(':');
+                    cmd_devices_hex(sub >> 16);
+                }
                 terminal_writestring(" irq ");
                 int_to_string(irq, number); terminal_writestring(number);
                 terminal_putchar('\n');
@@ -963,6 +975,14 @@ static void cmd_ps(const char* args) {
         t = t->next;
     }
     spin_unlock(&task_list_lock);
+}
+
+static void cmd_explorer(const char *args) {
+    (void)args;
+    if (current_kernel_mode == KERNEL_MODE_DESKTOP)
+        desktop_icon_launch_offset(WINDOW_TYPE_FILEMANAGER, "File Manager");
+    else
+        terminal_writestring("Explorer needs the desktop.\n");
 }
 
 static void cmd_browser(const char* args) {
@@ -1319,6 +1339,13 @@ static void cmd_poweroff(const char* args) {
 
 static void cmd_reboot(const char* args) {
     (void)args;
+#ifndef SERVER_IMAGE
+    if (store_installed() && !store_sync()) {
+        terminal_writestring(store_status());
+        terminal_writestring("\n");
+        return;
+    }
+#endif
     terminal_writestring("Rebooting...\n");
     outb(0x64, 0xFE);
     asm volatile("cli; hlt");
@@ -1627,6 +1654,288 @@ static void cmd_umount(const char* args) {
     terminal_writestring("Filesystem unmounted\n");
 }
 
+#ifndef SERVER_IMAGE
+#include "../cc/port.h"
+#include "../cc/app.h"
+static void cc_message(const char *text) {
+    terminal_writestring(text);
+    terminal_writestring("\n");
+}
+static int cc_path_valid(const char *path) {
+    size_t part = 0;
+    for (; *path; path++) {
+        if (*path == '/')
+            part = 0;
+        else if (++part >= sizeof((struct fs_node *)0)->name)
+            return 0;
+    }
+    return 1;
+}
+static const void *cc_lookup(const char *path, size_t *length) {
+    const void *hdr = cc_builtin(path, length);
+    if (hdr)
+        return hdr;
+    if (!cc_path_valid(path))
+        return NULL;
+    struct fs_node *f = fs_resolve_path(path);
+    if (!f || f->type != FS_FILE)
+        return NULL;
+    *length = f->content_len;
+    return fs_node_data(f);
+}
+static uintptr_t cc_export(const char *name) {
+    static const struct {
+        const char *name;
+        uintptr_t address;
+    } api[] = {
+#define EX(f) {#f, (uintptr_t)f}
+        EX(sharkapi_print),
+        EX(sharkapi_println),
+        EX(sharkapi_printf),
+        EX(sharkapi_putchar),
+        EX(sharkapi_clear_screen),
+        EX(sharkapi_strlen),
+        EX(sharkapi_strcmp),
+        EX(sharkapi_strcpy),
+        EX(sharkapi_strcat),
+        EX(sharkapi_get_ticks),
+        EX(sharkapi_getchar),
+        EX(sharkapi_delay_ms),
+        EX(sharkapi_draw_pixel),
+        EX(sharkapi_draw_rect),
+        EX(sharkapi_draw_line),
+        EX(sharkapi_draw_text),
+        EX(sharkapi_get_screen_size),
+        EX(sharkapi_beep),
+        EX(sharkapi_file_exists),
+        EX(sharkapi_file_size),
+        EX(memcpy),
+        EX(memset),
+        EX(strlen),
+        EX(strcmp),
+        EX(strcpy)
+#undef EX
+    };
+    for (unsigned i = 0; i < sizeof api / sizeof *api; i++)
+        if (!strcmp(api[i].name, name))
+            return api[i].address;
+    return 0;
+}
+static void launch_app(struct fs_node *file, const char *path, const char *args) {
+    static unsigned char *image;
+    static int running;
+    if (running) {
+        cc_message("run: another application is active");
+        return;
+    }
+    if (!file || file->type != FS_FILE || !app_tag((const unsigned char *)file->content, file->content_len)) {
+        cc_message("run: expected a SharkOS application built with cc");
+        return;
+    }
+    if (strlen(args) >= 256) {
+        cc_message("run: arguments too long");
+        return;
+    }
+    char words[256], program[160], *argv[18];
+    int argc = 0;
+    if (strlen(path) >= sizeof program) {
+        cc_message("run: path too long");
+        return;
+    }
+    strcpy(program, path);
+    argv[argc++] = program;
+    strcpy(words, args);
+    char *cursor = words, *word;
+    while ((word = shell_next_token(&cursor))) {
+        if (argc == 17) {
+            cc_message("run: too many arguments");
+            return;
+        }
+        argv[argc++] = word;
+    }
+    argv[argc] = NULL;
+    if (!image) {
+        unsigned char *p = kmalloc(APP_ROOM + 4095);
+        if (!p) {
+            cc_message("run: not enough memory");
+            return;
+        }
+        image = (unsigned char *)(((uintptr_t)p + 4095) & ~(uintptr_t)4095);
+    }
+    uintptr_t entry = 0;
+    const char *err =
+        app_load((unsigned char *)file->content, file->content_len, cc_export, image, APP_ROOM, &entry);
+    if (err) {
+        terminal_writestring("run: ");
+        cc_message(err);
+        return;
+    }
+    running = 1;
+    int status = ((int (*)(int, char **))entry)(argc, argv);
+    running = 0;
+    serial_puts("[run] ");
+    serial_puts(path);
+    serial_puts(" returned ");
+    serial_puthex32((uint32_t)status);
+    serial_puts("\n");
+    if (status) {
+        char n[16];
+        terminal_writestring("Exit status: ");
+        if (status < 0)
+            terminal_putchar('-');
+        int_to_string(status < 0 ? 0u - (uint32_t)status : (uint32_t)status, n);
+        cc_message(n);
+    }
+}
+static void cmd_run(const char *args) {
+    char buf[256];
+    if (strlen(args) >= sizeof buf) {
+        cc_message("run: arguments too long");
+        return;
+    }
+    strcpy(buf, args);
+    char *cursor = buf, *path = shell_next_token(&cursor);
+    if (!path) {
+        cc_message("Usage: run program [arguments]");
+        return;
+    }
+    launch_app(search_path(path), path, cursor);
+}
+static void cmd_cc(const char *args) {
+    char buf[256], automatic[160], name[32];
+    const char *sources[16], *out = NULL;
+    unsigned count = 0;
+    int objonly = 0;
+    if (strlen(args) >= sizeof buf) {
+        cc_message("cc: arguments too long");
+        return;
+    }
+    strcpy(buf, args);
+    char *cursor = buf, *tok;
+    while ((tok = shell_next_token(&cursor))) {
+        if (!strcmp(tok, "--version")) {
+            cc_message("TinyCC 0.9.27 (SharkOS x86-64, application linker)");
+            return;
+        }
+        if (!strcmp(tok, "-c")) {
+            objonly = 1;
+            continue;
+        }
+        if (!strcmp(tok, "-o")) {
+            if (out || !(out = shell_next_token(&cursor)) || *out == '-')
+                goto usage;
+            continue;
+        }
+        size_t len = strlen(tok);
+        if (count == 16 || *tok == '-' || len < 3 || len >= sizeof automatic || strcmp(tok + len - 2, ".c") ||
+            !cc_path_valid(tok))
+            goto usage;
+        sources[count++] = tok;
+    }
+    if (!count || (objonly && count != 1))
+        goto usage;
+    if (!out) {
+        strcpy(automatic, sources[0]);
+        size_t n = strlen(automatic);
+        if (objonly)
+            automatic[n - 1] = 'o';
+        else
+            automatic[n - 2] = 0;
+        out = automatic;
+    }
+    if (!cc_path_valid(out)) {
+        cc_message("cc: invalid output path");
+        return;
+    }
+    struct fs_node *parent = shell_parent_for_path(out, name), *obj = parent ? find_node(parent, name) : NULL;
+    if (!parent || !name[0] || !strcmp(name, ".") || !strcmp(name, "..") ||
+        (obj && (obj->type != FS_FILE || obj->disk_backed))) {
+        cc_message("cc: invalid output path");
+        return;
+    }
+    for (struct fs_node *p = parent; p; p = p->parent)
+        if (fat16_is_mounted(p)) {
+            cc_message("cc: output must be in the working filesystem");
+            return;
+        }
+    for (unsigned i = 0; i < count; i++) {
+        struct fs_node *f = fs_resolve_path(sources[i]);
+        if (!f || f->type != FS_FILE || f == obj) {
+            cc_message("cc: missing source or output would overwrite input");
+            return;
+        }
+    }
+    static unsigned char *work;
+    if (!work)
+        work = kmalloc(CC_ARENA + CC_OUTPUT);
+    if (!work) {
+        cc_message("cc: not enough memory");
+        return;
+    }
+    struct cc_io io = {cc_lookup, cc_message, work, work + CC_ARENA, 0, !objonly, sources + 1, count - 1};
+    if (cc_translate(&io, sources[0]))
+        return;
+    if (!objonly) {
+        if (io.length < 64 || io.output[0] != 127 || io.output[1] != 'E' || io.output[2] != 'L' ||
+            io.output[3] != 'F') {
+            cc_message("cc: linker did not emit an image");
+            return;
+        }
+        memcpy(io.output, "SAP1", 4);
+        const char *err = app_load(io.output, io.length, cc_export, NULL, APP_ROOM, NULL);
+        if (err) {
+            terminal_writestring("cc: link failed: ");
+            cc_message(err);
+            return;
+        }
+    }
+    int fresh = !obj;
+    if (!obj)
+        obj = create_node(name, FS_FILE, parent);
+    if (!obj || fs_node_write(obj, 0, io.output, io.length) || fs_node_truncate(obj, io.length)) {
+        if (fresh && obj)
+            fs_node_remove(obj);
+        cc_message("cc: cannot save output");
+        return;
+    }
+    const char *kind = objonly ? "ELF64 object: " : "Linked application: ";
+    serial_puts("[cc] ");
+    serial_puts(kind);
+    serial_puts(out);
+    serial_puts("\n");
+    terminal_writestring(kind);
+    cc_message(out);
+    return;
+usage:
+    cc_message("Usage: cc file.c [more.c ...] [-o program] | cc -c file.c [-o file.o]");
+}
+
+#endif
+
+#ifndef SERVER_IMAGE
+static void cmd_appearance(const char *args) {
+    if (!desktop.initialized) {terminal_writestring("Appearance requires the desktop.\n");return;}
+    if(wm_jaws()){terminal_writestring("JawsWM uses its own style. Use Settings > Backdrop.\n");return;}
+    if (*args) {
+        if (args[0]<'0' || args[0]>='0'+THEME_COUNT || args[1]) {terminal_writestring("Usage: appearance [theme number]\n");return;}
+        theme_set(args[0]-'0'); desktop_prefs_capture();
+    }
+    terminal_writestring(theme_get_name(theme_get_id()));terminal_putchar('\n');
+}
+static void cmd_memstat(const char *args){
+    (void)args;uint64_t avail=pmm_free_memory_bytes();char num[24];
+    terminal_writestring("Free allocator RAM: ");int_to_string((uint32_t)(avail>>10),num);terminal_writestring(num);terminal_writestring(" KiB\n");
+    serial_puts("[memstat] free KiB=");serial_putdec((uint32_t)(avail>>10));serial_puts("\n");
+}
+static void cmd_disks(const char *args) { (void)args; ata_show_disks(); }
+static void cmd_sync(const char *args) {
+    (void)args;
+    desktop_prefs_capture();
+    store_sync();
+    terminal_writestring(store_status());
+    terminal_writestring("\n");
+}
+#endif
 static void cmd_gcc(const char* args) {
     if (strcmp(args, "--version") == 0 || strcmp(args, "-v") == 0) {
         terminal_writestring("GNU GCC build compiler: ");
@@ -1634,6 +1943,9 @@ static void cmd_gcc(const char* args) {
         terminal_writestring("\nTarget: x86_64, freestanding kernel C\n");
         return;
     }
+#ifndef SERVER_IMAGE
+    terminal_writestring("For the in-guest TinyCC compiler use: cc file.c -o program\n");
+#endif
     terminal_writestring("GCC is integrated into the SharkOS kernel build toolchain, not bundled as a kernel-hosted process.\n");
     terminal_writestring("On the Linux build host run: tools/sharkcc source.c output.o\n");
 }
@@ -2389,6 +2701,7 @@ static const cmd_entry_t cmd_table[] = {
 #ifndef SERVER_IMAGE
     {"taskmanager", cmd_taskmanager},
     {"taskmgr", cmd_taskmanager},
+    {"explorer", cmd_explorer},
     {"browser", cmd_browser},
     {"iexplore", cmd_browser},
     {"www", cmd_browser},
@@ -2413,6 +2726,17 @@ static const cmd_entry_t cmd_table[] = {
     {"curl", cmd_curl},
     {"websocket", cmd_websocket},
     {"gcc", cmd_gcc},
+#ifndef SERVER_IMAGE
+    {"disks", cmd_disks},
+    {"appearance",cmd_appearance},
+    {"wmprefer",wm_command},
+    {"memstat",cmd_memstat},
+    {"video",video_command},
+    {"sync", cmd_sync},
+    {"run", cmd_run},
+    {"cc", cmd_cc},
+    {"tcc", cmd_cc},
+#endif
     {"mount", cmd_mount},
     {"umount", cmd_umount},
     {"dns", cmd_dns},
@@ -2442,13 +2766,11 @@ static int server_command_is_disabled(const char* cmd) {
         i++;
     }
     name[i] = 0;
-    static const char* disabled[] = {
-        "edit", "browser", "iexplore", "www", "taskmanager", "taskmgr",
-        "sharkfetch", "sfetch", "doom", "flappybird", "pong",
-        "gdash", "geometrydash", "sharkcube", "sharkcraft", "fnaf",
-        "guess", "tictactoe", "sl", "banner", "cowsay", "microsoft",
-        "wallpaper", "theme", "desktop", "settings", "notepad", "window"
-    };
+    static const char *disabled[] = {
+        "edit",   "explorer", "browser",    "iexplore", "www",    "taskmanager",  "taskmgr",   "sharkfetch",
+        "sfetch", "doom",     "flappybird", "pong",     "gdash",  "geometrydash", "sharkcube", "sharkcraft",
+        "fnaf",   "guess",    "tictactoe",  "sl",       "banner", "cowsay",       "microsoft", "wallpaper",
+        "theme",  "desktop",  "settings",   "notepad",  "window"};
     for (uint32_t j = 0; j < sizeof(disabled) / sizeof(disabled[0]); j++) {
         if (strcmp(name, disabled[j]) == 0) return 1;
     }
@@ -3828,7 +4150,15 @@ void execute_command(char* cmd) {
     } else {
         struct fs_node* bin = search_path(cmd_name);
         if (bin) {
-            execute_elf((uint8_t*)bin->content, args);
+#ifndef SERVER_IMAGE
+            if (app_tag((unsigned char *)bin->content, bin->content_len))
+                launch_app(bin, cmd_name, args);
+            else
+#endif
+                if (bin->content_len >= 52)
+                execute_elf((uint8_t *)bin->content, args);
+            else
+                terminal_writestring("Not an executable.\n");
         } else {
             terminal_writestring("Unknown command: ");
             terminal_writestring(cmd_name);
