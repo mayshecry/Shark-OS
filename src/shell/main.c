@@ -10,6 +10,8 @@
 #include "firewall.h"
 #include "router.h"
 #include "ata.h"
+#include "install.h"
+#include "store.h"
 #include "audio.h"
 
 extern void ui_draw_chrome(void);
@@ -70,6 +72,7 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
 
     if (mb_info->flags & (1 << 2)) {
         char* cmdline = (char*)(uintptr_t)mb_info->cmdline;
+        store_boot_option(cmdline);
         if (cmdline) {
             char* lite_pos = cmdline;
             while (*lite_pos) {
@@ -117,36 +120,75 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     if (screen_width < 320) screen_width = 320;
     if (screen_height < 200) screen_height = 200;
 
-    uint64_t mem_kb = ((uint64_t)mb_info->mem_upper + (uint64_t)mb_info->mem_lower);
-    total_system_memory = mem_kb * 1024;
-
-    if (mb_info->flags & (1 << 6)) {
-        struct multiboot_mmap_entry* mmap = (struct multiboot_mmap_entry*)(uintptr_t)mb_info->mmap_addr;
-        uint32_t mmap_len = mb_info->mmap_length;
-        uint64_t highest_addr = 0;
-        uint32_t entries = mmap_len / sizeof(struct multiboot_mmap_entry);
-        for (uint32_t i = 0; i < entries; i++) {
-            if (mmap[i].type == 1) {
-                uint64_t region_start = ((uint64_t)mmap[i].addr_high << 32) | (uint64_t)mmap[i].addr_low;
-                uint64_t region_len = ((uint64_t)mmap[i].len_high << 32) | (uint64_t)mmap[i].len_low;
-                uint64_t region_end = region_start + region_len;
-                if (region_start < 137438953472ULL && region_end > highest_addr) {
-                    highest_addr = region_end;
-                }
-            }
-        }
-        if (highest_addr > 0) {
-            total_system_memory = highest_addr;
+    extern char _kernel_start[],_kernel_ro_end[],_kernel_end[];
+    const uint64_t limit = 137438953472ULL;
+    uint64_t floor = (uintptr_t)_kernel_end + 0x2000u, lo = limit, hi = 0;
+    if ((mb_info->flags & 8) && mb_info->mods_count) {
+        struct mod {
+            uint32_t start, end, cmd, reserved;
+        } *m = (void *)(uintptr_t)mb_info->mods_addr;
+        for (uint32_t i = 0; i < mb_info->mods_count; i++) {
+            if (m[i].end <= m[i].start)
+                continue;
+            if (m[i].start < lo)
+                lo = m[i].start;
+            if (m[i].end > hi)
+                hi = m[i].end;
+            if (!install_image_ready())
+                install_ref_set((const void *)(uintptr_t)m[i].start, m[i].end - m[i].start,_kernel_start,(uintptr_t)_kernel_ro_end-(uintptr_t)_kernel_start);
         }
     }
-
-     
-    if (total_system_memory > 137438953472ULL) {
-        total_system_memory = 137438953472ULL;
+    pmm_memory_region_t regions[128];
+    uint32_t nr = 0, pos = 0, bytes = (mb_info->flags & 64) ? mb_info->mmap_length : 0;
+    uint64_t highest = 0;
+    do {
+        uint64_t begin = 0, end = ((uint64_t)mb_info->mem_upper + 1024) * 1024;
+        if (bytes) {
+            if (bytes - pos < sizeof(struct multiboot_mmap_entry))
+                break;
+            const struct multiboot_mmap_entry *r = (const void *)((uintptr_t)mb_info->mmap_addr + pos);
+            if (r->size < sizeof(*r) - 4 || r->size > bytes - pos - 4)
+                break;
+            pos += r->size + 4;
+            if (r->type != 1)
+                continue;
+            begin = ((uint64_t)r->addr_high << 32) | r->addr_low;
+            uint64_t len = ((uint64_t)r->len_high << 32) | r->len_low;
+            if (begin >= limit)
+                continue;
+            end = len > limit - begin ? limit : begin + len;
+        }
+        if (end > limit)
+            end = limit;
+        if (end > highest)
+            highest = end;
+        /* Only explicit type-1 RAM. Keep low firmware memory, the loaded ELF,
+           boot modules and their bounding interval out of this extra range. */
+        extern char _kernel_start[];
+        if(bytes && end>0x200000 && begin<(uintptr_t)_kernel_start){
+            uint64_t a=begin<0x200000?0x200000:begin,b=end<(uintptr_t)_kernel_start?end:(uintptr_t)_kernel_start;
+            uint64_t t=b<lo?b:lo,u=a>hi?a:hi;
+            if(t>a && nr<128)regions[nr++]=(pmm_memory_region_t){a,t};
+            if(hi && b>u && nr<128)regions[nr++]=(pmm_memory_region_t){u,b};
+            pmm_allow_low_desktop((uintptr_t)_kernel_start);
+        }
+        if (begin < floor)
+            begin = floor;
+        if (end <= begin)
+            continue;
+        uint64_t before = end < lo ? end : lo, after = hi > begin ? hi : begin;
+        if (before > begin && nr < 128)
+            regions[nr++] = (pmm_memory_region_t){begin, before};
+        if (hi && end > after && nr < 128)
+            regions[nr++] = (pmm_memory_region_t){after, end};
+    } while (pos < bytes);
+    if (!nr) {
+        serial_puts("No usable heap. Try the lower-RAM boot entry.\n");
+        return;
     }
-
+    total_system_memory = highest;
     boot_trace("memory map parsed");
-    pmm_init(total_system_memory);
+    pmm_init_regions(regions, nr);
     boot_trace("physical allocator ready");
     ui_init_metrics();
 
@@ -246,7 +288,24 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     selected_theme = 0;
     apply_theme(selected_theme);
     boot_trace("filesystem initialization begin");
-    fs_initialize();
+    ata_init();
+    if (!store_restore()) {
+        fs_initialize();
+        static const char sample[] = "#include <stdint.h>\nuint32_t square(uint32_t n) { return n*n; }\n";
+        struct fs_node *example = create_node("square.c", FS_FILE, current_dir);
+        if (example)
+            fs_node_write(example, 0, sample, sizeof sample - 1);
+        static const char hello[] =
+            "#include <sharkapi.h>\nint main(void) { sharkapi_println(\"Hello, world!\"); return 0; }\n";
+        struct fs_node *demo = create_node("hello.c", FS_FILE, current_dir);
+        if (demo)
+            fs_node_write(demo, 0, hello, sizeof hello - 1);
+        if (current_dir && store_installed())
+            strcpy(current_dir->name, current_user);
+    }
+    ata_report_files();
+    serial_puts(store_status());
+    serial_puts("\n");
     boot_trace("filesystem initialization complete");
     boot_screen_update("Initializing input devices...", 40);
 
@@ -298,12 +357,11 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     extern int fnaf_plugin_command(int argc, char** argv);
     int fnaf_id = plugin_register_builtin("fnaf", fnaf_plugin_init, fnaf_plugin_cleanup, fnaf_plugin_command);
     if(fnaf_id>=0) plugin_unload((uint32_t)fnaf_id);
+    plugin_register_builtin("ide", NULL, NULL, NULL);
     boot_trace("plugin initialization complete");
     boot_screen_update("Detecting hardware...", 70);
 
     boot_screen_update("Probing disks...", 72);
-    boot_trace("ATA probe begin");
-    ata_init();
     boot_trace("ATA probe complete");
 
     boot_screen_update("Initializing audio...", 73);
@@ -322,12 +380,16 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     firewall_init();
     router_init();
     struct fs_node* user_dir = find_node(root, "User");
-    if (user_dir) strcpy(user_dir->name, current_user);
+    if (!store_installed() && user_dir)
+        strcpy(user_dir->name, current_user);
     while (keyboard_getchar() != 0);
     terminal_clear();
     boot_screen_update("Starting desktop environment...", 85);
 
-    boot_setup_run();
+    if (!store_installed())
+        boot_setup_run();
+    else
+        serial_puts("[installed] desktop boot\n");
 
     current_kernel_mode = KERNEL_MODE_DESKTOP;
     boot_trace("desktop initialization begin");
@@ -337,6 +399,8 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     if (boot_theme_id == THEME_ID_KAWAII) kawaii_mode = true;
     apply_theme(selected_theme);
     if (kawaii_mode) desktop_set_wallpaper(WP_ID_KAWAII);
+    desktop_prefs_restore();
+    wm_restore_pref();
     boot_trace("desktop initialization complete");
     boot_screen_update("Ready!", 100);
     boot_trace("boot screen hide begin");
@@ -351,13 +415,14 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         framebuffer_enable_write_combining((uintptr_t)hw_lfbptr,
                                            (uint32_t)(screen_pitch * screen_height));
         size_t fb_bytes = (size_t)(screen_pitch * screen_height);
-        uint32_t* shadow = (uint32_t*)kmalloc(fb_bytes);
+        uint32_t* shadow = (uint32_t*)pmm_shadow(fb_bytes);
         if (shadow) {
             memcpy(shadow, lfbptr, fb_bytes);
             lfbptr = shadow;
         }
     }
 
+    video_init();
     if (boot_to_cli) {
         current_kernel_mode = KERNEL_MODE_CLI;
         redraw_all_panes();
@@ -366,6 +431,9 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
         desktop_render();
     }
 
+    serial_puts("[desktop] free KiB=");
+    serial_putdec((uint32_t)(pmm_free_memory_bytes() >> 10));
+    serial_puts("\n");
     uint32_t last_clock_tick = uptime_ticks;
     uint32_t last_blink_tick = uptime_ticks;
     uint32_t last_game_tick = uptime_ticks;
@@ -377,7 +445,9 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
     uint32_t frames_this_sec = 0;
     int last_rtc_minute = (int)rtc_minutes;
 
+    uint32_t idle_since=uptime_ticks;bool idle_sampled=false;
     while (1) {
+        if(!idle_sampled && uptime_ticks-idle_since>=10*TICKS_PER_SEC){serial_puts("[idle] free KiB=");serial_putdec(pmm_free_memory_bytes()>>10);serial_puts("\n");idle_sampled=true;}
 
         yield();
         uint32_t work_start = uptime_ticks;
@@ -405,7 +475,8 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
                 pointer_moved = true;
 
                 bool repaint = false;
-                if (desktop.start_menu.visible) {
+                if(wm_menu_open()){wm_hover(mx,my);}
+                else if (desktop.start_menu.visible) {
                     start_menu_handle_hover(mx, my);
                     int sx, sy, sw2, sh2;
                     start_menu_get_rect(&sx, &sy, &sw2, &sh2);
@@ -549,7 +620,11 @@ void kmain(uint32_t magic, struct multiboot_info* mb_info) {
 
                                                                    
                                                                        
+        video_tick();
         diskmgmt_tick();
+        static uint32_t prefs_tick;
+        if(uptime_ticks-prefs_tick>=250){prefs_tick=uptime_ticks;desktop_prefs_capture();}
+        store_tick();
 
         if (desktop.dirty) {
             desktop_render();
