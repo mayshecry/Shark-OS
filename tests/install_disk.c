@@ -8,11 +8,13 @@
 static uint8_t pack[16 + SECTORS * 512], drive[(SECTORS + 3) * 512];
 static ata_drive_t disk = {.present = true, .sectors = SECTORS + 3, .install_supported = true};
 static unsigned writes, last_lba;
-static bool fail_write, corrupt, fail_read;
+static bool fail_write, corrupt, fail_read, unreadable_old, fail_verify;
+static int prompts,approve;
+static int confirm(int idx,const char *reason){assert(idx==2 && reason);prompts++;return approve;}
 const ata_drive_t *ata_drive_get(int i) { return i == 2 ? &disk : NULL; }
 bool ata_read_sectors(int i, uint64_t l, uint8_t n, uint8_t *p) {
     assert(i == 2 && n && l + n <= disk.sectors);
-    if (fail_read)
+    if (fail_read || (unreadable_old && !writes) || (fail_verify && writes && l==1))
         return false;
     memcpy(p, drive + 512 * l, n * 512);
     if (writes && corrupt)
@@ -93,6 +95,19 @@ int main(void) {
     put32(tail,0x80000000u);install_ref_set(ref,sizeof ref,ro,512);assert(install_image_ready());
     memset(drive,0,sizeof drive);writes=0;ro[0]^=1;assert(strstr(install_disk(2,progress),"checksum")&&!writes);ro[0]^=1;
     assert(strstr(install_disk(2,progress),"Installed.")&&last_lba==0&&!memcmp(drive,m,SECTORS*512));
+    /* Existing data: default/refusal never writes. Bad media cannot request force. */
+    memset(drive,0,sizeof drive);drive[0]=0xab;writes=prompts=approve=0;
+    assert(strstr(install_disk_confirmed(2,progress,confirm),"Cancelled") && prompts==1 && !writes && drive[0]==0xab);
+    approve=1;ro[0]^=1;assert(strstr(install_disk_confirmed(2,progress,confirm),"checksum") && prompts==1 && !writes);ro[0]^=1;
+    disk.sectors=SECTORS-1;assert(strstr(install_disk_confirmed(2,progress,confirm),"capacity")&&prompts==1&&!writes);disk.sectors=SECTORS+3;
+    drive[SECTORS*512]=37;drive[sizeof drive-1]=11;unreadable_old=true;
+    assert(strstr(install_disk_confirmed(2,progress,confirm),"Installed.")&&prompts==2&&last_lba==0);
+    assert(!memcmp(drive,m,SECTORS*512)&&drive[SECTORS*512]==37&&drive[sizeof drive-1]==0);
+    writes=0;fail_read=true;assert(strstr(install_disk_confirmed(2,progress,confirm),"verification failed")&&last_lba!=0);fail_read=false;
+    writes=0;fail_verify=true;assert(strstr(install_disk_confirmed(2,progress,confirm),"Read-back failed")&&last_lba==1);fail_verify=false;
+    writes=0;fail_write=true;assert(strstr(install_disk_confirmed(2,progress,confirm),"failed")&&last_lba!=0);fail_write=false;
+    writes=0;unreadable_old=false;disk.sectors=SECTORS;corrupt=true;assert(strstr(install_disk_confirmed(2,progress,confirm),"Verification failed")&&last_lba==1);
+    puts("Force confirmation, unreadable preflight, tail invalidation and mandatory read-back passed");
     puts("Reference bounds, literal/zero/kernel sectors and checksum-before-write passed");
     puts("Installer preflight, I/O failures, readback and boot-record commit passed");
 }
