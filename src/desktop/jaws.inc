@@ -8,6 +8,7 @@ static const char *wm_message="Choose the desktop to use at startup.";
 bool wm_jaws(void){return jaws;}
 bool wm_menu_open(void){return jaws && menu_up;}
 const char *wm_status(void){return wm_message;}
+uint32_t wm_solid_color(void){return backdrops[backdrop<4?backdrop:0];}
 int wm_backdrop(void){return backdrop;}
 /* The dock owns the rightmost tile column, including while clients resize. */
 void wm_fit(window_t *w){
@@ -22,7 +23,7 @@ static void wm_apply(bool next){
     start_menu_close();desktop_context_menu_close();menu_up=false;
     if(next){nemo_palette=theme_current;nemo_tile=tiling_enabled;theme_current=&theme_windowmaker;}
     else theme_current=nemo_palette;
-    jaws=next;tiling_set(next?0:nemo_tile);
+    wallpaper_dirty=true;jaws=next;tiling_set(next?0:nemo_tile);
     if(next)for(int i=0;i<desktop.window_count;i++){
         window_t *w=desktop.windows+i;
         if(nemo_tile && w->state==WINDOW_STATE_NORMAL){
@@ -46,11 +47,11 @@ static void wm_save(void){
     wm_message=ok?"Saved for the next boot.":"Active now; preference could not be saved.";
 }
 void wm_set(bool next){wm_apply(next);wm_save();}
-void wm_set_backdrop(int i){if(i>=0 && i<4){backdrop=i;wm_save();}}
+void wm_set_backdrop(int i){if(i>=0 && i<4+3*WP_COUNT){backdrop=i;wallpaper_dirty=true;wm_save();}}
 void wm_restore_pref(void){
     struct fs_node *f=store_installed()?fs_resolve_path("/System/wm.pref"):NULL;
     if(f && f->type==FS_FILE && f->content_len==4){const uint8_t *p=fs_node_data(f);
-        if(p && p[0]==1 && p[1]<=1 && p[2]<=1 && p[3]<4){bool tile=tiling_enabled;wm_apply(p[1]);if(jaws){nemo_tile=p[2];tiling_set(tile);}backdrop=p[3];}}
+        if(p && p[0]==1 && p[1]<=1 && p[2]<=1 && p[3]<4+3*WP_COUNT){bool tile=tiling_enabled;wm_apply(p[1]);if(jaws){nemo_tile=p[2];tiling_set(tile);}backdrop=p[3];}}
     serial_puts(jaws?"[wm] restored JawsWM\n":"[wm] restored NemoWM\n");
 }
 void wm_command(const char *s){
