@@ -1,6 +1,7 @@
 #include "kernel.h"
 #include "desktop.h"
 #include "ata.h"
+#include "store.h"
 
 extern char _kernel_start[];
 extern char _kernel_end[];
@@ -69,31 +70,11 @@ static void dm_refresh_install(void) {
 }
 
 static void dm_format_size(uint64_t bytes, char* out) {
-    uint32_t mb = (uint32_t)(bytes >> 20);
-    if (mb >= 1024) {
-        uint32_t gb = mb / 1024;
-        uint32_t frac = (mb % 1024) * 10 / 1024;
-        int p = 0;
-        int_to_string(gb, out + p);
-        p = (int)strlen(out);
-        out[p++] = '.';
-        out[p++] = (char)('0' + frac);
-        out[p++] = ' ';
-        out[p++] = 'G';
-        out[p++] = 'B';
-        out[p] = '\0';
-    } else {
-        uint32_t frac = (uint32_t)(((bytes >> 10) % 1024) * 10 / 1024);
-        int p = 0;
-        int_to_string(mb, out + p);
-        p = (int)strlen(out);
-        out[p++] = '.';
-        out[p++] = (char)('0' + frac);
-        out[p++] = ' ';
-        out[p++] = 'M';
-        out[p++] = 'B';
-        out[p] = '\0';
-    }
+    uint64_t mib=bytes>>20;
+    int gb=mib>=1024;
+    ata_number(gb?mib/1024:mib,out);
+    unsigned p=strlen(out);out[p++]='.';out[p++]='0'+(gb?((mib%1024)*10/1024):(((bytes>>10)%1024)*10/1024));
+    strcpy(out+p,gb?" GiB":" MiB");
 }
 
 static void dm_layout(window_t* w, int* list_y, int* det_y, int* bar_y,
@@ -164,8 +145,8 @@ void app_window_draw_diskmgmt(window_t* w) {
         else if (dm_hover == i)
             w98_fill(cx + 10, ry, cw - 20, DM_ROW_H - 1, W98_BTNLIGHT);
 
-        char line[64];
-        char sz[16];
+        char line[96];
+        char sz[32];
         dm_format_size(d->bytes, sz);
         strcpy(line, "Disk ");
         char num[8];
@@ -186,7 +167,7 @@ void app_window_draw_diskmgmt(window_t* w) {
         w98_text(line, cx + 14, ry + 5, fg, bg, 1, NULL);
     }
     if (n == 0) {
-        w98_text("No disks detected. Add an IDE drive (qemu -hda disk.img).",
+        w98_text(ata_scan_status(),
                  cx + 14, list_y + 7, W98_GRAYTEXT, W98_WINDOW, 1, NULL);
     }
 
@@ -200,7 +181,7 @@ void app_window_draw_diskmgmt(window_t* w) {
         tmp[7 + strlen(d->model)] = '\0';
         w98_text(tmp, cx + 8, det_y, W98_BTNTEXT, W98_BTNFACE, 1, NULL);
 
-        char sz[16];
+        char sz[32];
         dm_format_size(d->bytes, sz);
         strcpy(tmp, "Capacity: ");
         int p = (int)strlen(tmp);
@@ -210,8 +191,8 @@ void app_window_draw_diskmgmt(window_t* w) {
 
         strcpy(tmp, "Sectors: ");
         p = (int)strlen(tmp);
-        char num[12];
-        int_to_string(d->sectors, num);
+        char num[24];
+        ata_number(d->sectors, num);
         for (int k = 0; num[k]; k++) tmp[p++] = num[k];
         tmp[p] = '\0';
         w98_text(tmp, cx + 8, det_y + 30, W98_BTNTEXT, W98_BTNFACE, 1, NULL);
@@ -227,7 +208,7 @@ void app_window_draw_diskmgmt(window_t* w) {
             w98_text(tmp, cx + 8, det_y + 45, 0xFF008040u, W98_BTNFACE, 1,
                      NULL);
         } else {
-            w98_text("SharkOS install: none", cx + 8, det_y + 45,
+            w98_text(d->install_supported ? "SharkOS install: none" : "Inventory only: unsupported for writes", cx + 8, det_y + 45,
                      W98_GRAYTEXT, W98_BTNFACE, 1, NULL);
         }
     } else {
@@ -266,7 +247,7 @@ void app_window_draw_diskmgmt(window_t* w) {
     if (dm_state == DM_ARMED) ilabel = "Confirm: erase disk!";
     if (busy) ilabel = "Working...";
     w98_button(cx + cw - 178, btn_y, 170, 23, ilabel, dm_hover == 101,
-               d != NULL && !busy, false);
+               d && d->install_supported && !busy, false);
 }
 
 static void kstrcpy(char* dst, const char* src) {
@@ -304,7 +285,8 @@ void app_window_mouse_diskmgmt(window_t* w, int mx, int my, int buttons) {
     }
 
     if (my >= btn_y && my < btn_y + 23 && mx >= cx + 8 && mx < cx + 98) {
-        ata_init();
+        if(!store_installed()) ata_init();
+        ata_report_files();
         n = ata_drive_count();
         if (dm_selected >= n) dm_selected = 0;
         dm_state = DM_IDLE;
@@ -318,7 +300,7 @@ void app_window_mouse_diskmgmt(window_t* w, int mx, int my, int buttons) {
     if (my >= btn_y && my < btn_y + 23 && mx >= cx + cw - 178 &&
         mx < cx + cw - 8) {
         const ata_drive_t* d = ata_drive_get(dm_selected);
-        if (!d) return;
+        if (!d || !d->install_supported) return;
 
         if (dm_state == DM_IDLE) {
             dm_state = DM_ARMED;
