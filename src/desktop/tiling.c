@@ -64,8 +64,8 @@ void tiling_arrange(void) {
     if (n == 0) return;
 
     tile_rect_t r[MAX_WINDOWS];
-    int aw = (int)screen_width - TILING_GAP * 2;
-    int ah = (int)screen_height - (int)TASKBAR_HEIGHT - TILING_GAP * 2;
+    int aw = (int)screen_width - TILING_GAP * 2 - (wm_jaws()?64:0);
+    int ah = (int)screen_height - (wm_jaws()?0:(int)TASKBAR_HEIGHT) - TILING_GAP * 2;
     int count = tiling_compute(n, TILING_GAP, TILING_GAP, aw, ah, TILING_GAP, r);
 
     for (int k = 0; k < count; k++) {
