@@ -26,10 +26,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def do_HEAD(self) -> None:  # noqa: N802
+    def do_HEAD(self) -> None:
         self.do_GET()
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html", "/router_ui.html"):
             self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
@@ -39,7 +39,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self._send(404, b"Not found", "text/plain")
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         self._send(404, b'{"ok":false,"error":"preview only"}',
                    "application/json")
 
