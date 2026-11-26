@@ -138,7 +138,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
                 f"obj.k{i}={i};sum+=obj.k{i};" for i in range(600)
             )
             body = (
-                "<html><body>Pool test<script>"
+                "<html><body><svg width='48' height='48' viewBox='0 0 48 48'><rect width='48' height='48' fill='#1bed87'/></svg>Pool test<script>"
                 + script
                 + f"if(sum===179700)console.log('pool-pass-{number}');</script></body></html>"
             ).encode()
