@@ -2,14 +2,26 @@
 
 #include "browser_internal.h"
 
-static br_rule_t rules[BR_MAX_RULES];
+struct css_scratch {
+    br_rule_t rules[BR_MAX_RULES];
+    br_selpart_t part_pool[BR_MAX_PART_POOL];
+    br_decl_t decl_pool[BR_MAX_DECL_POOL];
+    br_decl_t var_decls[BR_MAX_VAR_DECLS];
+};
+static struct css_scratch *pool;
+int br_css_acquire(void){pool=pmm_lease(sizeof(*pool));return pool!=NULL;}
+#define rules (pool->rules)
+#define part_pool (pool->part_pool)
+#define decl_pool (pool->decl_pool)
+#define var_decls (pool->var_decls)
+
 static int rule_count = 0;
 
-static br_selpart_t part_pool[BR_MAX_PART_POOL];
+
 static int part_pool_used = 0;
-static br_decl_t decl_pool[BR_MAX_DECL_POOL];
+
 static int decl_pool_used = 0;
-static br_decl_t var_decls[BR_MAX_VAR_DECLS];
+
 static int var_decl_count = 0;
 
 #define RULE_BUCKETS 256
