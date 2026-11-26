@@ -99,8 +99,10 @@ static const char *const block_names[BLOCK_COUNT] = {
 
 static uint8_t world[WY][WZ][WX];
 static uint8_t face_mask[WY][WZ][WX];
-static uint8_t col_min_y[WZ][WX];
-static uint8_t col_max_y[WZ][WX];
+#if WY > 31
+#error WY exceeds column visibility mask
+#endif
+static uint32_t opaque_y[WZ][WX], translucent_y[WZ][WX];
 static uint8_t surface_light[WZ][WX];
 
 static uint32_t pixels[RW * RH];
@@ -497,7 +499,8 @@ static int face_is_visible(int x, int y, int z, uint8_t b, int f) {
 
 static void update_column_bounds(int x, int z) {
     if ((unsigned)x >= WX || (unsigned)z >= WZ) return;
-    int min_y = WY, max_y = 0, top_light = 0;
+    uint32_t opaque = 0, translucent = 0;
+    int top_light = 0;
     for (int y = 0; y < WY; y++) {
         uint8_t b = world[y][z][x];
         if (b != AIR) {
@@ -507,21 +510,18 @@ static void update_column_bounds(int x, int z) {
             }
             face_mask[y][z][x] = mask;
             if (mask) {
-                if (y < min_y) min_y = y;
-                if (y > max_y) max_y = y;
+                if (is_translucent_block(b))
+                    translucent |= 1u << y;
+                else
+                    opaque |= 1u << y;
             }
             if (is_opaque_block(b)) top_light = y;
         } else {
             face_mask[y][z][x] = 0;
         }
     }
-    if (min_y > max_y) {
-        col_min_y[z][x] = 1;
-        col_max_y[z][x] = 0;
-    } else {
-        col_min_y[z][x] = (uint8_t)min_y;
-        col_max_y[z][x] = (uint8_t)max_y;
-    }
+    opaque_y[z][x] = opaque;
+    translucent_y[z][x] = translucent;
     surface_light[z][x] = (uint8_t)top_light;
 }
 
@@ -1375,6 +1375,22 @@ static int clip_plane(const camera_vertex_t *in, int count, camera_vertex_t *out
 }
 
 static int clip_frustum(const camera_vertex_t *in, camera_vertex_t *out) {
+    unsigned outside = 0, common = 31;
+    for (int i = 0; i < 4; i++) {
+        int vx = in[i].x * focal_length, vy = in[i].y * focal_length;
+        int hx = (RW / 2 + 2) * in[i].z, hy = (RH / 2 + 2) * in[i].z;
+        unsigned code = (in[i].z < NEAR_CLIP) | ((vx < -hx) << 1) | ((vx > hx) << 2) |
+                        ((vy < -hy) << 3) | ((vy > hy) << 4);
+        outside |= code;
+        common &= code;
+    }
+    if (common)
+        return 0;
+    if (!outside) {
+        for (int i = 0; i < 4; i++)
+            out[i] = in[i];
+        return 4;
+    }
     camera_vertex_t buf_a[12], buf_b[12];
     int n = clip_plane(in, 4, buf_a, 0);
     if (n < 3) return 0;
@@ -2396,7 +2412,9 @@ static void draw_scene(int ox, int oy, int w, int h) {
     if (cam_bz < 0) cam_bz = 0;
     if (cam_bz >= WZ) cam_bz = WZ - 1;
 
-    int max_ring = WX + WZ;
+    int dx_max = cam_bx > WX - 1 - cam_bx ? cam_bx : WX - 1 - cam_bx;
+    int dz_max = cam_bz > WZ - 1 - cam_bz ? cam_bz : WZ - 1 - cam_bz;
+    int max_ring = dx_max + dz_max;
     for (int ring = 0; ring <= max_ring; ring++) {
         int z_min = cam_bz - ring;
         int z_max = cam_bz + ring;
@@ -2410,27 +2428,18 @@ static void draw_scene(int ox, int oy, int w, int h) {
                 int x = (side == 0) ? (cam_bx - rem) : (cam_bx + rem);
                 if ((unsigned)x >= WX) continue;
 
-                int ymin = col_min_y[z][x];
-                int ymax = col_max_y[z][x];
-                if (ymin > ymax) continue;
-
-                int y_split = cam_by;
-                if (y_split < ymin) y_split = ymin;
-                if (y_split > ymax) y_split = ymax;
-
-                for (int y = y_split; y >= ymin; y--) {
-                    uint8_t fm = face_mask[y][z][x];
-                    if (!fm) continue;
-                    uint8_t b = world[y][z][x];
-                    if (is_translucent_block(b)) continue;
-                    render_block(x, y, z, b, fm, cs_r, sn_r, cs_p, sn_p);
+                uint32_t mask = opaque_y[z][x];
+                uint32_t lower = mask & ((2u << cam_by) - 1);
+                uint32_t upper = mask ^ lower;
+                while (lower) {
+                    int y = 31 - __builtin_clz(lower);
+                    lower ^= 1u << y;
+                    render_block(x, y, z, world[y][z][x], face_mask[y][z][x], cs_r, sn_r, cs_p, sn_p);
                 }
-                for (int y = y_split + 1; y <= ymax; y++) {
-                    uint8_t fm = face_mask[y][z][x];
-                    if (!fm) continue;
-                    uint8_t b = world[y][z][x];
-                    if (is_translucent_block(b)) continue;
-                    render_block(x, y, z, b, fm, cs_r, sn_r, cs_p, sn_p);
+                while (upper) {
+                    int y = __builtin_ctz(upper);
+                    upper &= upper - 1;
+                    render_block(x, y, z, world[y][z][x], face_mask[y][z][x], cs_r, sn_r, cs_p, sn_p);
                 }
             }
         }
@@ -2474,16 +2483,9 @@ static void draw_scene(int ox, int oy, int w, int h) {
                 int x = (side == 0) ? (cam_bx - rem) : (cam_bx + rem);
                 if ((unsigned)x >= WX) continue;
 
-                int ymin = col_min_y[z][x];
-                int ymax = col_max_y[z][x];
-                if (ymin > ymax) continue;
-
-                for (int y = ymin; y <= ymax; y++) {
-                    uint8_t fm = face_mask[y][z][x];
-                    if (!fm) continue;
-                    uint8_t b = world[y][z][x];
-                    if (!is_translucent_block(b)) continue;
-                    render_block(x, y, z, b, fm, cs_r, sn_r, cs_p, sn_p);
+                for (uint32_t mask = translucent_y[z][x]; mask; mask &= mask - 1) {
+                    int y = __builtin_ctz(mask);
+                    render_block(x, y, z, world[y][z][x], face_mask[y][z][x], cs_r, sn_r, cs_p, sn_p);
                 }
             }
         }
