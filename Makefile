@@ -1,6 +1,8 @@
 PREFIX = 
 CC = gcc
 HOSTCC ?= gcc
+# An explicit host interpreter also works when make inherits a broken PATH.
+PYTHON ?= $(if $(wildcard /usr/bin/python3),/usr/bin/python3,python3)
 AS = as
 OBJCOPY = $(PREFIX)objcopy
 
@@ -17,7 +19,7 @@ LDFLAGS = -m64 -ffreestanding -Os -nostdlib -no-pie -Wl,-m,elf_x86_64 -Wl,-gc-se
 
 DIRS = arch drivers drivers/audio fs ui shell lib sharkscript doom flappybird smb pong geometrydash fnaf desktop net browser
 
-all: sharkos.iso
+all: sharkos.iso.xz
 
 $(DIRS):
 	mkdir -p $@
@@ -73,7 +75,10 @@ drivers/audio/wav.o: src/drivers/audio/wav.c include/kernel.h include/audio.h | 
 	@printf "  CC  %s\n" "$<"; $(CC) -c src/drivers/audio/wav.c -o drivers/audio/wav.o $(CFLAGS)
 
 
-net/net.o: src/net/net.c include/kernel.h include/net.h include/tls.h include/firewall.h | net
+net/r8169.o: src/net/drivers/r8169.c include/kernel.h include/drivers/r8169.h | net
+	$(CC) -c $< -o $@ $(CFLAGS)
+
+net/net.o: src/net/net.c include/drivers/r8169.h include/kernel.h include/net.h include/tls.h include/firewall.h | net
 	@printf "  CC  %s\n" "$<"; $(CC) -c src/net/net.c -o net/net.o $(CFLAGS)
 
 net/vnic.o: src/net/vnic.c include/kernel.h include/net.h | net
@@ -142,7 +147,7 @@ drivers/mouse.o: src/drivers/mouse.c include/kernel.h | drivers
 drivers/rtc.o: src/drivers/rtc.c include/kernel.h | drivers
 	@printf "  CC  %s\n" "$<"; $(CC) -c src/drivers/rtc.c -o drivers/rtc.o $(CFLAGS)
 
-drivers/ata.o: src/drivers/ata.c include/kernel.h include/ata.h | drivers
+drivers/ata.o: src/drivers/ata.c src/drivers/ata_identify.h include/kernel.h include/ata.h | drivers
 	@printf "  CC  %s\n" "$<"; $(CC) -c src/drivers/ata.c -o drivers/ata.o $(CFLAGS)
 
 fs/fs.o: src/fs/fs.c include/kernel.h | fs
@@ -168,6 +173,17 @@ desktop/bootscreen.o: src/desktop/bootscreen.c include/kernel.h include/desktop.
 
 desktop/windowmanager.o: src/desktop/windowmanager.c include/kernel.h include/desktop.h | desktop
 	@printf "  CC  %s\n" "$<"; $(CC) -c src/desktop/windowmanager.c -o desktop/windowmanager.o $(CFLAGS)
+
+fs/store.o: src/fs/store.c include/store.h include/ata.h include/kernel.h | fs
+	$(CC) $(CFLAGS) -O2 -c $< -o $@
+
+fs/install.o: src/fs/install.c include/install.h include/ata.h | fs
+	$(CC) $(CFLAGS) -O2 -c $< -o $@
+
+ui/installer.o: src/ui/installer.c include/install.h include/ata.h include/kernel.h | ui
+	$(CC) $(CFLAGS) -c $< -o $@
+
+shell/main.o ui/setup.o: include/install.h
 
 ui/setup.o: src/ui/setup.c include/kernel.h include/desktop.h include/theme.h | ui
 	@printf "  CC  %s\n" "$<"; $(CC) -c src/ui/setup.c -o ui/setup.o $(CFLAGS)
@@ -216,7 +232,7 @@ browser/css.o: src/browser/css.c $(BROWSER_HDRS) | browser
 browser/layout.o: src/browser/layout.c $(BROWSER_HDRS) | browser
 	@printf "  CC  %s\n" "$<"; $(CC) -c src/browser/layout.c -o browser/layout.o $(CFLAGS)
 
-browser/js.o: src/browser/js.c $(BROWSER_HDRS) | browser
+browser/js.o: src/browser/js.c src/browser/js_pool.h $(BROWSER_HDRS) | browser
 	@printf "  CC  %s\n" "$<"; $(CC) -c src/browser/js.c -o browser/js.o $(CFLAGS)
 
 browser/browser.o: src/browser/browser.c $(BROWSER_HDRS) | browser
@@ -286,10 +302,10 @@ plugins/sharkcube/sharkcube.plg: plugins/sharkcube/sharkcube_plugin.c include/sh
 	@printf "  CC  %s\n" "$<"; $(CC) -c plugins/sharkcube/sharkcube_plugin.c -o plugins/sharkcube/sharkcube.plg $(CFLAGS)
 
 plugins/sharkcraft/sharkcraft_plugin.o: plugins/sharkcraft/sharkcraft_plugin.c include/sharkapi.h include/desktop.h | plugins/sharkcraft
-	@printf "  CC  %s\n" "$<"; $(CC) -DSHARKCRAFT_BUILTIN -c plugins/sharkcraft/sharkcraft_plugin.c -o plugins/sharkcraft/sharkcraft_plugin.o $(CFLAGS)
+	@printf "  CC  %s\n" "$<"; $(CC) -DSHARKCRAFT_BUILTIN -c plugins/sharkcraft/sharkcraft_plugin.c -o plugins/sharkcraft/sharkcraft_plugin.o $(CFLAGS) -O2 -fwrapv
 
 plugins/sharkcraft/sharkcraft.plg: plugins/sharkcraft/sharkcraft_plugin.c include/sharkapi.h include/desktop.h | plugins/sharkcraft
-	@printf "  CC  %s\n" "$<"; $(CC) -c plugins/sharkcraft/sharkcraft_plugin.c -o plugins/sharkcraft/sharkcraft.plg $(CFLAGS)
+	@printf "  CC  %s\n" "$<"; $(CC) -c plugins/sharkcraft/sharkcraft_plugin.c -o plugins/sharkcraft/sharkcraft.plg $(CFLAGS) -O2 -fwrapv
 
 plugins/fnaf/fnaf_plugin.o: plugins/fnaf/fnaf_plugin.c include/sharkapi.h include/plugin_manager.h include/fnaf.h | plugins/fnaf
 	@printf "  CC  %s\n" "$<"; $(CC) -DFNAF_BUILTIN -c plugins/fnaf/fnaf_plugin.c -o plugins/fnaf/fnaf_plugin.o $(CFLAGS)
@@ -319,7 +335,10 @@ doom/engine/%.o: src/doom/engine/%.c $(DOOM_ENGINE_HEADERS) Makefile
 doom/jump.o: src/doom/doom_jump.s | doom
 	@printf "  AS  %s\n" "$<"; $(AS) $(ASFLAGS) $< -o $@
 
-doom/freedoom_wad.o: src/doom/freedoom_wad.s assets/freedoom1.wad | doom
+doom/data.wz: assets/freedoom1.wad tools/pack_wad.py | doom host-python
+	"$(PYTHON)" tools/pack_wad.py $< $@
+
+doom/freedoom_wad.o: src/doom/freedoom_wad.s doom/data.wz | doom
 	@printf "  AS  %s\n" "$<"; $(AS) $(ASFLAGS) $< -o $@
 
 flappybird/flappybird.o: src/flappybird/flappybird.c include/kernel.h include/flappybird.h | flappybird
@@ -340,24 +359,39 @@ fnaf/fnaf.o: src/fnaf/fnaf.c include/kernel.h include/fnaf.h | fnaf
 sharkscript/shs.o: src/sharkscript/shs.c include/kernel.h include/sharkscript.h | sharkscript
 	@printf "  CC  %s\n" "$<"; $(CC) -c src/sharkscript/shs.c -o sharkscript/shs.o $(CFLAGS)
 
-sharkos.bin: Makefile boot.o arch/early.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o drivers/keyboard.o drivers/pci.o \
-             drivers/mouse.o drivers/rtc.o drivers/ata.o drivers/audio/audio.o drivers/audio/mixer.o drivers/audio/ac97.o drivers/audio/hda.o drivers/audio/pcspkr.o drivers/audio/wav.o fs/fs.o fs/fat16.o ui/terminal.o ui/ui.o ui/setup.o ui/fastfetch.o ui/mouse.o \
+cc-build/native.o: src/cc/compiler.c src/cc/port.c src/cc/port.h src/cc/sections.ld tools/build_native_cc.sh vendor/SHA256SUMS vendor/tinycc.tar.bz2 vendor/musl.tar.gz
+	+CC="$(CC)" /bin/sh tools/build_native_cc.sh
+
+cc-build/headers.inc: cc-build/native.o tools/cc_headers.py include/sharkapi.h
+	"$(PYTHON)" tools/cc_headers.py
+
+cc-build/driver.o: src/cc/driver.c src/cc/port.h cc-build/headers.inc
+	$(CC) $(CFLAGS) -Icc-build -c $< -o $@
+
+cc-build/app.o: src/cc/app.c src/cc/app.h
+	mkdir -p cc-build
+	$(CC) $(CFLAGS) -c $< -o $@
+
+shell/commands.o: src/cc/port.h src/cc/app.h
+
+sharkos.bin sharkos-uefi.bin: cc-build/native.o cc-build/driver.o cc-build/app.o Makefile boot.o arch/early.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o drivers/keyboard.o drivers/pci.o \
+             drivers/mouse.o drivers/rtc.o drivers/ahci.o drivers/ata.o drivers/audio/audio.o drivers/audio/mixer.o drivers/audio/ac97.o drivers/audio/hda.o drivers/audio/pcspkr.o drivers/audio/wav.o fs/fs.o fs/fat16.o fs/install.o fs/store.o ui/installer.o ui/terminal.o ui/ui.o ui/setup.o ui/fastfetch.o ui/mouse.o \
              shell/commands.o shell/spkg.o shell/main.o shell/lite.o \
              lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o \
              plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o plugins/sharkcube/sharkcube_plugin.o plugins/sharkcraft/sharkcraft_plugin.o plugins/fnaf/fnaf_plugin.o sharkscript/shs.o $(DOOM_OBJECTS) flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o fnaf/fnaf.o \
-             desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/tiling.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/theme.o desktop/diskmgmt.o desktop/png.o desktop/gif.o desktop/jpeg.o desktop/webp.o browser/svg.o net/net.o net/vnic.o net/firewall.o net/router.o net/router_http.o net/router_cli.o net/crypto.o net/tls.o \
+             desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/tiling.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/theme.o desktop/diskmgmt.o desktop/png.o desktop/gif.o desktop/jpeg.o desktop/webp.o browser/svg.o net/net.o net/r8169.o net/vnic.o net/firewall.o net/router.o net/router_http.o net/router_cli.o net/crypto.o net/tls.o \
              browser/html.o browser/css.o browser/layout.o browser/js.o browser/browser.o browser/font.o linker.ld
-	@printf "  LD  %s\n" "$@"; $(CC) -T linker.ld -o sharkos.bin $(LDFLAGS) boot.o arch/early.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o \
-		drivers/keyboard.o drivers/pci.o drivers/mouse.o drivers/rtc.o drivers/ata.o drivers/audio/audio.o drivers/audio/mixer.o drivers/audio/ac97.o drivers/audio/hda.o drivers/audio/pcspkr.o drivers/audio/wav.o fs/fs.o fs/fat16.o ui/terminal.o ui/ui.o ui/setup.o \
+	@printf "  LD  %s\n" "$@"; $(CC) $(if $(filter sharkos-uefi.bin,$@),-Xlinker --defsym=shark_load_base=0x1000000) -T linker.ld -o $@ $(LDFLAGS) cc-build/native.o cc-build/driver.o cc-build/app.o boot.o arch/early.o arch/io.o arch/interrupts.o arch/cpu.o arch/mtrr.o \
+		drivers/keyboard.o drivers/pci.o drivers/mouse.o drivers/rtc.o drivers/ahci.o drivers/ata.o drivers/audio/audio.o drivers/audio/mixer.o drivers/audio/ac97.o drivers/audio/hda.o drivers/audio/pcspkr.o drivers/audio/wav.o fs/fs.o fs/fat16.o fs/install.o fs/store.o ui/installer.o ui/terminal.o ui/ui.o ui/setup.o \
 		ui/fastfetch.o ui/mouse.o shell/commands.o shell/spkg.o shell/main.o shell/lite.o lib/lib.o lib/globals.o lib/pmm.o lib/elf.o lib/sharkapi.o lib/plugin_manager.o plugins/python-interp.o plugins/doom/doom_plugin.o plugins/flappybird/flappybird_plugin.o plugins/pong/pong_plugin.o plugins/smb/smb_plugin.o plugins/geometrydash/geometrydash_plugin.o plugins/sharkcube/sharkcube_plugin.o plugins/sharkcraft/sharkcraft_plugin.o plugins/fnaf/fnaf_plugin.o sharkscript/shs.o $(DOOM_OBJECTS) flappybird/flappybird.o pong/pong.o smb/smb.o geometrydash/geometrydash.o fnaf/fnaf.o \
-		desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/tiling.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/theme.o desktop/diskmgmt.o desktop/png.o desktop/gif.o desktop/jpeg.o desktop/webp.o browser/svg.o net/net.o net/vnic.o net/firewall.o net/router.o net/router_http.o net/router_cli.o net/crypto.o net/tls.o \
+		desktop/bootscreen.o desktop/windowmanager.o desktop/appwindows.o desktop/tiling.o desktop/startmenu.o desktop/desktop.o desktop/icons.o desktop/win98_widgets.o desktop/theme.o desktop/diskmgmt.o desktop/png.o desktop/gif.o desktop/jpeg.o desktop/webp.o browser/svg.o net/net.o net/r8169.o net/vnic.o net/firewall.o net/router.o net/router_http.o net/router_cli.o net/crypto.o net/tls.o \
 		browser/html.o browser/css.o browser/layout.o browser/js.o browser/browser.o browser/font.o -lgcc
 
 LIMINE_DIR ?= limine
 LIMINE_BIOS_ASSETS = $(LIMINE_DIR)/limine $(LIMINE_DIR)/limine-bios.sys $(LIMINE_DIR)/limine-bios-cd.bin
 LIMINE_UEFI_ASSETS = $(LIMINE_DIR)/limine-uefi-cd.bin $(LIMINE_DIR)/BOOTX64.EFI $(LIMINE_DIR)/BOOTIA32.EFI
 
-SERVER32_C_SOURCES = src/arch/early.c src/arch/cpu.c src/arch/io32.c src/arch/div64.c src/drivers/pci.c src/fs/fs.c src/lib/pmm.c src/server/main.c src/server/containers.c src/server/globals.c src/server/lib.c src/server/interrupts.c src/server/console.c src/server/command_stubs.c src/shell/commands.c src/net/net.c src/net/crypto.c src/net/tls.c src/net/httpd.c src/net/ed25519.c src/net/ssh.c src/net/sftp.c src/net/vnic.c src/net/firewall.c src/net/router.c src/net/router_http.c src/net/router_cli.c
+SERVER32_C_SOURCES = src/drivers/ahci.c src/drivers/ata.c src/fs/install.c src/fs/store.c src/arch/early.c src/arch/cpu.c src/arch/io32.c src/arch/div64.c src/drivers/pci.c src/fs/fs.c src/lib/pmm.c src/server/main.c src/server/containers.c src/server/globals.c src/server/lib.c src/server/interrupts.c src/server/console.c src/server/command_stubs.c src/shell/commands.c src/net/net.c src/net/drivers/r8169.c src/net/crypto.c src/net/tls.c src/net/httpd.c src/net/ed25519.c src/net/ssh.c src/net/sftp.c src/net/vnic.c src/net/firewall.c src/net/router.c src/net/router_http.c src/net/router_cli.c
 SERVER32_OBJECTS = $(patsubst src/%.c,server32-build/%.o,$(SERVER32_C_SOURCES))
 SERVER32_CFLAGS = -m32 -march=i386 -std=gnu99 -ffreestanding -Os -Wall -Wextra -fno-pie -fno-pic -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables -fno-exceptions -fomit-frame-pointer -fno-builtin -mno-sse -mno-mmx -Iinclude -DSERVER_IMAGE -DSHARKOS_32BIT -ffunction-sections -fdata-sections -w
 SERVER32_LDFLAGS = -m32 -ffreestanding -Os -nostdlib -no-pie -Wl,-m,elf_i386 -Wl,-gc-sections -Wl,--strip-all
@@ -371,6 +405,7 @@ server32-build/server/main.o: include/firewall.h include/router.h
 server32-build/shell/commands.o: include/firewall.h include/router.h
 server32-build/net/router.o server32-build/net/router_http.o server32-build/net/router_cli.o: include/router.h
 server32-build/net/router_http.o: src/net/router_ui_html.h
+server32-build/net/drivers/r8169.o server32-build/net/net.o: include/drivers/r8169.h
 server32-build/net/net.o: include/firewall.h
 server32-build/server/console.o: include/term_font16_data.h
 
@@ -381,53 +416,50 @@ server32-build/boot.o: boot32.s
 sharkos-server32.bin: Makefile boot32.s linker32.ld $(SERVER32_OBJECTS) server32-build/boot.o
 	@printf "  LD  %s\n" "$@"; $(CC) -m32 -T linker32.ld -o $@ $(SERVER32_LDFLAGS) server32-build/boot.o $(SERVER32_OBJECTS)
 
-sharkos-server32.iso: sharkos-server32.bin limine-server32.conf Makefile $(LIMINE_BIOS_ASSETS)
+sharkos-server32.iso: tools/server_image.py tools/install_image.py sharkos-server32.bin limine-server32.conf Makefile $(LIMINE_BIOS_ASSETS) | host-python host-limine
 	mkdir -p isodir-server32/boot/limine
 	cp sharkos-server32.bin isodir-server32/boot/sharkos-server32.bin
-	cp limine-server32.conf isodir-server32/boot/limine/limine.conf
 	cp $(LIMINE_DIR)/limine-bios.sys isodir-server32/boot/limine/
 	cp $(LIMINE_DIR)/limine-bios-cd.bin isodir-server32/boot/limine/
-	@printf "  ISO %s\n" "$@"; xorriso -as mkisofs -quiet -R -r -J -b boot/limine/limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table isodir-server32 -o sharkos-server32.iso
-	chmod +x $(LIMINE_DIR)/limine
+	"$(PYTHON)" tools/server_image.py limine-server32.conf isodir-server32 $(LIMINE_DIR)/limine install-build-server32
+	@printf "  ISO %s\n" "$@"; xorriso -as mkisofs -quiet -R -r -J -b boot/limine/limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table -partition_offset 16 --protective-msdos-label isodir-server32 -o sharkos-server32.iso
 	$(LIMINE_DIR)/limine bios-install sharkos-server32.iso
 
-server32: sharkos-server32.iso
+server32: sharkos-server32.iso.xz
 
-sharkos-server.bin: Makefile boot.o arch/early.o arch/io.o arch/cpu.o drivers/pci.o fs/fs.o lib/pmm.o server-build/main.o server-build/globals.o server-build/lib.o server-build/interrupts.o server-build/console.o server-build/commands.o server-build/command_stubs.o server-build/containers.o net/net.o net/vnic.o net/firewall.o net/router.o net/router_http.o net/router_cli.o net/crypto.o net/tls.o net/httpd.o net/ed25519.o net/ssh.o net/sftp.o linker.ld
-	@printf "  LD  %s\n" "$@"; $(CC) -T linker.ld -o sharkos-server.bin $(LDFLAGS) boot.o arch/early.o arch/io.o arch/cpu.o drivers/pci.o fs/fs.o lib/pmm.o server-build/main.o server-build/globals.o server-build/lib.o server-build/interrupts.o server-build/console.o server-build/commands.o server-build/command_stubs.o server-build/containers.o net/net.o net/vnic.o net/firewall.o net/router.o net/router_http.o net/router_cli.o net/crypto.o net/tls.o net/httpd.o net/ed25519.o net/ssh.o net/sftp.o -lgcc
+sharkos-server.bin sharkos-server-uefi.bin: Makefile boot.o arch/early.o arch/io.o arch/cpu.o drivers/pci.o drivers/ahci.o drivers/ata.o fs/install.o fs/store.o fs/fs.o lib/pmm.o server-build/main.o server-build/globals.o server-build/lib.o server-build/interrupts.o server-build/console.o server-build/commands.o server-build/command_stubs.o server-build/containers.o net/net.o net/r8169.o net/vnic.o net/firewall.o net/router.o net/router_http.o net/router_cli.o net/crypto.o net/tls.o net/httpd.o net/ed25519.o net/ssh.o net/sftp.o linker.ld
+	@printf "  LD  %s\n" "$@"; $(CC) $(if $(filter sharkos-server-uefi.bin,$@),-Xlinker --defsym=shark_load_base=0x1000000) -T linker.ld -o $@ $(LDFLAGS) boot.o arch/early.o arch/io.o arch/cpu.o drivers/pci.o drivers/ahci.o drivers/ata.o fs/install.o fs/store.o fs/fs.o lib/pmm.o server-build/main.o server-build/globals.o server-build/lib.o server-build/interrupts.o server-build/console.o server-build/commands.o server-build/command_stubs.o server-build/containers.o net/net.o net/r8169.o net/vnic.o net/firewall.o net/router.o net/router_http.o net/router_cli.o net/crypto.o net/tls.o net/httpd.o net/ed25519.o net/ssh.o net/sftp.o -lgcc
 
-sharkos-server.iso: sharkos-server.bin limine-server.conf Makefile $(LIMINE_BIOS_ASSETS) $(LIMINE_UEFI_ASSETS)
+sharkos-server.iso: tools/server_image.py tools/install_image.py sharkos-server-uefi.bin sharkos-server.bin limine-server.conf Makefile $(LIMINE_BIOS_ASSETS) $(LIMINE_UEFI_ASSETS) | host-python host-limine
 	mkdir -p isodir-server/boot/limine
 	mkdir -p isodir-server/EFI/BOOT
 	cp sharkos-server.bin isodir-server/boot/sharkos-server.bin
-	cp limine-server.conf isodir-server/boot/limine/limine.conf
-	cp limine-server.conf isodir-server/limine.conf
-	cp limine-server.conf isodir-server/boot/limine/limine.cfg
-	cp limine-server.conf isodir-server/limine.cfg
-	cp limine-server.conf isodir-server/boot/limine.cfg
+	cp sharkos-server-uefi.bin isodir-server/boot/
 	cp $(LIMINE_DIR)/limine-bios.sys isodir-server/boot/limine/
 	cp $(LIMINE_DIR)/limine-bios-cd.bin isodir-server/boot/limine/
 	cp $(LIMINE_DIR)/limine-uefi-cd.bin isodir-server/boot/limine/
 	cp $(LIMINE_DIR)/BOOTX64.EFI isodir-server/EFI/BOOT/BOOTX64.EFI
 	cp $(LIMINE_DIR)/BOOTIA32.EFI isodir-server/EFI/BOOT/BOOTIA32.EFI
+	"$(PYTHON)" tools/server_image.py limine-server.conf isodir-server $(LIMINE_DIR)/limine install-build-server
 	@printf "  ISO %s\n" "$@"; xorriso -as mkisofs -quiet -R -r -J \
 		-b boot/limine/limine-bios-cd.bin \
 		-no-emul-boot -boot-load-size 4 -boot-info-table \
 		--efi-boot boot/limine/limine-uefi-cd.bin \
 		-efi-boot-part --efi-boot-image --protective-msdos-label \
 		isodir-server -o sharkos-server.iso
-	chmod +x $(LIMINE_DIR)/limine
 	$(LIMINE_DIR)/limine bios-install sharkos-server.iso
 
-server: sharkos-server.iso
+server: sharkos-server.iso.xz
 
-sharkos.iso: Makefile sharkos.bin limine.conf $(LIMINE_BIOS_ASSETS) $(LIMINE_UEFI_ASSETS) plugins/sharkcube/sharkcube.plg plugins/sharkcraft/sharkcraft.plg plugins/fnaf/fnaf.plg
+sharkos.iso: tools/pack_install_refs.py licenses/TinyCC-LGPL-2.1.txt licenses/musl-COPYRIGHT.txt tools/live_config.py tools/install_image.py Makefile sharkos.bin sharkos-uefi.bin limine.conf $(LIMINE_BIOS_ASSETS) $(LIMINE_UEFI_ASSETS) plugins/sharkcube/sharkcube.plg plugins/sharkcraft/sharkcraft.plg plugins/fnaf/fnaf.plg
 	mkdir -p isodir/boot/limine
 	mkdir -p isodir/boot
 	mkdir -p isodir/EFI/BOOT
+	mkdir -p isodir/licenses
+	cp licenses/TinyCC-LGPL-2.1.txt licenses/musl-COPYRIGHT.txt isodir/licenses/
 	mkdir -p isodir/System/Plugins
 	mkdir -p isodir/pc
-	cp sharkos.bin isodir/boot/sharkos.bin
+	rm -f isodir/boot/sharkos.gz isodir/boot/sharkos.bin
 	cp limine.conf isodir/boot/limine/limine.conf
 	cp limine.conf isodir/limine.conf
 	cp limine.conf isodir/boot/limine/limine.cfg
@@ -449,19 +481,28 @@ sharkos.iso: Makefile sharkos.bin limine.conf $(LIMINE_BIOS_ASSETS) $(LIMINE_UEF
 	cp plugins/sharkcraft/sharkcraft.plg isodir/System/Plugins/sharkcraft.plg
 	cp plugins/fnaf/fnaf.plg isodir/System/Plugins/fnaf.plg
 	cp pc/9fc3fc59d52dc24748feb8836feded7e.png isodir/pc/
+	mkdir -p install-build
+	rm -f isodir/boot/install.pack.gz isodir/boot/install.pack isodir/boot/sharkos.bin
+	rm -f isodir/boot/sharkos-uefi.gz
+	cp sharkos-uefi.bin isodir/boot/desktop.bin
+	"$(PYTHON)" tools/live_config.py limine.conf isodir disk
+	"$(PYTHON)" tools/install_image.py isodir $(LIMINE_DIR)/limine install-build/install.pack
+	gzip -n -6 -c isodir/boot/desktop.bin > isodir/boot/sharkos-uefi.gz
+	rm -f isodir/boot/desktop.bin
+	"$(PYTHON)" tools/pack_install_refs.py install-build/install.pack sharkos-uefi.bin isodir/boot/install.pack.gz
+	"$(PYTHON)" tools/live_config.py limine.conf isodir live
 	@printf "  ISO %s\n" "$@"; xorriso -as mkisofs -quiet -R -r -J \
 		-b boot/limine/limine-bios-cd.bin \
 		-no-emul-boot -boot-load-size 4 -boot-info-table \
 		--efi-boot boot/limine/limine-uefi-cd.bin \
 		-efi-boot-part --efi-boot-image --protective-msdos-label \
 		isodir -o sharkos.iso
-	chmod +x $(LIMINE_DIR)/limine
 	$(LIMINE_DIR)/limine bios-install sharkos.iso
 
 clean:
 	@printf "[CLEAN] Removing generated build outputs\n"
-	rm -rf isodir isodir-server isodir-server32 server server-build server32-build arch drivers fs ui shell lib sharkscript doom flappybird pong smb geometrydash fnaf desktop net browser
-	rm -f *.o sharkos.bin sharkos.iso sharkos-server.bin sharkos-server.iso sharkos-server32.bin sharkos-server32.iso sharkscript plugins/*.o plugins/flappybird/*.o plugins/pong/*.o plugins/smb/*.o plugins/geometrydash/*.o plugins/sharkcube/*.o plugins/sharkcube/*.plg plugins/sharkcraft/*.o plugins/sharkcraft/*.plg plugins/fnaf/*.o plugins/fnaf/*.plg
+	rm -rf cc-build install-build-server install-build-server32 install-build isodir isodir-server isodir-server32 server server-build server32-build arch drivers fs ui shell lib sharkscript doom flappybird pong smb geometrydash fnaf desktop net browser
+	rm -f *.iso.xz *.iso.xz.tmp *.o sharkos-server-uefi.bin sharkos-uefi.bin sharkos.bin sharkos.iso sharkos-server.bin sharkos-server.iso sharkos-server32.bin sharkos-server32.iso sharkscript plugins/*.o plugins/flappybird/*.o plugins/pong/*.o plugins/smb/*.o plugins/geometrydash/*.o plugins/sharkcube/*.o plugins/sharkcube/*.plg plugins/sharkcraft/*.o plugins/sharkcraft/*.plg plugins/fnaf/*.o plugins/fnaf/*.plg
 
 .PHONY: all clean server server32 $(DIRS)
 gcc-info:
@@ -491,11 +532,99 @@ test-sftp:
 test-router:
 	@printf "  TEST %s\n" "$@"; $(HOSTCC) -fno-builtin -std=gnu99 -Iinclude tests/router_test.c src/net/router.c src/net/router_cli.c src/net/firewall.c -o /tmp/sharkos-router-test
 	/tmp/sharkos-router-test
-	python3 -c "import json; json.load(open('/tmp/sharkos-router-status.json')); print('  JSON status payload is valid')"
+	"$(PYTHON)" -c "import json; json.load(open('/tmp/sharkos-router-status.json')); print('  JSON status payload is valid')"
 	rm -f /tmp/sharkos-router-test /tmp/sharkos-router-status.json
 
 router-ui:
 	@printf "  GEN src/net/router_ui_html.h\n"
-	python3 tools/gen_router_ui.py
+	"$(PYTHON)" tools/gen_router_ui.py
 
 .PHONY: gcc-info sharkcc test-vnic test-firewall test-sftp test-router router-ui
+
+test-native-cc: cc-build/driver.o cc-build/native.o
+	$(HOSTCC) -no-pie -Isrc/cc tests/native_cc.c $^ -o cc-build/test-native
+	cc-build/test-native cc-build/test-object.o
+	$(HOSTCC) -no-pie cc-build/test-object.o -o cc-build/test-object
+	cc-build/test-object
+
+.PHONY: test-native-cc
+
+test-install:
+	mkdir -p install-build
+	$(HOSTCC) -O2 -Iinclude tests/install_disk.c src/fs/install.c -o install-build/test-install
+	install-build/test-install
+
+test-sharkcraft:
+	mkdir -p cc-build
+	$(HOSTCC) -O2 -fno-builtin -fwrapv -mgeneral-regs-only -ffunction-sections -fdata-sections -Wl,--gc-sections -Iinclude tests/sharkcraft_frames.c -o cc-build/test-craft
+	test "$$(cc-build/test-craft)" = 884125f8cd7e2516
+
+.PHONY: test-install test-sharkcraft
+
+test-framebuffer:
+	mkdir -p cc-build
+	$(HOSTCC) -Os -ffreestanding -fno-builtin -ffunction-sections -fdata-sections -Wl,--gc-sections -Iinclude tests/framebuffer.c src/ui/terminal.c -o cc-build/test-framebuffer
+	test "$$(cc-build/test-framebuffer)" = 1a45c19a45c62de5
+
+test-installed-boot: sharkos.iso
+	"$(PYTHON)" tests/qemu_install.py
+
+.PHONY: test-framebuffer test-installed-boot
+
+.PHONY: test-desktop-memory
+test-desktop-memory:
+	mkdir -p cc-build
+	$(HOSTCC) -O2 -Wall -Wextra tests/js_pool.c -o cc-build/test-js-pool
+	cc-build/test-js-pool
+	$(HOSTCC) -O2 -ffreestanding -fno-builtin -Iinclude tests/pmm_regions.c src/lib/pmm.c -o cc-build/test-pmm-regions
+	cc-build/test-pmm-regions
+
+.PHONY: test-realtek
+test-realtek:
+	mkdir -p cc-build
+	$(HOSTCC) -no-pie -fno-builtin -Iinclude tests/realtek.c -o cc-build/test-realtek
+	cc-build/test-realtek
+
+.PHONY: test-native-link
+test-native-link: cc-build/driver.o cc-build/native.o cc-build/app.o
+	$(HOSTCC) -no-pie -Isrc/cc tests/native_link.c $^ -o cc-build/test-native-link
+	cc-build/test-native-link
+
+.PHONY: test-identify
+test-identify:
+	mkdir -p cc-build
+	$(HOSTCC) -Iinclude tests/identify.c -o cc-build/test-identify
+	cc-build/test-identify
+
+server32-build/drivers/ata.o: include/ata.h src/drivers/ata_identify.h
+server-build/main.o server32-build/server/main.o: include/install.h include/store.h include/ata.h
+
+drivers/ahci.o: src/drivers/ahci.c src/drivers/ahci.h src/drivers/ata_identify.h include/ata.h include/kernel.h | drivers
+	$(CC) $(CFLAGS) -c $< -o $@
+drivers/ata.o server32-build/drivers/ata.o server32-build/drivers/ahci.o: src/drivers/ahci.h include/ata.h
+server32-build/drivers/ahci.o: src/drivers/ata_identify.h
+%.iso.xz: %.iso
+	xz -T2 -3c $< > $@.tmp && mv $@.tmp $@
+
+desktop/desktop.o: src/desktop/preferences.inc
+
+desktop/desktop.o: src/desktop/video.inc
+
+.PHONY: host-python host-limine
+host-python:
+	@"$(PYTHON)" -c 'import sys; sys.exit(sys.version_info < (3, 8))' || { echo "Build needs host Python 3.8+. Install Python 3 or use make PYTHON=/absolute/path/to/python3" >&2; exit 1; }
+
+host-limine: $(LIMINE_DIR)/limine
+	@test -x "$<" || chmod u+x "$<"
+
+sharkos.iso: | host-python host-limine
+cc-build/native.o cc-build/headers.inc: | host-python
+
+desktop/desktop.o: src/desktop/jaws.inc src/desktop/jaws_tiles.inc
+desktop/appwindows.o: src/desktop/settings.inc
+
+WP_SOURCES = include/wallpaper_data.h include/kawaii_wallpaper_data.h include/wallpaper_cottage_data.h include/wallpaper_sakura_data.h include/wallpaper_neko_data.h include/wallpaper_suzuna_data.h
+desktop/wp_pack.h: tools/pack_wallpapers.py $(WP_SOURCES) | desktop host-python
+	"$(PYTHON)" $< $@ $(WP_SOURCES)
+
+desktop/desktop.o: desktop/wp_pack.h
