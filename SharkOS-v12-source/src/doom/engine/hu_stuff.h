@@ -1,0 +1,59 @@
+  
+                                           
+                                      
+  
+                                                                
+                                                              
+                                                                 
+                                                         
+  
+                                                                  
+                                                                 
+                                                                
+                                               
+  
+                                
+  
+
+#ifndef __HU_STUFF_H__
+#define __HU_STUFF_H__
+
+#include "d_event.h"
+
+
+  
+                              
+  
+#define HU_FONTSTART	'!'	                            
+#define HU_FONTEND	'_'	                           
+
+                                 
+#define HU_FONTSIZE	(HU_FONTEND - HU_FONTSTART + 1)	
+
+#define HU_BROADCAST	5
+
+#define HU_MSGX		0
+#define HU_MSGY		0
+#define HU_MSGWIDTH	64	                
+#define HU_MSGHEIGHT	1	           
+
+#define HU_MSGTIMEOUT	(4*TICRATE)
+
+  
+                
+  
+
+void HU_Init(void);
+void HU_Start(void);
+
+boolean HU_Responder(event_t* ev);
+
+void HU_Ticker(void);
+void HU_Drawer(void);
+char HU_dequeueChatChar(void);
+void HU_Erase(void);
+
+extern char *chat_macros[10];
+
+#endif
+
