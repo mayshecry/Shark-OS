@@ -47,6 +47,24 @@ void keyboard_init(void) {
 }
 
 void keyboard_handler(uint8_t scancode) {
+    static bool f2, chord;
+    if (!extended_scancode && (scancode == 0x3c || scancode == 0xbc))
+        f2 = scancode == 0x3c;
+    if (!extended_scancode && scancode == 0xa2 && chord) {
+        chord = false;
+        return;
+    }
+    if (!extended_scancode && scancode == 0x22 && (f2 || chord) && current_kernel_mode == KERNEL_MODE_DESKTOP) {
+        if (!chord) {
+            int next = (key_head + 1) % 256;
+            if (next != key_tail) {
+                key_buffer[key_head] = 0x1c;
+                key_head = next;
+            }
+        }
+        chord = true;
+        return;
+    }
     doom_keyboard_scancode(scancode, extended_scancode);
     if (scancode == 0xE0) {
         extended_scancode = 1;
@@ -99,6 +117,11 @@ void keyboard_handler(uint8_t scancode) {
         }
     }
 
+    if (ctrl_pressed && current_kernel_mode == KERNEL_MODE_DESKTOP) {
+        if (c=='a' || c=='A') c=1;
+        if (c=='c' || c=='C') c=3;
+        if (c=='v' || c=='V') c=22;
+    }
     if (c > 0) {
         int next = (key_head + 1) % 256;
         if (next != key_tail) {
