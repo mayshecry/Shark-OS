@@ -2,6 +2,7 @@
 
 #include "kernel.h"
 #include "desktop.h"
+#include "store.h"
 #include "net.h"
 #include "win98_theme.h"
 #include "plugin_manager.h"
@@ -11,12 +12,7 @@
 #include "pong.h"
 #include "geometrydash.h"
 #include "fnaf.h"
-#include "wallpaper_data.h"
-#include "kawaii_wallpaper_data.h"
-#include "wallpaper_cottage_data.h"
-#include "wallpaper_sakura_data.h"
-#include "wallpaper_neko_data.h"
-#include "wallpaper_suzuna_data.h"
+#include "../../desktop/wp_pack.h"
 #include "wallpaper_thumbs_data.h"
 #include "icon_data.h"
 #include "font.h"
@@ -50,7 +46,7 @@ void desktop_set_wallpaper_mode(int mode) {
 
 typedef struct {
     const char* name;
-    const uint32_t* pixels;
+    const uint8_t* pixels;
     int w;
     int h;
     const uint32_t* thumb;
@@ -156,6 +152,7 @@ static int desktop_icon_label_rows(const char* label) {
 }
 
 int desktop_icon_hit_test(int mx, int my) {
+    if(wm_jaws())return -1;
     if (!desktop.show_desktop_icons) return -1;
     for (int i = 0; i < desktop.icon_count; i++) {
         desktop_icon_t* icon = &desktop.icons[i];
@@ -182,12 +179,7 @@ void desktop_set_show_icons(bool show) {
 
 void desktop_icon_launch_offset(window_type_t type, const char* title) {
      
-    if (type == WINDOW_TYPE_FNAF) {
-        plugin_t* pf = plugin_get_by_name("fnaf");
-        if (!pf || !pf->loaded) {
-            plugin_load("fnaf");
-        }
-    }
+    if (!desktop_app_available(type)) return;
     int win_w = 400, win_h = 300;
     int win_x = 40 + (desktop.window_count * 30) % 180;
     int win_y = 30 + (desktop.window_count * 30) % 120;
@@ -200,9 +192,11 @@ void desktop_icon_launch_offset(window_type_t type, const char* title) {
     } else if (type == WINDOW_TYPE_TASKMANAGER) {
         win_w = 420; win_h = 360;
     } else if (type == WINDOW_TYPE_SETTINGS) {
-        win_w = 400; win_h = 545;
+        win_w = 416; win_h = 376;
     } else if (type == WINDOW_TYPE_DISKMGMT) {
         win_w = 540; win_h = 400;
+    } else if (type == WINDOW_TYPE_FILEMANAGER) {
+        win_w=650; win_h=420;
     } else if (type == WINDOW_TYPE_NOTEPAD) {
         win_w = 720; win_h = 500;
     } else if (type == WINDOW_TYPE_FAQ) {
@@ -292,32 +286,39 @@ void desktop_icon_launch(int idx) {
     desktop_icon_launch_offset(desktop.icons[idx].type, desktop.icons[idx].label);
 }
 
-static uint32_t wp_bilerp(const uint32_t* s, int sw, int sh, int sxf, int syf);
+static uint32_t wp_bilerp(const uint32_t* row0,const uint32_t *row1, int sw, int sxf, int syf);
 
+/* Two alternating strips cover bilinear sampling across a strip boundary. */
+static const uint8_t *strip_source[2];static int strip_index[2];
+static uint32_t strip_pixels[2][WP_STRIDE_MAX*8];
+extern long inflate_zlib(const uint8_t*,size_t,uint8_t*,size_t);
+static uint32_t strip_offset(const uint8_t *p){return p[0]|(p[1]<<8)|(p[2]<<16)|((uint32_t)p[3]<<24);}
+static const uint32_t *wp_row(const uint8_t* packed,int w,int h,int y){
+ int i=y/8,slot=i&1;uint32_t *px=strip_pixels[slot];
+ if(strip_source[slot]!=packed||strip_index[slot]!=i){
+    unsigned a=strip_offset(packed+4*i),b=strip_offset(packed+4*i+4);
+    int rows=h-i*8;if(rows>8)rows=8;size_t n=rows*w*4;
+    if(inflate_zlib(packed+a,b-a,(uint8_t*)px,n)!=(long)n)memset(px,0,n);
+    else for(int r=0;r<rows;r++)for(int x=1;x<w;x++)px[r*w+x]+=px[r*w+x-1];
+    strip_source[slot]=packed;strip_index[slot]=i;
+ }return px+(y%8)*w;
+}
 static void desktop_wallpaper_rebuild_cache(int w, int h) {
     if (w <= 0 || h <= 0) return;
 
-    if (wallpaper_cache &&
-        (wallpaper_cache_w != w || wallpaper_cache_h != h)) {
-        kfree(wallpaper_cache);
-        wallpaper_cache = NULL;
+    static size_t capacity=0;
+    size_t need=(size_t)w*h;
+    if(need>capacity){
+        size_t cap=capacity && need<=1920u*1080 ? 1920u*1080 : need;
+        uint32_t *newbuf=kmalloc(cap*sizeof(uint32_t));
+        if(!newbuf){wallpaper_cache_w=wallpaper_cache_h=0;return;}
+        wallpaper_cache=newbuf;capacity=cap;
     }
-    if (!wallpaper_cache) {
-        wallpaper_cache = (uint32_t*)kmalloc((size_t)w * (size_t)h *
-                                             sizeof(uint32_t));
-        if (!wallpaper_cache) {
-            wallpaper_cache_w = 0;
-            wallpaper_cache_h = 0;
-            return;
-        }
-        wallpaper_cache_w = w;
-        wallpaper_cache_h = h;
-    }
-
+    wallpaper_cache_w=w;wallpaper_cache_h=h;
     int id = desktop.wallpaper_id;
     if (id < 0 || id >= WP_COUNT) id = WP_ID_CLASSIC;
     const wallpaper_entry_t* e = &wallpaper_catalog[id];
-    const uint32_t* src = e->pixels;
+    const uint8_t* src = e->pixels;
     int sw = e->w;
     int sh = e->h;
     if (!src || sw < 2 || sh < 2) return;
@@ -368,6 +369,7 @@ static void desktop_wallpaper_rebuild_cache(int w, int h) {
         else if (fit == W98_WALLFIT_FIT) syf = step * (uint64_t)(y - by0);
         else syf = step_y * (uint64_t)y;
         if (syf > max_y) syf = max_y;
+        int sy=syf>>16;const uint32_t *row0=wp_row(src,sw,sh,sy),*row1=wp_row(src,sw,sh,sy+1<sh?sy+1:sy);
 
         for (int x = 0; x < w; x++) {
             if (fit == W98_WALLFIT_FIT && (x < bx0 || x >= bx1)) {
@@ -381,28 +383,24 @@ static void desktop_wallpaper_rebuild_cache(int w, int h) {
             else sxf = step_x * (uint64_t)x;
             if (sxf > max_x) sxf = max_x;
 
-            drow[x] = wp_bilerp(src, sw, sh, (int)sxf, (int)syf);
+            drow[x] = wp_bilerp(row0,row1,sw, (int)sxf, (int)syf);
         }
     }
 }
 
                                                                      
-static uint32_t wp_bilerp(const uint32_t* s, int sw, int sh, int sxf, int syf) {
+static uint32_t wp_bilerp(const uint32_t* row0,const uint32_t *row1, int sw, int sxf, int syf) {
     int x0 = sxf >> 16;
-    int y0 = syf >> 16;
     int fx = sxf & 0xFFFF;
     int fy = syf & 0xFFFF;
     if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
     if (x0 > sw - 1) x0 = sw - 1;
-    if (y0 > sh - 1) y0 = sh - 1;
     int x1 = (x0 + 1 < sw) ? x0 + 1 : sw - 1;
-    int y1 = (y0 + 1 < sh) ? y0 + 1 : sh - 1;
 
-    uint32_t c00 = s[y0 * sw + x0];
-    uint32_t c10 = s[y0 * sw + x1];
-    uint32_t c01 = s[y1 * sw + x0];
-    uint32_t c11 = s[y1 * sw + x1];
+    uint32_t c00 = row0[x0];
+    uint32_t c10 = row0[x1];
+    uint32_t c01 = row1[x0];
+    uint32_t c11 = row1[x1];
 
     int r00 = (int)((c00 >> 16) & 0xFF), g00 = (int)((c00 >> 8) & 0xFF), b00 = (int)(c00 & 0xFF);
     int r10 = (int)((c10 >> 16) & 0xFF), g10 = (int)((c10 >> 8) & 0xFF), b10 = (int)(c10 & 0xFF);
@@ -720,6 +718,7 @@ static int taskbar_button_x(int slot) {
 }
 
 int desktop_get_taskbar_hover(int mx, int my) {
+    if(wm_jaws())return -1;
     int bar_y = (int)screen_height - TASKBAR_HEIGHT;
     if (my < bar_y || my >= bar_y + TASKBAR_HEIGHT) return -1;
 
@@ -910,7 +909,6 @@ void desktop_invalidate_rect(int x0, int y0, int x1, int y1) {
     int sw = (int)screen_width;
     int sh = (int)screen_height;
     if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
     if (x1 > sw) x1 = sw;
     if (y1 > sh) y1 = sh;
     if (x0 >= x1 || y0 >= y1) return;
@@ -930,18 +928,20 @@ void desktop_invalidate_rect(int x0, int y0, int x1, int y1) {
     desktop.dirty = true;
 }
 
+#include "jaws.inc"
+
 void desktop_render(void) {
     if (tiling_enabled && current_kernel_mode == KERNEL_MODE_DESKTOP) tiling_arrange();
     desktop.dirty = false;
     desktop.taskbar_dirty = false;
     desktop.icons_dirty = false;
 
-    desktop_draw_wallpaper();
-    desktop_draw_icons();
+    if(jaws){w98_fill(0,0,screen_width,screen_height,backdrops[backdrop]);w98_blit_rgb(jaws_tiles[0],64,64,0,0,NULL);}
+    else {desktop_draw_wallpaper();desktop_draw_icons();}
     window_draw_all();
     if (desktop.start_menu.visible) start_menu_draw();
     if (desktop.ctx_menu.visible) desktop_context_menu_draw();
-    desktop_draw_taskbar();
+    if(jaws)jaws_front();else desktop_draw_taskbar();
 
     if (mouse_enabled) {
         mouse_draw_cursor();
@@ -994,6 +994,7 @@ bool desktop_pointer_needs_repaint(int mx, int my) {
 void desktop_handle_mouse(int mx, int my, int buttons, int wheel) {
     desktop_mouse_x = mx;
     desktop_mouse_y = my;
+    if(jaws_mouse(mx,my,buttons))return;
     if(wheel && desktop.start_menu.visible) {
         start_menu_scroll(wheel);
         return;
@@ -1115,7 +1116,7 @@ void desktop_handle_mouse(int mx, int my, int buttons, int wheel) {
             }
 
             if (mx < (int)screen_width &&
-                my < (int)screen_height - TASKBAR_HEIGHT) {
+                my < (int)screen_height - (jaws?0:TASKBAR_HEIGHT)) {
 
                 if (desktop.start_menu.visible) {
                     start_menu_handle_click(mx, my);
@@ -1132,9 +1133,7 @@ void desktop_handle_mouse(int mx, int my, int buttons, int wheel) {
                     }
                     if (mx >= wc->rect.x && mx < wc->rect.x + wc->rect.width &&
                         my >= wc->rect.y && my < wc->rect.y + wc->rect.height) {
-                        focused_click = wc;
-                        focus_idx = i;
-                        break;
+                        if(!focused_click || wc->z_order > focused_click->z_order){focused_click=wc;focus_idx=i;}
                     }
                 }
 
@@ -1213,6 +1212,13 @@ void desktop_handle_mouse(int mx, int my, int buttons, int wheel) {
 }
 
 void desktop_handle_keyboard(char c) {
+    if(wm_menu_open()){if(c==27){menu_up=false;desktop.dirty=true;}return;}
+    if (c == 0x1c) {
+        tiling_set(!tiling_is_enabled());
+        desktop.dirty = true;
+        serial_puts(tiling_is_enabled() ? "[wm] tiling\n" : "[wm] floating\n");
+        return;
+    }
     if (c == 27 && ctrl_pressed) {
 
         for (int i = 0; i < desktop.window_count; i++) {
@@ -1299,8 +1305,7 @@ void desktop_init(void) {
 
     desktop_icon_add("My Computer", WINDOW_TYPE_FASTFETCH);
     desktop_icon_add("Terminal", WINDOW_TYPE_TERMINAL);
-    desktop_icon_add("Shark IDE", WINDOW_TYPE_NOTEPAD);
-    desktop_icon_add("File Manager", WINDOW_TYPE_FILEMANAGER);
+    desktop_icon_add("Explorer", WINDOW_TYPE_FILEMANAGER);
     desktop_icon_add("Settings", WINDOW_TYPE_SETTINGS);
     desktop_icon_add("Disk Mgmt", WINDOW_TYPE_DISKMGMT);
     desktop_icon_add("Network", WINDOW_TYPE_NETWORK);
@@ -1308,27 +1313,7 @@ void desktop_init(void) {
     desktop_icon_add("Task Manager", WINDOW_TYPE_TASKMANAGER);
     desktop_icon_add("About", WINDOW_TYPE_ABOUT);
     desktop_icon_add("FAQ", WINDOW_TYPE_FAQ);
-    desktop_icon_add("FNAF 1", WINDOW_TYPE_FNAF);
-
-    int plugin_count = 0;
-    plugin_t* plugins = plugin_get_list(&plugin_count);
-    for (int i = 0; i < plugin_count; i++) {
-        if (!plugins[i].loaded) continue;
-        if (strcmp(plugins[i].name, "doom") == 0) {
-            desktop_icon_add("Doom", WINDOW_TYPE_DOOM);
-        } else if (strcmp(plugins[i].name, "flappybird") == 0) {
-            desktop_icon_add("Flappy Bird", WINDOW_TYPE_FLAPPYBIRD);
-        } else if (strcmp(plugins[i].name, "smb") == 0) {
-            desktop_icon_add("Super Mario Bros", WINDOW_TYPE_SMB);
-        } else if (strcmp(plugins[i].name, "pong") == 0) {
-            desktop_icon_add("Pong", WINDOW_TYPE_PONG);
-        } else if (strcmp(plugins[i].name, "gdash") == 0) {
-            desktop_icon_add("Geometry Dash", WINDOW_TYPE_GDASH);
-        } else if (strcmp(plugins[i].name, "sharkcube") == 0) {
-            desktop_icon_add("SharkCube", WINDOW_TYPE_SHARKCUBE);
-        } else if (strcmp(plugins[i].name, "sharkcraft") == 0) {
-            desktop_icon_add("SharkCraft", WINDOW_TYPE_SHARKCRAFT);
-        }
-    }
     desktop_icons_load();
 }
+#include "preferences.inc"
+#include "video.inc"
