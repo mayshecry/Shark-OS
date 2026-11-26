@@ -20,7 +20,7 @@ uint32_t* desktop_icon_get_pixels(int idx) {
 }
 
 uint32_t* desktop_icon_pixels_for_type(window_type_t type) {
-    int tid = theme_get_id();
+    int tid = wm_jaws() ? THEME_ID_WINDOWMAKER : theme_get_id();
 
     if (tid == THEME_ID_WIN98) {
         switch (type) {
@@ -126,7 +126,7 @@ uint32_t* desktop_icon_pixels_for_type(window_type_t type) {
 }
 
 const uint32_t* desktop_icon_get_start(void) {
-    int tid = theme_get_id();
+    int tid = wm_jaws() ? THEME_ID_WINDOWMAKER : theme_get_id();
     if (tid == THEME_ID_MODERN) return micon_start;
     if (tid == THEME_ID_KAWAII) return kawaii_icon_data_start;
     if (tid == THEME_ID_WINDOWMAKER) return wm_icon_data_start;
@@ -134,7 +134,7 @@ const uint32_t* desktop_icon_get_start(void) {
 }
 
 const uint32_t* desktop_icon_get_shutdown(void) {
-    int tid = theme_get_id();
+    int tid = wm_jaws() ? THEME_ID_WINDOWMAKER : theme_get_id();
     if (tid == THEME_ID_MODERN) return micon_shutdown;
     if (tid == THEME_ID_KAWAII) return kawaii_icon_data_shutdown;
     if (tid == THEME_ID_WINDOWMAKER) return wm_icon_data_shutdown;
@@ -142,7 +142,7 @@ const uint32_t* desktop_icon_get_shutdown(void) {
 }
 
 const uint32_t* desktop_icon_get_folder(void) {
-    int tid = theme_get_id();
+    int tid = wm_jaws() ? THEME_ID_WINDOWMAKER : theme_get_id();
     if (tid == THEME_ID_MODERN) return micon_folder;
     if (tid == THEME_ID_KAWAII) return kawaii_icon_data_folder;
     if (tid == THEME_ID_WINDOWMAKER) return wm_icon_data_folder;
@@ -150,7 +150,7 @@ const uint32_t* desktop_icon_get_folder(void) {
 }
 
 const uint32_t* desktop_icon_get_file(void) {
-    int tid = theme_get_id();
+    int tid = wm_jaws() ? THEME_ID_WINDOWMAKER : theme_get_id();
     if (tid == THEME_ID_MODERN) return micon_file;
     if (tid == THEME_ID_KAWAII) return kawaii_icon_data_file;
     if (tid == THEME_ID_WINDOWMAKER) return wm_icon_data_file;
