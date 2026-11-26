@@ -20,5 +20,13 @@ with tempfile.TemporaryDirectory() as tmp,http.server.HTTPServer(('127.0.0.1',0)
         click(1890,96);start=sample()
         for n in [1,2]:
             type_text(g,f'browser http://10.0.2.2:{web.server_port}/pool{n}');g.wait(f'js: pool-pass-{n}'.encode(),25)
+            time.sleep(.5);g.command('screendump '+str(w/'svg.ppm'))
+            assert (w/'svg.ppm').read_bytes().count(bytes([27,237,135]))>=100, 'SVG fill missing from real framebuffer'
             click(120,110);during=sample();click(1610,42);click(120,110);after=sample()
             print(f'Navigator cycle {n}: {start} KiB free before / {during} during / {after} after',flush=True);assert after-during>25000 and start-after<2048;start=after
+        # Keep Terminal open at (40,30); Preferences opens next at (70,60).
+        click(1890,154);click(276,123);click(455,264)  # Backdrop -> first wallpaper
+        time.sleep(.6);click(55,115);image=sample()
+        click(455,85+78+9);time.sleep(.4);click(55,115);solid=sample()
+        assert solid-image==1920*1080*4//1024,(image,solid)
+        print(f'1080p wallpaper cache returned {solid-image} KiB on selecting solid',flush=True)
