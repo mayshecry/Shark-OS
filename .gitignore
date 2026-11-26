@@ -9,3 +9,9 @@ tools/__pycache__/
 *.bin
 *.plg
 *.elf
+
+cc-build/
+install-build/
+
+install-build-server*/
+*.iso.xz
