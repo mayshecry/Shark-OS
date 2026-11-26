@@ -58,7 +58,7 @@ enum {
     T_EOF = 0, T_NUM, T_STR, T_TEMPLATE, T_IDENT, T_KW, T_PUNCT
 };
 
-typedef struct { uint8_t type; const char* s; int len; fx_t num; int line; int nl_before; } token_t;
+typedef struct { const char* s; fx_t num; int len, line; uint8_t type, nl_before; } token_t;
 
 enum {
     N_NUM = 1, N_STR, N_IDENT, N_TEMPLATE, N_TRUE, N_FALSE, N_NULL, N_UNDEF, N_THIS,
@@ -72,29 +72,49 @@ enum {
 typedef struct {
     uint8_t type;
     uint8_t op;
+    int line;
     int a, b, c, d;
     int list;
     int count;
     const char* s;
     fx_t num;
-    int line;
 } node_t;
 
-static token_t tokens[JS_MAX_TOKENS];
+#include "js_pool.h"
+
+JS_POOL(token, token_t, JS_MAX_TOKENS)
 static int tok_count = 0;
-static node_t nodes[JS_MAX_NODES];
+JS_POOL(node, node_t, JS_MAX_NODES)
 static int node_count = 0;
-static int lists[JS_MAX_NODES];
+struct js_scratch {
+    int lists[JS_MAX_NODES];
+    object_t objects[JS_MAX_OBJECTS];
+    char strpool[JS_STR_POOL];
+    scope_t scopes[JS_MAX_SCOPES];
+    value_t arr_pool[262144];
+    int tmp_stack[JS_MAX_NODES];
+    char ext_script[1024 * 1024];
+};
+static struct js_scratch *pool;
+int br_js_acquire(void){pool=pmm_lease(sizeof(*pool));return pool!=NULL;}
+#define lists (pool->lists)
+#define objects (pool->objects)
+#define strpool (pool->strpool)
+#define scopes (pool->scopes)
+#define arr_pool (pool->arr_pool)
+#define tmp_stack (pool->tmp_stack)
+#define ext_script (pool->ext_script)
+
 static int list_count = 0;
-static object_t objects[JS_MAX_OBJECTS];
+
 static int obj_count = 0;
-static prop_t props[JS_MAX_PROPS];
+JS_POOL(prop, prop_t, JS_MAX_PROPS)
 static int prop_count = 0;
-static char strpool[JS_STR_POOL];
+
 static int str_used = 0;
-static scope_t scopes[JS_MAX_SCOPES];
+
 static int scope_count = 0;
-static value_t arr_pool[262144];
+
 static int arr_used = 0;
 
 static int steps = 0;
@@ -211,8 +231,8 @@ static uint32_t key_hash(const char* key) {
 }
 static prop_t* find_own_h(int o, const char* key, uint32_t h) {
     if (o < 0) return NULL;
-    for (int p = objects[o].first_prop; p >= 0; p = props[p].next) {
-        if (props[p].hash == h && br_streq(props[p].key, key)) return &props[p];
+    for (int p = objects[o].first_prop; p >= 0; p = prop_at(p)->next) {
+        if (prop_at(p)->hash == h && br_streq(prop_at(p)->key, key)) return prop_at(p);
     }
     return NULL;
 }
@@ -223,14 +243,14 @@ static void set_prop(int o, const char* key, value_t v) {
     uint32_t h = key_hash(key);
     prop_t* p = find_own_h(o, key, h);
     if (p) { p->val = v; return; }
-    if (prop_count >= JS_MAX_PROPS) { throw_error("out of memory (props)", NULL); return; }
-    props[prop_count].key = key;
-    props[prop_count].val = v;
-    props[prop_count].next = -1;
-    props[prop_count].hash = h;
+    if (!prop_reserve(prop_count)) { throw_error("out of memory (props)", NULL); return; }
+    prop_at(prop_count)->key = key;
+    prop_at(prop_count)->val = v;
+    prop_at(prop_count)->next = -1;
+    prop_at(prop_count)->hash = h;
 
     if (objects[o].first_prop < 0) objects[o].first_prop = prop_count;
-    else props[objects[o].last_prop].next = prop_count;
+    else prop_at(objects[o].last_prop)->next = prop_count;
     objects[o].last_prop = prop_count;
     objects[o].prop_count++;
     prop_count++;
@@ -239,9 +259,9 @@ static void set_prop(int o, const char* key, value_t v) {
 static int del_prop(int o, const char* key) {
     if (o < 0) return 0;
     int prev = -1;
-    for (int p = objects[o].first_prop; p >= 0; prev = p, p = props[p].next) {
-        if (br_streq(props[p].key, key)) {
-            if (prev < 0) objects[o].first_prop = props[p].next; else props[prev].next = props[p].next;
+    for (int p = objects[o].first_prop; p >= 0; prev = p, p = prop_at(p)->next) {
+        if (br_streq(prop_at(p)->key, key)) {
+            if (prev < 0) objects[o].first_prop = prop_at(p)->next; else prop_at(prev)->next = prop_at(p)->next;
             if (objects[o].last_prop == p) objects[o].last_prop = prev;
             objects[o].prop_count--;
             return 1;
@@ -468,8 +488,8 @@ static int tokenize_into(const char* src, int len, int base) {
         if (c == '/' && i + 1 < len && src[i + 1] == '*') { i += 2; while (i + 1 < len && !(src[i] == '*' && src[i + 1] == '/')) { if (src[i] == '\n') line++; i++; } i += 2; continue; }
         if (c == '<' && i + 3 < len && src[i + 1] == '!' && src[i + 2] == '-' && src[i + 3] == '-') { while (i < len && src[i] != '\n') i++; continue; }
         if (c == '-' && i + 2 < len && src[i + 1] == '-' && src[i + 2] == '>' && nl) { while (i < len && src[i] != '\n') i++; continue; }
-        if (tc >= JS_MAX_TOKENS - 1) { throw_error("script too large", NULL); return -1; }
-        token_t* t = &tokens[tc];
+        if (tc >= JS_MAX_TOKENS - 1 || !token_reserve(tc)) { throw_error("script too large", NULL); return -1; }
+        token_t* t = token_at(tc);
         t->line = line; t->nl_before = nl; nl = 0;
         if ((c >= '0' && c <= '9') || (c == '.' && i + 1 < len && src[i + 1] >= '0' && src[i + 1] <= '9')) {
             int st = i;
@@ -547,7 +567,7 @@ static int tokenize_into(const char* src, int len, int base) {
         if (c == '/') {
             int prev_is_value = 0;
             if (tc > base) {
-                token_t* p = &tokens[tc - 1];
+                token_t* p = token_at(tc - 1);
                 if (p->type == T_NUM || p->type == T_STR || p->type == T_TEMPLATE || p->type == T_IDENT) prev_is_value = 1;
                 if (p->type == T_KW && (br_streq_n(p->s, p->len, "this") || br_streq_n(p->s, p->len, "true") || br_streq_n(p->s, p->len, "false") || br_streq_n(p->s, p->len, "null"))) prev_is_value = 1;
                 if (p->type == T_PUNCT && (p->s[0] == ')' || p->s[0] == ']' || p->s[0] == '}') && p->len == 1) prev_is_value = 1;
@@ -586,14 +606,15 @@ static int tokenize_into(const char* src, int len, int base) {
         if (!matched) { i++; continue; }
         tc++;
     }
-    tokens[tc].type = T_EOF; tokens[tc].s = ""; tokens[tc].len = 0; tokens[tc].line = line; tokens[tc].nl_before = 1;
+    if (!token_reserve(tc)) { throw_error("script too large", NULL); return -1; }
+    token_at(tc)->type = T_EOF; token_at(tc)->s = ""; token_at(tc)->len = 0; token_at(tc)->line = line; token_at(tc)->nl_before = 1;
     tc++;
     return tc - base;
 }
 
 static int pos = 0;
 
-static token_t* cur(void) { return &tokens[pos]; }
+static token_t* cur(void) { return token_at(tok_count && pos >= tok_count ? tok_count - 1 : pos); }
 static int is_punct(const char* p) { token_t* t = cur(); if (t->type != T_PUNCT) return 0; int l = (int)strlen(p); return t->len == l && br_streq_n(t->s, l, p); }
 static int is_kw(const char* k) { token_t* t = cur(); if (t->type != T_KW) return 0; return br_streq_n(t->s, t->len, k); }
 static int accept_punct(const char* p) { if (is_punct(p)) { pos++; return 1; } return 0; }
@@ -605,8 +626,8 @@ static void expect_punct(const char* p) {
 }
 
 static int new_node(int type) {
-    if (node_count >= JS_MAX_NODES) { if (!js_error) { throw_error("script too large (ast)", NULL); js_error = 1; } return 0; }
-    node_t* n = &nodes[node_count];
+    if (!node_reserve(node_count)) { if (!js_error) { throw_error("script too large (ast)", NULL); js_error = 1; } return 0; }
+    node_t* n = node_at(node_count);
     memset(n, 0, sizeof(*n));
     n->type = (uint8_t)type; n->a = n->b = n->c = n->d = -1; n->list = -1; n->line = cur()->line;
     return node_count++;
@@ -618,7 +639,7 @@ static int parse_statement(void);
 static int parse_block(void);
 static int parse_function(int is_expr);
 
-static int tmp_stack[JS_MAX_NODES];
+
 static int tmp_top = 0;
 
 static int commit_list(int start) {
@@ -641,7 +662,7 @@ static int parse_template(token_t* t) {
     while (i < len) {
         int st = i;
         while (i < len && !(s[i] == '$' && i + 1 < len && s[i + 1] == '{')) i++;
-        if (i > st) { int sn = new_node(N_STR); nodes[sn].s = js_strdup_n(&s[st], i - st); tmp_stack[tmp_top++] = sn; }
+        if (i > st) { int sn = new_node(N_STR); node_at(sn)->s = js_strdup_n(&s[st], i - st); tmp_stack[tmp_top++] = sn; }
         if (i >= len) break;
         i += 2;
         int es = i; int d = 1;
@@ -659,8 +680,8 @@ static int parse_template(token_t* t) {
         }
         i++;
     }
-    nodes[n].list = commit_list(start);
-    nodes[n].count = list_count - nodes[n].list;
+    node_at(n)->list = commit_list(start);
+    node_at(n)->count = list_count - node_at(n)->list;
     return n;
 }
 
@@ -679,22 +700,22 @@ static int parse_primary(void) {
 
 static int parse_primary_inner(void) {
     token_t* t = cur();
-    if (t->type == T_NUM) { int n = new_node(N_NUM); nodes[n].num = t->num; pos++; return n; }
-    if (t->type == T_STR) { int n = new_node(N_STR); nodes[n].s = (t->num == 1 && t->s[0] == '/') ? t->s : js_strdup_n(t->s, t->len); nodes[n].op = (t->num == 1 && t->s[0] == '/') ? 1 : 0; pos++; return n; }
+    if (t->type == T_NUM) { int n = new_node(N_NUM); node_at(n)->num = t->num; pos++; return n; }
+    if (t->type == T_STR) { int n = new_node(N_STR); node_at(n)->s = (t->num == 1 && t->s[0] == '/') ? t->s : js_strdup_n(t->s, t->len); node_at(n)->op = (t->num == 1 && t->s[0] == '/') ? 1 : 0; pos++; return n; }
     if (t->type == T_TEMPLATE) { pos++; return parse_template(t); }
     if (t->type == T_IDENT) {
 
-        if (tokens[pos + 1].type == T_PUNCT && tokens[pos + 1].len == 2 && tokens[pos + 1].s[0] == '=' && tokens[pos + 1].s[1] == '>') {
+        if (token_at(pos + 1)->type == T_PUNCT && token_at(pos + 1)->len == 2 && token_at(pos + 1)->s[0] == '=' && token_at(pos + 1)->s[1] == '>') {
             int n = new_node(N_ARROW);
             int start = tmp_top;
-            int pn = new_node(N_IDENT); nodes[pn].s = tok_str(t); tmp_stack[tmp_top++] = pn;
-            nodes[n].list = commit_list(start); nodes[n].count = 1;
+            int pn = new_node(N_IDENT); node_at(pn)->s = tok_str(t); tmp_stack[tmp_top++] = pn;
+            node_at(n)->list = commit_list(start); node_at(n)->count = 1;
             pos += 2;
-            if (is_punct("{")) { nodes[n].a = parse_block(); nodes[n].op = 0; }
-            else { nodes[n].a = parse_assign(); nodes[n].op = 1; }
+            if (is_punct("{")) { node_at(n)->a = parse_block(); node_at(n)->op = 0; }
+            else { node_at(n)->a = parse_assign(); node_at(n)->op = 1; }
             return n;
         }
-        int n = new_node(N_IDENT); nodes[n].s = tok_str(t); pos++; return n;
+        int n = new_node(N_IDENT); node_at(n)->s = tok_str(t); pos++; return n;
     }
     if (t->type == T_KW) {
         if (accept_kw("true")) return new_node(N_TRUE);
@@ -709,39 +730,39 @@ static int parse_primary_inner(void) {
 
             int callee;
             token_t* ct = cur();
-            if (ct->type == T_IDENT) { callee = new_node(N_IDENT); nodes[callee].s = tok_str(ct); pos++; }
+            if (ct->type == T_IDENT) { callee = new_node(N_IDENT); node_at(callee)->s = tok_str(ct); pos++; }
             else { callee = parse_primary(); }
-            while (accept_punct(".")) { int m = new_node(N_MEMBER); nodes[m].a = callee; nodes[m].s = tok_str(cur()); pos++; callee = m; }
-            nodes[n].a = callee;
+            while (accept_punct(".")) { int m = new_node(N_MEMBER); node_at(m)->a = callee; node_at(m)->s = tok_str(cur()); pos++; callee = m; }
+            node_at(n)->a = callee;
             int start = tmp_top;
             if (accept_punct("(")) {
                 while (!is_punct(")") && cur()->type != T_EOF && !js_error) { tmp_stack[tmp_top++] = parse_assign(); if (!accept_punct(",")) break; }
                 expect_punct(")");
             }
-            nodes[n].list = commit_list(start); nodes[n].count = list_count - nodes[n].list;
+            node_at(n)->list = commit_list(start); node_at(n)->count = list_count - node_at(n)->list;
             return n;
         }
-        if (accept_kw("typeof")) { int n = new_node(N_TYPEOF); nodes[n].a = parse_primary();  return n; }
+        if (accept_kw("typeof")) { int n = new_node(N_TYPEOF); node_at(n)->a = parse_primary();  return n; }
     }
     if (accept_punct("(")) {
 
         int save = pos, d = 1, k = pos;
-        while (k < tok_count && d > 0) { if (tokens[k].type == T_PUNCT && tokens[k].len == 1) { if (tokens[k].s[0] == '(') d++; else if (tokens[k].s[0] == ')') d--; } if (d > 0) k++; }
-        if (k + 1 < tok_count && tokens[k + 1].type == T_PUNCT && tokens[k + 1].len == 2 && tokens[k + 1].s[0] == '=' && tokens[k + 1].s[1] == '>') {
+        while (k < tok_count && d > 0) { if (token_at(k)->type == T_PUNCT && token_at(k)->len == 1) { if (token_at(k)->s[0] == '(') d++; else if (token_at(k)->s[0] == ')') d--; } if (d > 0) k++; }
+        if (k + 1 < tok_count && token_at(k + 1)->type == T_PUNCT && token_at(k + 1)->len == 2 && token_at(k + 1)->s[0] == '=' && token_at(k + 1)->s[1] == '>') {
             int n = new_node(N_ARROW);
             int start = tmp_top;
             while (!is_punct(")") && cur()->type != T_EOF) {
                 accept_punct("...");
-                int pn = new_node(N_IDENT); nodes[pn].s = tok_str(cur()); pos++;
-                if (accept_punct("=")) { nodes[pn].a = parse_assign(); }
+                int pn = new_node(N_IDENT); node_at(pn)->s = tok_str(cur()); pos++;
+                if (accept_punct("=")) { node_at(pn)->a = parse_assign(); }
                 tmp_stack[tmp_top++] = pn;
                 if (!accept_punct(",")) break;
             }
             expect_punct(")");
-            nodes[n].list = commit_list(start); nodes[n].count = list_count - nodes[n].list;
+            node_at(n)->list = commit_list(start); node_at(n)->count = list_count - node_at(n)->list;
             expect_punct("=>");
-            if (is_punct("{")) { nodes[n].a = parse_block(); nodes[n].op = 0; }
-            else { nodes[n].a = parse_assign(); nodes[n].op = 1; }
+            if (is_punct("{")) { node_at(n)->a = parse_block(); node_at(n)->op = 0; }
+            else { node_at(n)->a = parse_assign(); node_at(n)->op = 1; }
             return n;
         }
         pos = save;
@@ -754,12 +775,12 @@ static int parse_primary_inner(void) {
         int start = tmp_top;
         while (!is_punct("]") && cur()->type != T_EOF && !js_error) {
             if (is_punct(",")) { pos++; tmp_stack[tmp_top++] = new_node(N_UNDEF); continue; }
-            if (accept_punct("...")) { int sp = new_node(N_SPREAD); nodes[sp].a = parse_assign(); tmp_stack[tmp_top++] = sp; }
+            if (accept_punct("...")) { int sp = new_node(N_SPREAD); node_at(sp)->a = parse_assign(); tmp_stack[tmp_top++] = sp; }
             else tmp_stack[tmp_top++] = parse_assign();
             if (!accept_punct(",")) break;
         }
         expect_punct("]");
-        nodes[n].list = commit_list(start); nodes[n].count = list_count - nodes[n].list;
+        node_at(n)->list = commit_list(start); node_at(n)->count = list_count - node_at(n)->list;
         return n;
     }
     if (accept_punct("{")) {
@@ -768,21 +789,21 @@ static int parse_primary_inner(void) {
         while (!is_punct("}") && cur()->type != T_EOF && !js_error) {
             token_t* kt = cur();
             int key = new_node(N_STR);
-            if (accept_punct("...")) { nodes[key].type = N_SPREAD; nodes[key].a = parse_assign(); tmp_stack[tmp_top++] = key; tmp_stack[tmp_top++] = key; if (!accept_punct(",")) break; continue; }
-            if (accept_punct("[")) { nodes[key].type = N_EXPR; nodes[key].a = parse_assign(); expect_punct("]"); }
-            else if (kt->type == T_STR || kt->type == T_IDENT || kt->type == T_KW) { nodes[key].s = tok_str(kt); pos++; }
-            else if (kt->type == T_NUM) { char b[32]; fx_to_str(kt->num, b); nodes[key].s = js_strdup(b); pos++; }
+            if (accept_punct("...")) { node_at(key)->type = N_SPREAD; node_at(key)->a = parse_assign(); tmp_stack[tmp_top++] = key; tmp_stack[tmp_top++] = key; if (!accept_punct(",")) break; continue; }
+            if (accept_punct("[")) { node_at(key)->type = N_EXPR; node_at(key)->a = parse_assign(); expect_punct("]"); }
+            else if (kt->type == T_STR || kt->type == T_IDENT || kt->type == T_KW) { node_at(key)->s = tok_str(kt); pos++; }
+            else if (kt->type == T_NUM) { char b[32]; fx_to_str(kt->num, b); node_at(key)->s = js_strdup(b); pos++; }
             else { pos++; continue; }
             int val;
             if (is_punct("(")) { val = parse_function(1); }
             else if (accept_punct(":")) val = parse_assign();
-            else { val = new_node(N_IDENT); nodes[val].s = nodes[key].s; }
+            else { val = new_node(N_IDENT); node_at(val)->s = node_at(key)->s; }
 
             tmp_stack[tmp_top++] = key; tmp_stack[tmp_top++] = val;
             if (!accept_punct(",")) break;
         }
         expect_punct("}");
-        nodes[n].list = commit_list(start); nodes[n].count = list_count - nodes[n].list;
+        node_at(n)->list = commit_list(start); node_at(n)->count = list_count - node_at(n)->list;
         return n;
     }
     if (!js_error) { char m[48]; const char* p = "SyntaxError: unexpected token "; int o = 0; while (*p) m[o++] = *p++; for (int k = 0; k < t->len && k < 12; k++) m[o++] = t->s[k]; m[o] = 0; throw_error(m, NULL); js_error = 1; }
@@ -792,15 +813,15 @@ static int parse_primary_inner(void) {
 
 static int parse_call_args(int callee) {
     int n = new_node(N_CALL);
-    nodes[n].a = callee;
+    node_at(n)->a = callee;
     int start = tmp_top;
     while (!is_punct(")") && cur()->type != T_EOF && !js_error) {
-        if (accept_punct("...")) { int sp = new_node(N_SPREAD); nodes[sp].a = parse_assign(); tmp_stack[tmp_top++] = sp; }
+        if (accept_punct("...")) { int sp = new_node(N_SPREAD); node_at(sp)->a = parse_assign(); tmp_stack[tmp_top++] = sp; }
         else tmp_stack[tmp_top++] = parse_assign();
         if (!accept_punct(",")) break;
     }
     expect_punct(")");
-    nodes[n].list = commit_list(start); nodes[n].count = list_count - nodes[n].list;
+    node_at(n)->list = commit_list(start); node_at(n)->count = list_count - node_at(n)->list;
     return n;
 }
 
@@ -809,19 +830,19 @@ static int parse_postfix(void) {
     while (!js_error) {
         if (accept_punct(".") || accept_punct("?.")) {
             if (is_punct("(")) { pos++; e = parse_call_args(e); continue; }
-            int m = new_node(N_MEMBER); nodes[m].a = e; nodes[m].s = tok_str(cur()); pos++; e = m;
+            int m = new_node(N_MEMBER); node_at(m)->a = e; node_at(m)->s = tok_str(cur()); pos++; e = m;
         } else if (accept_punct("[")) {
-            int m = new_node(N_INDEX); nodes[m].a = e; nodes[m].b = parse_expr(); expect_punct("]"); e = m;
+            int m = new_node(N_INDEX); node_at(m)->a = e; node_at(m)->b = parse_expr(); expect_punct("]"); e = m;
         } else if (accept_punct("(")) {
             e = parse_call_args(e);
         } else if (cur()->type == T_TEMPLATE) {
 
             token_t* t = cur(); pos++;
-            int n = new_node(N_CALL); nodes[n].a = e;
+            int n = new_node(N_CALL); node_at(n)->a = e;
             int start = tmp_top; tmp_stack[tmp_top++] = parse_template(t);
-            nodes[n].list = commit_list(start); nodes[n].count = 1; e = n;
+            node_at(n)->list = commit_list(start); node_at(n)->count = 1; e = n;
         } else if ((is_punct("++") || is_punct("--")) && !cur()->nl_before) {
-            int n = new_node(N_POSTFIX); nodes[n].a = e; nodes[n].op = (uint8_t)(cur()->s[0] == '+' ? 1 : 2); pos++; e = n;
+            int n = new_node(N_POSTFIX); node_at(n)->a = e; node_at(n)->op = (uint8_t)(cur()->s[0] == '+' ? 1 : 2); pos++; e = n;
         } else break;
     }
     return e;
@@ -829,12 +850,12 @@ static int parse_postfix(void) {
 
 static int parse_unary(void) {
     if (is_punct("!") || is_punct("-") || is_punct("+") || is_punct("~")) {
-        int n = new_node(N_UNARY); nodes[n].op = (uint8_t)cur()->s[0]; pos++; nodes[n].a = parse_unary(); return n;
+        int n = new_node(N_UNARY); node_at(n)->op = (uint8_t)cur()->s[0]; pos++; node_at(n)->a = parse_unary(); return n;
     }
-    if (is_punct("++") || is_punct("--")) { int n = new_node(N_PREFIX); nodes[n].op = (uint8_t)(cur()->s[0] == '+' ? 1 : 2); pos++; nodes[n].a = parse_unary(); return n; }
-    if (accept_kw("typeof")) { int n = new_node(N_TYPEOF); nodes[n].a = parse_unary(); return n; }
-    if (accept_kw("void")) { int n = new_node(N_COMMA); int a = parse_unary(); int u = new_node(N_UNDEF); nodes[n].a = a; nodes[n].b = u; return n; }
-    if (accept_kw("delete")) { int n = new_node(N_DELETE); nodes[n].a = parse_unary(); return n; }
+    if (is_punct("++") || is_punct("--")) { int n = new_node(N_PREFIX); node_at(n)->op = (uint8_t)(cur()->s[0] == '+' ? 1 : 2); pos++; node_at(n)->a = parse_unary(); return n; }
+    if (accept_kw("typeof")) { int n = new_node(N_TYPEOF); node_at(n)->a = parse_unary(); return n; }
+    if (accept_kw("void")) { int n = new_node(N_COMMA); int a = parse_unary(); int u = new_node(N_UNDEF); node_at(n)->a = a; node_at(n)->b = u; return n; }
+    if (accept_kw("delete")) { int n = new_node(N_DELETE); node_at(n)->a = parse_unary(); return n; }
     if (accept_kw("await")) return parse_unary();
     return parse_postfix();
 }
@@ -873,7 +894,7 @@ static int parse_binary(int min_prec) {
         pos++;
         int right = parse_binary(prec + 1);
         int n = new_node((br_streq(op, "&&") || br_streq(op, "||") || br_streq(op, "??")) ? N_LOGICAL : N_BINARY);
-        nodes[n].a = left; nodes[n].b = right; nodes[n].s = js_strdup(op);
+        node_at(n)->a = left; node_at(n)->b = right; node_at(n)->s = js_strdup(op);
         left = n;
     }
     return left;
@@ -883,7 +904,7 @@ static int parse_cond(void) {
     int c = parse_binary(1);
     if (accept_punct("?")) {
         int n = new_node(N_COND);
-        nodes[n].a = c; nodes[n].b = parse_assign(); expect_punct(":"); nodes[n].c = parse_assign();
+        node_at(n)->a = c; node_at(n)->b = parse_assign(); expect_punct(":"); node_at(n)->c = parse_assign();
         return n;
     }
     return c;
@@ -894,39 +915,39 @@ static int parse_assign(void) {
     token_t* t = cur();
     if (t->type == T_PUNCT && t->len >= 1 && t->s[t->len - 1] == '=' && !(t->len == 2 && (t->s[0] == '=' || t->s[0] == '!' || t->s[0] == '<' || t->s[0] == '>')) && !(t->len == 3)) {
         int n = new_node(N_ASSIGN);
-        nodes[n].a = left; nodes[n].s = js_strdup_n(t->s, t->len - 1);
+        node_at(n)->a = left; node_at(n)->s = js_strdup_n(t->s, t->len - 1);
         pos++;
-        nodes[n].b = parse_assign();
+        node_at(n)->b = parse_assign();
         return n;
     }
     if (t->type == T_PUNCT && t->len == 3 && (br_streq_n(t->s, 3, "**=") || br_streq_n(t->s, 3, "<<=") || br_streq_n(t->s, 3, ">>="))) {
-        int n = new_node(N_ASSIGN); nodes[n].a = left; nodes[n].s = js_strdup_n(t->s, 2); pos++; nodes[n].b = parse_assign(); return n;
+        int n = new_node(N_ASSIGN); node_at(n)->a = left; node_at(n)->s = js_strdup_n(t->s, 2); pos++; node_at(n)->b = parse_assign(); return n;
     }
     return left;
 }
 
 static int parse_expr(void) {
     int e = parse_assign();
-    while (is_punct(",")) { pos++; int n = new_node(N_COMMA); nodes[n].a = e; nodes[n].b = parse_assign(); e = n; }
+    while (is_punct(",")) { pos++; int n = new_node(N_COMMA); node_at(n)->a = e; node_at(n)->b = parse_assign(); e = n; }
     return e;
 }
 
 static int parse_function(int is_expr) {
     int n = new_node(is_expr ? N_FUNC : N_FUNCDECL);
     accept_punct("*");
-    if (cur()->type == T_IDENT) { nodes[n].s = tok_str(cur()); pos++; }
+    if (cur()->type == T_IDENT) { node_at(n)->s = tok_str(cur()); pos++; }
     expect_punct("(");
     int start = tmp_top;
     while (!is_punct(")") && cur()->type != T_EOF && !js_error) {
         int rest = accept_punct("...");
-        int pn = new_node(N_IDENT); nodes[pn].s = tok_str(cur()); nodes[pn].op = (uint8_t)rest; pos++;
-        if (accept_punct("=")) nodes[pn].a = parse_assign();
+        int pn = new_node(N_IDENT); node_at(pn)->s = tok_str(cur()); node_at(pn)->op = (uint8_t)rest; pos++;
+        if (accept_punct("=")) node_at(pn)->a = parse_assign();
         tmp_stack[tmp_top++] = pn;
         if (!accept_punct(",")) break;
     }
     expect_punct(")");
-    nodes[n].list = commit_list(start); nodes[n].count = list_count - nodes[n].list;
-    nodes[n].a = parse_block();
+    node_at(n)->list = commit_list(start); node_at(n)->count = list_count - node_at(n)->list;
+    node_at(n)->a = parse_block();
     return n;
 }
 
@@ -936,7 +957,7 @@ static int parse_block(void) {
     int start = tmp_top;
     while (!is_punct("}") && cur()->type != T_EOF && !js_error) tmp_stack[tmp_top++] = parse_statement();
     expect_punct("}");
-    nodes[n].list = commit_list(start); nodes[n].count = list_count - nodes[n].list;
+    node_at(n)->list = commit_list(start); node_at(n)->count = list_count - node_at(n)->list;
     return n;
 }
 
@@ -945,7 +966,7 @@ static void skip_semi(void) { accept_punct(";"); }
 static int parse_var(void) {
     int n = new_node(N_VAR);
     token_t* t = cur();
-    nodes[n].op = (uint8_t)(t->s[0] == 'c' ? 2 : t->s[0] == 'l' ? 1 : 0);
+    node_at(n)->op = (uint8_t)(t->s[0] == 'c' ? 2 : t->s[0] == 'l' ? 1 : 0);
     pos++;
     int start = tmp_top;
     while (!js_error) {
@@ -956,23 +977,23 @@ static int parse_var(void) {
             pos++;
             int names_start = tmp_top;
             while (!is_punct(is_obj ? "}" : "]") && cur()->type != T_EOF) {
-                int nn = new_node(N_IDENT); nodes[nn].s = tok_str(cur()); pos++;
-                if (accept_punct(":")) { nodes[nn].op = 1; nodes[nn].b = new_node(N_IDENT); nodes[nodes[nn].b].s = tok_str(cur()); pos++; }
-                if (accept_punct("=")) nodes[nn].a = parse_assign();
+                int nn = new_node(N_IDENT); node_at(nn)->s = tok_str(cur()); pos++;
+                if (accept_punct(":")) { node_at(nn)->op = 1; node_at(nn)->b = new_node(N_IDENT); node_at(node_at(nn)->b)->s = tok_str(cur()); pos++; }
+                if (accept_punct("=")) node_at(nn)->a = parse_assign();
                 tmp_stack[tmp_top++] = nn;
                 if (!accept_punct(",")) break;
             }
             pos++;
-            nodes[d].type = is_obj ? N_OBJECT : N_ARRAY;
-            nodes[d].list = commit_list(names_start); nodes[d].count = list_count - nodes[d].list;
+            node_at(d)->type = is_obj ? N_OBJECT : N_ARRAY;
+            node_at(d)->list = commit_list(names_start); node_at(d)->count = list_count - node_at(d)->list;
         } else {
-            nodes[d].s = tok_str(cur()); pos++;
+            node_at(d)->s = tok_str(cur()); pos++;
         }
-        if (accept_punct("=")) nodes[d].a = parse_assign();
+        if (accept_punct("=")) node_at(d)->a = parse_assign();
         tmp_stack[tmp_top++] = d;
         if (!accept_punct(",")) break;
     }
-    nodes[n].list = commit_list(start); nodes[n].count = list_count - nodes[n].list;
+    node_at(n)->list = commit_list(start); node_at(n)->count = list_count - node_at(n)->list;
     return n;
 }
 
@@ -995,24 +1016,24 @@ static int parse_statement_inner(void) {
     if (accept_punct(";")) return new_node(N_EMPTY);
     if (is_kw("var") || is_kw("let") || is_kw("const")) { int n = parse_var(); skip_semi(); return n; }
     if (is_kw("function")) { pos++; return parse_function(0); }
-    if (is_kw("async") && tokens[pos + 1].type == T_KW) { pos += 2; return parse_function(0); }
+    if (is_kw("async") && token_at(pos + 1)->type == T_KW) { pos += 2; return parse_function(0); }
     if (accept_kw("if")) {
         int n = new_node(N_IF);
-        expect_punct("("); nodes[n].a = parse_expr(); expect_punct(")");
-        nodes[n].b = parse_statement();
-        if (accept_kw("else")) nodes[n].c = parse_statement();
+        expect_punct("("); node_at(n)->a = parse_expr(); expect_punct(")");
+        node_at(n)->b = parse_statement();
+        if (accept_kw("else")) node_at(n)->c = parse_statement();
         return n;
     }
     if (accept_kw("while")) {
         int n = new_node(N_WHILE);
-        expect_punct("("); nodes[n].a = parse_expr(); expect_punct(")");
-        nodes[n].b = parse_statement();
+        expect_punct("("); node_at(n)->a = parse_expr(); expect_punct(")");
+        node_at(n)->b = parse_statement();
         return n;
     }
     if (accept_kw("do")) {
         int n = new_node(N_DOWHILE);
-        nodes[n].b = parse_statement();
-        accept_kw("while"); expect_punct("("); nodes[n].a = parse_expr(); expect_punct(")"); skip_semi();
+        node_at(n)->b = parse_statement();
+        accept_kw("while"); expect_punct("("); node_at(n)->a = parse_expr(); expect_punct(")"); skip_semi();
         return n;
     }
     if (accept_kw("for")) {
@@ -1022,71 +1043,71 @@ static int parse_statement_inner(void) {
 
             int save = pos;
             pos++;
-            if (cur()->type == T_IDENT && tokens[pos + 1].type == T_KW && (br_streq_n(tokens[pos + 1].s, tokens[pos + 1].len, "in") || br_streq_n(tokens[pos + 1].s, tokens[pos + 1].len, "of"))) {
-                int n = new_node(br_streq_n(tokens[pos + 1].s, tokens[pos + 1].len, "in") ? N_FORIN : N_FOROF);
-                nodes[n].s = tok_str(cur()); pos += 2;
-                nodes[n].a = parse_assign(); expect_punct(")");
-                nodes[n].b = parse_statement();
+            if (cur()->type == T_IDENT && token_at(pos + 1)->type == T_KW && (br_streq_n(token_at(pos + 1)->s, token_at(pos + 1)->len, "in") || br_streq_n(token_at(pos + 1)->s, token_at(pos + 1)->len, "of"))) {
+                int n = new_node(br_streq_n(token_at(pos + 1)->s, token_at(pos + 1)->len, "in") ? N_FORIN : N_FOROF);
+                node_at(n)->s = tok_str(cur()); pos += 2;
+                node_at(n)->a = parse_assign(); expect_punct(")");
+                node_at(n)->b = parse_statement();
                 return n;
             }
             pos = save;
             init = parse_var();
         } else if (!is_punct(";")) {
 
-            if (cur()->type == T_IDENT && tokens[pos + 1].type == T_KW && (br_streq_n(tokens[pos + 1].s, tokens[pos + 1].len, "in") || br_streq_n(tokens[pos + 1].s, tokens[pos + 1].len, "of"))) {
-                int n = new_node(br_streq_n(tokens[pos + 1].s, tokens[pos + 1].len, "in") ? N_FORIN : N_FOROF);
-                nodes[n].s = tok_str(cur()); nodes[n].op = 1; pos += 2;
-                nodes[n].a = parse_assign(); expect_punct(")");
-                nodes[n].b = parse_statement();
+            if (cur()->type == T_IDENT && token_at(pos + 1)->type == T_KW && (br_streq_n(token_at(pos + 1)->s, token_at(pos + 1)->len, "in") || br_streq_n(token_at(pos + 1)->s, token_at(pos + 1)->len, "of"))) {
+                int n = new_node(br_streq_n(token_at(pos + 1)->s, token_at(pos + 1)->len, "in") ? N_FORIN : N_FOROF);
+                node_at(n)->s = tok_str(cur()); node_at(n)->op = 1; pos += 2;
+                node_at(n)->a = parse_assign(); expect_punct(")");
+                node_at(n)->b = parse_statement();
                 return n;
             }
-            init = new_node(N_EXPR); nodes[init].a = parse_expr();
+            init = new_node(N_EXPR); node_at(init)->a = parse_expr();
         }
         expect_punct(";");
         int n = new_node(N_FOR);
-        nodes[n].a = init;
-        nodes[n].b = is_punct(";") ? -1 : parse_expr();
+        node_at(n)->a = init;
+        node_at(n)->b = is_punct(";") ? -1 : parse_expr();
         expect_punct(";");
-        nodes[n].c = is_punct(")") ? -1 : parse_expr();
+        node_at(n)->c = is_punct(")") ? -1 : parse_expr();
         expect_punct(")");
-        nodes[n].d = parse_statement();
+        node_at(n)->d = parse_statement();
         return n;
     }
     if (accept_kw("return")) {
         int n = new_node(N_RETURN);
-        if (!is_punct(";") && !is_punct("}") && cur()->type != T_EOF && !cur()->nl_before) nodes[n].a = parse_expr();
+        if (!is_punct(";") && !is_punct("}") && cur()->type != T_EOF && !cur()->nl_before) node_at(n)->a = parse_expr();
         skip_semi();
         return n;
     }
-    if (accept_kw("break")) { int n = new_node(N_BREAK); if (cur()->type == T_IDENT && !cur()->nl_before) { nodes[n].s = tok_str(cur()); pos++; } skip_semi(); return n; }
-    if (accept_kw("continue")) { int n = new_node(N_CONTINUE); if (cur()->type == T_IDENT && !cur()->nl_before) { nodes[n].s = tok_str(cur()); pos++; } skip_semi(); return n; }
-    if (accept_kw("throw")) { int n = new_node(N_THROW); nodes[n].a = parse_expr(); skip_semi(); return n; }
+    if (accept_kw("break")) { int n = new_node(N_BREAK); if (cur()->type == T_IDENT && !cur()->nl_before) { node_at(n)->s = tok_str(cur()); pos++; } skip_semi(); return n; }
+    if (accept_kw("continue")) { int n = new_node(N_CONTINUE); if (cur()->type == T_IDENT && !cur()->nl_before) { node_at(n)->s = tok_str(cur()); pos++; } skip_semi(); return n; }
+    if (accept_kw("throw")) { int n = new_node(N_THROW); node_at(n)->a = parse_expr(); skip_semi(); return n; }
     if (accept_kw("switch")) {
         int n = new_node(N_SWITCH);
-        expect_punct("("); nodes[n].a = parse_expr(); expect_punct(")"); expect_punct("{");
+        expect_punct("("); node_at(n)->a = parse_expr(); expect_punct(")"); expect_punct("{");
         int start = tmp_top;
         while (!is_punct("}") && cur()->type != T_EOF && !js_error) {
             int c = new_node(N_CASE);
-            if (accept_kw("default")) { nodes[c].a = -1; }
-            else { accept_kw("case"); nodes[c].a = parse_expr(); }
+            if (accept_kw("default")) { node_at(c)->a = -1; }
+            else { accept_kw("case"); node_at(c)->a = parse_expr(); }
             expect_punct(":");
             int bs = tmp_top;
             while (!is_kw("case") && !is_kw("default") && !is_punct("}") && cur()->type != T_EOF && !js_error) tmp_stack[tmp_top++] = parse_statement();
-            nodes[c].list = commit_list(bs); nodes[c].count = list_count - nodes[c].list;
+            node_at(c)->list = commit_list(bs); node_at(c)->count = list_count - node_at(c)->list;
             tmp_stack[tmp_top++] = c;
         }
         expect_punct("}");
-        nodes[n].list = commit_list(start); nodes[n].count = list_count - nodes[n].list;
+        node_at(n)->list = commit_list(start); node_at(n)->count = list_count - node_at(n)->list;
         return n;
     }
     if (accept_kw("try")) {
         int n = new_node(N_TRY);
-        nodes[n].a = parse_block();
+        node_at(n)->a = parse_block();
         if (accept_kw("catch")) {
-            if (accept_punct("(")) { nodes[n].s = tok_str(cur()); pos++; expect_punct(")"); }
-            nodes[n].b = parse_block();
+            if (accept_punct("(")) { node_at(n)->s = tok_str(cur()); pos++; expect_punct(")"); }
+            node_at(n)->b = parse_block();
         }
-        if (accept_kw("finally")) nodes[n].c = parse_block();
+        if (accept_kw("finally")) node_at(n)->c = parse_block();
         return n;
     }
     if (accept_kw("class")) {
@@ -1097,14 +1118,14 @@ static int parse_statement_inner(void) {
         return new_node(N_EMPTY);
     }
 
-    if (cur()->type == T_IDENT && tokens[pos + 1].type == T_PUNCT && tokens[pos + 1].len == 1 && tokens[pos + 1].s[0] == ':') {
+    if (cur()->type == T_IDENT && token_at(pos + 1)->type == T_PUNCT && token_at(pos + 1)->len == 1 && token_at(pos + 1)->s[0] == ':') {
         const char* label = tok_str(cur()); pos += 2;
         int st = parse_statement();
-        nodes[st].s = nodes[st].s ? nodes[st].s : label;
+        node_at(st)->s = node_at(st)->s ? node_at(st)->s : label;
         return st;
     }
     int n = new_node(N_EXPR);
-    nodes[n].a = parse_expr();
+    node_at(n)->a = parse_expr();
     skip_semi();
     return n;
 }
@@ -1118,7 +1139,7 @@ static int parse_program(void) {
         tmp_stack[tmp_top++] = parse_statement();
         if (pos == before) pos++;
     }
-    nodes[n].list = commit_list(start); nodes[n].count = list_count - nodes[n].list;
+    node_at(n)->list = commit_list(start); node_at(n)->count = list_count - node_at(n)->list;
     return n;
 }
 
@@ -1341,7 +1362,7 @@ static value_t binary_op(const char* op, value_t a, value_t b) {
 }
 
 static void assign_to(int target, value_t v, int sc) {
-    node_t* t = &nodes[target];
+    node_t* t = node_at(target);
     if (t->type == N_IDENT) {
         value_t* slot = scope_lookup(sc, t->s);
         if (slot && v.type == V_STR && br_streq(t->s, "location") && obj_location >= 0) { prop_t* lp = find_own(obj_global, "location"); if (lp && slot == &lp->val) { navigate_to(v.u.s, 0); return; } }
@@ -1364,7 +1385,7 @@ static void assign_to(int target, value_t v, int sc) {
         }
     } else if (t->type == N_OBJECT) {
         for (int i = 0; i + 1 < t->count; i += 2) {
-            const char* key = nodes[lists[t->list + i]].s;
+            const char* key = node_at(lists[t->list + i])->s;
             assign_to(lists[t->list + i + 1], get_member(v, key), sc);
         }
     }
@@ -1377,7 +1398,7 @@ static value_t make_function(int n, int sc, int this_obj) {
     objects[o].fn_node = n;
     objects[o].fn_scope = sc;
     objects[o].fn_this = this_obj;
-    objects[o].name = nodes[n].s ? nodes[n].s : "anonymous";
+    objects[o].name = node_at(n)->s ? node_at(n)->s : "anonymous";
     return mk_obj(o);
 }
 
@@ -1385,8 +1406,8 @@ static int collect_args(int list, int count, int sc, value_t* out, int max) {
     int argc = 0;
     for (int i = 0; i < count; i++) {
         int an = lists[list + i];
-        if (nodes[an].type == N_SPREAD) {
-            value_t arr = eval(nodes[an].a, sc);
+        if (node_at(an)->type == N_SPREAD) {
+            value_t arr = eval(node_at(an)->a, sc);
             if (flow) return argc;
             if (arr.type == V_OBJ && objects[arr.u.obj].kind == O_ARRAY) {
                 for (int k = 0; k < objects[arr.u.obj].len && argc < max; k++) out[argc++] = objects[arr.u.obj].items[k];
@@ -1418,7 +1439,7 @@ static value_t eval_inner(int n, int sc) {
     if (n < 0) return UNDEF;
     if (++steps > JS_STEP_BUDGET) { if (flow != F_THROW) throw_error("Script terminated: too many steps", NULL); js_aborted = 1; return UNDEF; }
     if (flow) return UNDEF;
-    node_t* nd = &nodes[n];
+    node_t* nd = node_at(n);
     switch (nd->type) {
     case N_NUM: return mk_num(nd->num);
     case N_STR: return mk_str(nd->s);
@@ -1447,8 +1468,8 @@ static value_t eval_inner(int n, int sc) {
         if (a < 0) return UNDEF;
         for (int i = 0; i < nd->count; i++) {
             int en = lists[nd->list + i];
-            if (nodes[en].type == N_SPREAD) {
-                value_t src = eval(nodes[en].a, sc); if (flow) return UNDEF;
+            if (node_at(en)->type == N_SPREAD) {
+                value_t src = eval(node_at(en)->a, sc); if (flow) return UNDEF;
                 if (src.type == V_OBJ && objects[src.u.obj].kind == O_ARRAY) for (int k = 0; k < objects[src.u.obj].len; k++) array_push(a, objects[src.u.obj].items[k]);
                 else if (src.type == V_STR) for (int k = 0; src.u.s[k]; k++) array_push(a, mk_str(js_strdup_n(&src.u.s[k], 1)));
                 continue;
@@ -1464,16 +1485,16 @@ static value_t eval_inner(int n, int sc) {
         for (int i = 0; i + 1 < nd->count; i += 2) {
             int kn = lists[nd->list + i];
             int vn = lists[nd->list + i + 1];
-            if (nodes[kn].type == N_SPREAD) {
-                value_t src = eval(nodes[kn].a, sc); if (flow) return UNDEF;
-                if (src.type == V_OBJ) for (int p = objects[src.u.obj].first_prop; p >= 0; p = props[p].next) set_prop(o, props[p].key, props[p].val);
+            if (node_at(kn)->type == N_SPREAD) {
+                value_t src = eval(node_at(kn)->a, sc); if (flow) return UNDEF;
+                if (src.type == V_OBJ) for (int p = objects[src.u.obj].first_prop; p >= 0; p = prop_at(p)->next) set_prop(o, prop_at(p)->key, prop_at(p)->val);
                 continue;
             }
             const char* key;
-            if (nodes[kn].type == N_EXPR) { value_t kv = eval(nodes[kn].a, sc); if (flow) return UNDEF; key = js_strdup(to_string(kv)); }
-            else key = nodes[kn].s;
+            if (node_at(kn)->type == N_EXPR) { value_t kv = eval(node_at(kn)->a, sc); if (flow) return UNDEF; key = js_strdup(to_string(kv)); }
+            else key = node_at(kn)->s;
             value_t v;
-            if (nodes[vn].type == N_FUNC) v = make_function(vn, sc, -1);
+            if (node_at(vn)->type == N_FUNC) v = make_function(vn, sc, -1);
             else v = eval(vn, sc);
             if (flow) return UNDEF;
             set_prop(o, key, v);
@@ -1508,11 +1529,11 @@ static value_t eval_inner(int n, int sc) {
         int callee_n = nd->a;
         value_t fn, thisv = UNDEF;
         int this_obj = -1;
-        if (nodes[callee_n].type == N_MEMBER || nodes[callee_n].type == N_INDEX) {
-            thisv = eval(nodes[callee_n].a, sc); if (flow) return UNDEF;
+        if (node_at(callee_n)->type == N_MEMBER || node_at(callee_n)->type == N_INDEX) {
+            thisv = eval(node_at(callee_n)->a, sc); if (flow) return UNDEF;
             const char* key;
-            if (nodes[callee_n].type == N_MEMBER) key = nodes[callee_n].s;
-            else { value_t k = eval(nodes[callee_n].b, sc); if (flow) return UNDEF; key = to_string(k); }
+            if (node_at(callee_n)->type == N_MEMBER) key = node_at(callee_n)->s;
+            else { value_t k = eval(node_at(callee_n)->b, sc); if (flow) return UNDEF; key = to_string(k); }
 
             if (thisv.type == V_STR) {
                 value_t args[16]; int argc = collect_args(nd->list, nd->count, sc, args, 16); if (flow) return UNDEF;
@@ -1598,7 +1619,7 @@ static value_t eval_inner(int n, int sc) {
             if (flow) return UNDEF;
         }
         if (fn.type != V_FUNC) {
-            throw_error("TypeError: not a function:", nodes[callee_n].type == N_IDENT ? nodes[callee_n].s : "(expression)");
+            throw_error("TypeError: not a function:", node_at(callee_n)->type == N_IDENT ? node_at(callee_n)->s : "(expression)");
             return UNDEF;
         }
         value_t args[16];
@@ -1639,10 +1660,10 @@ static value_t eval_inner(int n, int sc) {
     }
     case N_TYPEOF: {
 
-        if (nodes[nd->a].type == N_IDENT) {
-            value_t* slot = scope_lookup(sc, nodes[nd->a].s);
+        if (node_at(nd->a)->type == N_IDENT) {
+            value_t* slot = scope_lookup(sc, node_at(nd->a)->s);
             if (!slot) {
-                const char* s = nodes[nd->a].s;
+                const char* s = node_at(nd->a)->s;
                 if (br_streq(s, "window") || br_streq(s, "document") || br_streq(s, "globalThis")) return mk_str("object");
                 return mk_str("undefined");
             }
@@ -1652,7 +1673,7 @@ static value_t eval_inner(int n, int sc) {
         return mk_str(type_name(v));
     }
     case N_DELETE: {
-        node_t* t = &nodes[nd->a];
+        node_t* t = node_at(nd->a);
         if (t->type == N_MEMBER) { value_t o = eval(t->a, sc); if (flow) return UNDEF; if (o.type == V_OBJ) del_prop(o.u.obj, t->s); }
         else if (t->type == N_INDEX) { value_t o = eval(t->a, sc); if (flow) return UNDEF; value_t k = eval(t->b, sc); if (flow) return UNDEF; if (o.type == V_OBJ) { if (objects[o.u.obj].kind == O_ARRAY && k.type == V_NUM) { int i = (int)(k.u.n >> FX_SHIFT); if (i >= 0 && i < objects[o.u.obj].len) objects[o.u.obj].items[i] = UNDEF; } else del_prop(o.u.obj, to_string(k)); } }
         return mk_bool(1);
@@ -1685,7 +1706,7 @@ static value_t eval_inner(int n, int sc) {
         if (nd->s[0] == 0) {
             v = eval(nd->b, sc); if (flow) return UNDEF;
 
-            if (v.type == V_FUNC && nodes[nd->a].type == N_IDENT && objects[v.u.obj].kind == O_FUNC && br_streq(objects[v.u.obj].name, "anonymous")) objects[v.u.obj].name = nodes[nd->a].s;
+            if (v.type == V_FUNC && node_at(nd->a)->type == N_IDENT && objects[v.u.obj].kind == O_FUNC && br_streq(objects[v.u.obj].name, "anonymous")) objects[v.u.obj].name = node_at(nd->a)->s;
         } else {
             value_t old = eval(nd->a, sc); if (flow) return UNDEF;
             if (br_streq(nd->s, "||")) { if (truthy(old)) return old; v = eval(nd->b, sc); }
@@ -1705,10 +1726,10 @@ static value_t eval_inner(int n, int sc) {
 
 static void hoist_vars(int s, int sc, int nest) {
     if (s < 0 || nest > 12) return;
-    node_t* nd = &nodes[s];
+    node_t* nd = node_at(s);
     switch (nd->type) {
     case N_VAR:
-        if (nd->op == 0) for (int k = 0; k < nd->count; k++) { int d = lists[nd->list + k]; if (nodes[d].type == N_IDENT && !scope_lookup(sc, nodes[d].s)) scope_declare(sc, nodes[d].s, UNDEF); }
+        if (nd->op == 0) for (int k = 0; k < nd->count; k++) { int d = lists[nd->list + k]; if (node_at(d)->type == N_IDENT && !scope_lookup(sc, node_at(d)->s)) scope_declare(sc, node_at(d)->s, UNDEF); }
         return;
     case N_BLOCK:
         for (int i = 0; i < nd->count; i++) hoist_vars(lists[nd->list + i], sc, nest + 1);
@@ -1719,7 +1740,7 @@ static void hoist_vars(int s, int sc, int nest) {
     case N_FORIN: case N_FOROF: if (nd->op == 0 && nd->s && !scope_lookup(sc, nd->s)) scope_declare(sc, nd->s, UNDEF); hoist_vars(nd->b, sc, nest + 1); return;
     case N_TRY: hoist_vars(nd->a, sc, nest + 1); hoist_vars(nd->b, sc, nest + 1); hoist_vars(nd->c, sc, nest + 1); return;
     case N_SWITCH:
-        for (int i = 0; i < nd->count; i++) { int c = lists[nd->list + i]; for (int k = 0; k < nodes[c].count; k++) hoist_vars(lists[nodes[c].list + k], sc, nest + 1); }
+        for (int i = 0; i < nd->count; i++) { int c = lists[nd->list + i]; for (int k = 0; k < node_at(c)->count; k++) hoist_vars(lists[node_at(c)->list + k], sc, nest + 1); }
         return;
     default: return;
     }
@@ -1727,7 +1748,7 @@ static void hoist_vars(int s, int sc, int nest) {
 static void hoist(int list, int count, int sc) {
     for (int i = 0; i < count; i++) {
         int s = lists[list + i];
-        if (nodes[s].type == N_FUNCDECL) scope_declare(sc, nodes[s].s, make_function(s, sc, -1));
+        if (node_at(s)->type == N_FUNCDECL) scope_declare(sc, node_at(s)->s, make_function(s, sc, -1));
         else hoist_vars(s, sc, 0);
     }
 }
@@ -1742,7 +1763,7 @@ static value_t call_function(value_t fn, int this_obj, value_t* args, int argc) 
     if (fo->kind == O_NATIVE) return fo->native(this_obj, args, argc);
     if (depth >= JS_MAX_DEPTH || br_stack_headroom() < BR_STACK_MIN) { throw_error("RangeError: Maximum call stack size exceeded", NULL); return UNDEF; }
     int fnode = fo->fn_node;
-    node_t* f = &nodes[fnode];
+    node_t* f = node_at(fnode);
     int use_this = (fo->fn_this >= 0) ? fo->fn_this : this_obj;
     if (use_this < 0 && f->type != N_ARROW) use_this = obj_window;
     int sc = new_scope(fo->fn_scope, use_this);
@@ -1751,13 +1772,13 @@ static value_t call_function(value_t fn, int this_obj, value_t* args, int argc) 
     for (int i = 0; i < f->count; i++) {
         int pn = lists[f->list + i];
         value_t v = i < argc ? args[i] : UNDEF;
-        if (nodes[pn].op == 1 && f->type != N_ARROW) {
+        if (node_at(pn)->op == 1 && f->type != N_ARROW) {
             int a = new_array();
             for (int k = i; k < argc; k++) array_push(a, args[k]);
             v = mk_obj(a);
         }
-        if (v.type == V_UNDEF && nodes[pn].a >= 0) { v = eval(nodes[pn].a, sc); if (flow) return UNDEF; }
-        scope_declare(sc, nodes[pn].s, v);
+        if (v.type == V_UNDEF && node_at(pn)->a >= 0) { v = eval(node_at(pn)->a, sc); if (flow) return UNDEF; }
+        scope_declare(sc, node_at(pn)->s, v);
     }
     if (f->type != N_ARROW) {
         int a = new_array();
@@ -1769,8 +1790,8 @@ static value_t call_function(value_t fn, int this_obj, value_t* args, int argc) 
         result = eval(f->a, sc);
     } else {
         int body = f->a;
-        hoist(nodes[body].list, nodes[body].count, sc);
-        exec_list(nodes[body].list, nodes[body].count, sc);
+        hoist(node_at(body)->list, node_at(body)->count, sc);
+        exec_list(node_at(body)->list, node_at(body)->count, sc);
         if (flow == F_RETURN) { result = flow_val; flow = F_NONE; }
         else if (flow == F_BREAK || flow == F_CONTINUE) flow = F_NONE;
     }
@@ -1799,38 +1820,38 @@ static void exec(int n, int sc) {
 static void exec_inner(int n, int sc) {
     if (n < 0 || flow) return;
     if (++steps > JS_STEP_BUDGET) { if (flow != F_THROW) throw_error("Script terminated: too many steps", NULL); js_aborted = 1; return; }
-    node_t* nd = &nodes[n];
+    node_t* nd = node_at(n);
     switch (nd->type) {
     case N_EMPTY: return;
     case N_EXPR: eval(nd->a, sc); return;
     case N_VAR:
         for (int i = 0; i < nd->count; i++) {
             int d = lists[nd->list + i];
-            if (nodes[d].type == N_IDENT) {
+            if (node_at(d)->type == N_IDENT) {
                 value_t v = UNDEF;
-                if (nodes[d].a >= 0) {
-                    v = eval(nodes[d].a, sc); if (flow) return;
-                    if (v.type == V_FUNC && objects[v.u.obj].kind == O_FUNC && br_streq(objects[v.u.obj].name, "anonymous")) objects[v.u.obj].name = nodes[d].s;
+                if (node_at(d)->a >= 0) {
+                    v = eval(node_at(d)->a, sc); if (flow) return;
+                    if (v.type == V_FUNC && objects[v.u.obj].kind == O_FUNC && br_streq(objects[v.u.obj].name, "anonymous")) objects[v.u.obj].name = node_at(d)->s;
                 } else if (nd->op == 0) {
-                    value_t* existing = scope_lookup(sc, nodes[d].s);
+                    value_t* existing = scope_lookup(sc, node_at(d)->s);
                     if (existing) continue;
                 }
                 if (nd->op == 0) {
 
-                    value_t* slot = scope_lookup(sc, nodes[d].s);
+                    value_t* slot = scope_lookup(sc, node_at(d)->s);
                     if (slot) { *slot = v; continue; }
                 }
-                scope_declare(sc, nodes[d].s, v);
+                scope_declare(sc, node_at(d)->s, v);
             } else {
 
-                value_t src = eval(nodes[d].a, sc); if (flow) return;
-                for (int k = 0; k < nodes[d].count; k++) {
-                    int nn = lists[nodes[d].list + k];
+                value_t src = eval(node_at(d)->a, sc); if (flow) return;
+                for (int k = 0; k < node_at(d)->count; k++) {
+                    int nn = lists[node_at(d)->list + k];
                     value_t v;
-                    if (nodes[d].type == N_ARRAY) v = (src.type == V_OBJ && objects[src.u.obj].kind == O_ARRAY && k < objects[src.u.obj].len) ? objects[src.u.obj].items[k] : UNDEF;
-                    else v = (src.type == V_OBJ || src.type == V_STR) ? get_member(src, nodes[nn].s) : UNDEF;
-                    if (v.type == V_UNDEF && nodes[nn].a >= 0) { v = eval(nodes[nn].a, sc); if (flow) return; }
-                    scope_declare(sc, nodes[nn].op == 1 ? nodes[nodes[nn].b].s : nodes[nn].s, v);
+                    if (node_at(d)->type == N_ARRAY) v = (src.type == V_OBJ && objects[src.u.obj].kind == O_ARRAY && k < objects[src.u.obj].len) ? objects[src.u.obj].items[k] : UNDEF;
+                    else v = (src.type == V_OBJ || src.type == V_STR) ? get_member(src, node_at(nn)->s) : UNDEF;
+                    if (v.type == V_UNDEF && node_at(nn)->a >= 0) { v = eval(node_at(nn)->a, sc); if (flow) return; }
+                    scope_declare(sc, node_at(nn)->op == 1 ? node_at(node_at(nn)->b)->s : node_at(nn)->s, v);
                 }
             }
         }
@@ -1928,7 +1949,7 @@ static void exec_inner(int n, int sc) {
                 release_scope(ls);
                 return;
             }
-            for (int p = objects[o].first_prop; p >= 0 && nk < 256; p = props[p].next) keys[nk++] = props[p].key;
+            for (int p = objects[o].first_prop; p >= 0 && nk < 256; p = prop_at(p)->next) keys[nk++] = prop_at(p)->key;
             for (int i = 0; i < nk && !flow; i++) {
                 int is = new_scope(ls, -1); if (flow) return;
                 if (nd->type == N_FORIN) scope_declare(is, nd->s, mk_str(keys[i]));
@@ -1963,16 +1984,16 @@ static void exec_inner(int n, int sc) {
         int matched = -1;
         for (int i = 0; i < nd->count; i++) {
             int c = lists[nd->list + i];
-            if (nodes[c].a < 0) continue;
-            value_t cv = eval(nodes[c].a, ss); if (flow) return;
+            if (node_at(c)->a < 0) continue;
+            value_t cv = eval(node_at(c)->a, ss); if (flow) return;
             if (strict_eq(d, cv)) { matched = i; break; }
         }
-        if (matched < 0) for (int i = 0; i < nd->count; i++) if (nodes[lists[nd->list + i]].a < 0) { matched = i; break; }
+        if (matched < 0) for (int i = 0; i < nd->count; i++) if (node_at(lists[nd->list + i])->a < 0) { matched = i; break; }
         if (matched < 0) return;
         for (int i = matched; i < nd->count && !flow; i++) {
             int c = lists[nd->list + i];
-            hoist(nodes[c].list, nodes[c].count, ss);
-            exec_list(nodes[c].list, nodes[c].count, ss);
+            hoist(node_at(c)->list, node_at(c)->count, ss);
+            exec_list(node_at(c)->list, node_at(c)->count, ss);
         }
         if (flow == F_BREAK && flow_label == NULL) flow = F_NONE;
         release_scope(ss);
@@ -2569,13 +2590,13 @@ static void json_out(value_t v, char* out, int max, int* o, int depth_) {
         }
         out[(*o)++] = '{';
         int first = 1;
-        for (int p = ob->first_prop; p >= 0 && *o < max - 4; p = props[p].next) {
-            if (props[p].val.type == V_FUNC || props[p].val.type == V_UNDEF) continue;
+        for (int p = ob->first_prop; p >= 0 && *o < max - 4; p = prop_at(p)->next) {
+            if (prop_at(p)->val.type == V_FUNC || prop_at(p)->val.type == V_UNDEF) continue;
             if (!first) out[(*o)++] = ',';
             first = 0;
-            json_out(mk_str(props[p].key), out, max, o, depth_ + 1);
+            json_out(mk_str(prop_at(p)->key), out, max, o, depth_ + 1);
             out[(*o)++] = ':';
-            json_out(props[p].val, out, max, o, depth_ + 1);
+            json_out(prop_at(p)->val, out, max, o, depth_ + 1);
         }
         out[(*o)++] = '}';
         return;
@@ -2747,23 +2768,23 @@ static value_t n_Object_keys(int t, value_t* a, int n) {
     (void)t; int r = new_array();
     if (n && (a[0].type == V_OBJ || a[0].type == V_FUNC)) {
         if (objects[a[0].u.obj].kind == O_ARRAY) { for (int i = 0; i < objects[a[0].u.obj].len; i++) { char b[16]; br_itoa(i, b); array_push(r, mk_str(js_strdup(b))); } }
-        else for (int p = objects[a[0].u.obj].first_prop; p >= 0; p = props[p].next) array_push(r, mk_str(props[p].key));
+        else for (int p = objects[a[0].u.obj].first_prop; p >= 0; p = prop_at(p)->next) array_push(r, mk_str(prop_at(p)->key));
     }
     return mk_obj(r);
 }
 static value_t n_Object_values(int t, value_t* a, int n) {
     (void)t; int r = new_array();
-    if (n && a[0].type == V_OBJ) { if (objects[a[0].u.obj].kind == O_ARRAY) for (int i = 0; i < objects[a[0].u.obj].len; i++) array_push(r, objects[a[0].u.obj].items[i]); else for (int p = objects[a[0].u.obj].first_prop; p >= 0; p = props[p].next) array_push(r, props[p].val); }
+    if (n && a[0].type == V_OBJ) { if (objects[a[0].u.obj].kind == O_ARRAY) for (int i = 0; i < objects[a[0].u.obj].len; i++) array_push(r, objects[a[0].u.obj].items[i]); else for (int p = objects[a[0].u.obj].first_prop; p >= 0; p = prop_at(p)->next) array_push(r, prop_at(p)->val); }
     return mk_obj(r);
 }
 static value_t n_Object_entries(int t, value_t* a, int n) {
     (void)t; int r = new_array();
-    if (n && a[0].type == V_OBJ) for (int p = objects[a[0].u.obj].first_prop; p >= 0; p = props[p].next) { int pair = new_array(); array_push(pair, mk_str(props[p].key)); array_push(pair, props[p].val); array_push(r, mk_obj(pair)); }
+    if (n && a[0].type == V_OBJ) for (int p = objects[a[0].u.obj].first_prop; p >= 0; p = prop_at(p)->next) { int pair = new_array(); array_push(pair, mk_str(prop_at(p)->key)); array_push(pair, prop_at(p)->val); array_push(r, mk_obj(pair)); }
     return mk_obj(r);
 }
 static value_t n_Object_assign(int t, value_t* a, int n) {
     (void)t; if (!n || a[0].type != V_OBJ) return UNDEF;
-    for (int k = 1; k < n; k++) if (a[k].type == V_OBJ) for (int p = objects[a[k].u.obj].first_prop; p >= 0; p = props[p].next) set_prop(a[0].u.obj, props[p].key, props[p].val);
+    for (int k = 1; k < n; k++) if (a[k].type == V_OBJ) for (int p = objects[a[k].u.obj].first_prop; p >= 0; p = prop_at(p)->next) set_prop(a[0].u.obj, prop_at(p)->key, prop_at(p)->val);
     return a[0];
 }
 static value_t n_Object_create(int t, value_t* a, int n) { (void)t; int o = new_object(O_PLAIN); if (o >= 0 && n && a[0].type == V_OBJ) objects[o].proto = a[0].u.obj; return mk_obj(o); }
@@ -2981,12 +3002,12 @@ static void style_proxy_set(int o, const char* key, value_t v) {
     set_prop(o, js_strdup(key), mk_str(js_strdup(to_string(v))));
 
     static char css[1024]; int c = 0;
-    for (int p = objects[o].first_prop; p >= 0; p = props[p].next) {
-        if (props[p].val.type != V_STR || !props[p].val.u.s[0]) continue;
-        const char* nm = style_prop_to_css(props[p].key);
+    for (int p = objects[o].first_prop; p >= 0; p = prop_at(p)->next) {
+        if (prop_at(p)->val.type != V_STR || !prop_at(p)->val.u.s[0]) continue;
+        const char* nm = style_prop_to_css(prop_at(p)->key);
         for (int i = 0; nm[i] && c < 1000; i++) css[c++] = nm[i];
         css[c++] = ':';
-        for (int i = 0; props[p].val.u.s[i] && c < 1000; i++) css[c++] = props[p].val.u.s[i];
+        for (int i = 0; prop_at(p)->val.u.s[i] && c < 1000; i++) css[c++] = prop_at(p)->val.u.s[i];
         css[c++] = ';';
     }
     css[c] = 0;
@@ -3575,9 +3596,9 @@ static value_t n_fetch(int t, value_t* a, int n) {
         value_t hv = get_prop(opts, "headers");
         if (hv.type == V_OBJ) {
             int ho = hv.u.obj;
-            for (int q = objects[ho].first_prop; q >= 0; q = props[q].next) {
-                const char* key = props[q].key;
-                const char* val = to_string(props[q].val);
+            for (int q = objects[ho].first_prop; q >= 0; q = prop_at(q)->next) {
+                const char* key = prop_at(q)->key;
+                const char* val = to_string(prop_at(q)->val);
                 if (strlen(headers) + strlen(key) + strlen(val) + 5 >= sizeof(headers)) break;
                 br_strlcat(headers, key, sizeof(headers));
                 br_strlcat(headers, ": ", sizeof(headers));
@@ -4176,10 +4197,11 @@ static void run_source(const char* src, int len, const char* origin) {
 
 void br_js_run_source(const char* src, int len, const char* origin) { run_source(src, len, origin); }
 
-static char ext_script[1024 * 1024];
+
 
 static void run_scripts(br_node_t* n) {
     if (!n || br_stack_headroom() < BR_STACK_MIN) return;
+    if (n->type == BR_NODE_ELEMENT && br_streq(n->tag,"noscript")) return;
     if (n->type == BR_NODE_ELEMENT && br_streq(n->tag, "script")) {
         const char* type = br_attr(n, "type");
         if (type && !br_strieq(type, "text/javascript") && !br_strieq(type, "module") && !br_strieq(type, "application/javascript") && !br_strieq(type, "text/ecmascript") && type[0]) return;
