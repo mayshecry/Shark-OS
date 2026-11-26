@@ -6,7 +6,7 @@ Handles // line comments, /* block comments */ and preserves line structure so
 #line-visible offsets and diffs stay readable.
 
     python3 tools/strip_comments.py FILE [FILE...]
-    python3 tools/strip_comments.py --check FILE   # exit 1 if comments remain
+    python3 tools/strip_comments.py --check FILE
 
 The scanner is a small state machine: normal, line comment, block comment,
 string, char. Escapes inside literals are honoured, so "http://x" survives.
@@ -44,7 +44,7 @@ def strip(text: str) -> str:
         if state == "line":
             if ch == "\n":
                 state = "code"
-                # keep the trailing newline, drop trailing spaces introduced
+
                 while out and out[-1] in " \t":
                     out.pop()
                 out.append("\n")
@@ -55,7 +55,7 @@ def strip(text: str) -> str:
             if ch == "*" and nxt == "/":
                 state = "code"
                 i += 2
-                # a block comment that ended a line keeps that newline
+
                 j = i
                 while j < n and text[j] in " \t":
                     j += 1
@@ -86,7 +86,7 @@ def tidy(text: str) -> str:
     for line in text.split("\n"):
         stripped = line.rstrip()
         lines.append(stripped)
-    # collapse runs of three or more blank lines
+
     collapsed = []
     blanks = 0
     for line in lines:
