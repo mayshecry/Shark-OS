@@ -1,5 +1,7 @@
 #include "kernel.h"
 #include "ata.h"
+#include "ahci.h"
+#include "ata_identify.h"
 
 #define ATA_REG_DATA   0
 #define ATA_REG_ERR    1
@@ -54,6 +56,8 @@ static bool ata_wait_ready(const ata_drive_t* d) {
 static bool ata_wait_drq(const ata_drive_t* d) {
     for (int i = 0; i < ATA_POLL_TIMEOUT; i++) {
         uint8_t st = ata_status(d);
+        if (st & ATA_SR_BSY)
+            continue;
         if (st & ATA_SR_ERR || st & ATA_SR_DF) return false;
         if (st & ATA_SR_DRQ) return true;
     }
@@ -83,54 +87,85 @@ static void ata_probe_slot(int chan, bool master) {
         if (!(st & ATA_SR_BSY)) break;
     }
 
-    if (st == 0 || st == 0xFF) return;
-
-    if (st & ATA_SR_ERR) {
-        uint8_t l1 = inb(c->io + ATA_REG_LBA1);
-        uint8_t l2 = inb(c->io + ATA_REG_LBA2);
-        if (l1 == 0x14 && l2 == 0xEB) return;
-        if (l1 == 0x69 && l2 == 0x96) return;
-        if (inb(c->io + ATA_REG_SECCNT) == 0 && l1 == 0 && l2 == 0) return;
-    }
+    if (st == 0 || st == 0xFF || (st & (ATA_SR_BSY|ATA_SR_DF|ATA_SR_ERR))) return;
 
     if (!(st & ATA_SR_DRQ)) return;
 
     static uint16_t id[256];
     for (int i = 0; i < 256; i++) id[i] = inw(c->io + ATA_REG_DATA);
 
-    uint32_t lba28 = (uint32_t)id[60] | ((uint32_t)id[61] << 16);
-    if (lba28 == 0) return;
-    if (lba28 == 0xFFFFFFFFu) return;
-
-    ata_drive_t* d = &ata_drives[ata_count];
-    d->present = true;
-    d->master = master;
-    d->io_base = c->io;
-    d->ctrl_base = c->ctrl;
-    d->sectors = lba28;
-    d->bytes = (uint64_t)lba28 * 512u;
-
-    for (int i = 0; i < 40; i++) {
-        uint16_t w = id[27 + i / 2];
-        d->model[i] = (char)((i & 1) ? (w & 0xFF) : (w >> 8));
+    for (unsigned i=0;i<ATA_POLL_TIMEOUT;i++) {
+        st=inb(c->io+ATA_REG_STAT);
+        if(!(st&(ATA_SR_BSY|ATA_SR_DRQ)))break;
     }
-    d->model[40] = '\0';
-
-    int last = 39;
-    while (last >= 0 && (d->model[last] == ' ' || d->model[last] == '\0')) {
-        d->model[last] = '\0';
-        last--;
-    }
-
+    if(!(st&0x40) || (st&(ATA_SR_BSY|ATA_SR_DRQ|ATA_SR_ERR|ATA_SR_DF)))return;
+    ata_drive_t *d=&ata_drives[ata_count];
+    if(!ata_decode(id,d))return;
+    d->present=true;d->master=master;d->io_base=c->io;d->ctrl_base=c->ctrl;
     ata_count++;
 }
 
+static unsigned ahci_count;
+const char *ata_scan_status(void) {
+    if(ahci_count && !ata_count)return "AHCI controller present; no verified SATA disks.";
+    return ata_count?"Verified ATA IDENTIFY responses.":"No verified ATA disks.";
+}
+void ata_number(uint64_t v,char *out){
+    char rev[21];unsigned n=0;
+    do{rev[n++]='0'+v%10;v/=10;}while(v);
+    while(n)*out++=rev[--n];*out=0;
+}
 void ata_init(void) {
-    ata_count = 0;
-    for (int i = 0; i < ATA_MAX_DRIVES; i++) ata_drives[i].present = false;
-    for (int c = 0; c < 2; c++) {
-        ata_probe_slot(c, true);
-        ata_probe_slot(c, false);
+    if (ahci_count) return; /* active port DMA state is boot-scoped */
+    ata_count=0; ahci_count=0;
+    memset(ata_drives,0,sizeof ata_drives);
+    unsigned channels=0,mass=0;
+    for(unsigned bus=0;bus<256;bus++)for(unsigned slot=0;slot<32;slot++){
+        if((pci_config_read(bus,slot,0,0)&0xffff)==0xffff)continue;
+        unsigned funcs=(pci_config_read(bus,slot,0,12)&0x800000)?8:1;
+        for(unsigned f=0;f<funcs;f++){
+            uint32_t cc=pci_config_read(bus,slot,f,8);
+            if((cc>>24)!=1)continue;
+            mass++;
+            if((cc>>8)==0x010601){ahci_count++; ata_count+=ahci_probe(bus,slot,f,ata_drives+ata_count,ATA_MAX_DRIVES-ata_count); continue;}
+            if((cc>>16)!=0x0101 || !(pci_config_read(bus,slot,f,4)&1))continue;
+            if(!(cc&0x0100))channels|=1;
+            if(!(cc&0x0400))channels|=2;
+        }
+    }
+    if(!mass)channels=3;
+    for(int c=0;c<2;c++)if(channels&(1u<<c)){
+        ata_probe_slot(c,true);ata_probe_slot(c,false);
+    }
+    serial_puts("[disks] verified=");serial_putdec(ata_count);serial_puts(" ahci=");serial_putdec(ahci_count);serial_puts("\n");
+    for(int i=0;i<ata_count;i++){
+        char n[24];ata_number(ata_drives[i].bytes,n);serial_puts("[disk] ");serial_puts(ata_drives[i].model);serial_puts(" bytes=");serial_puts(n);serial_puts("\n");
+    }
+}
+void ata_show_disks(void){
+    terminal_writestring(ata_scan_status());terminal_putchar('\n');
+    for(int i=0;i<ata_count;i++){
+        const ata_drive_t *d=ata_drives+i;char n[24];
+        terminal_writestring(d->ahci?"AHCI ":"ATA ");terminal_putchar('0'+i);terminal_writestring(": ");terminal_writestring(d->model);terminal_writestring("  ");ata_number(d->bytes,n);terminal_writestring(n);terminal_writestring(" bytes; ");terminal_writestring(d->install_supported?(d->ahci?"SATA DMA48":"512-byte LBA28 I/O"):"inventory only");terminal_putchar('\n');
+    }
+}
+
+static void add_text(char **end,const char *s){while(*s)*(*end)++=*s++;**end=0;}
+void ata_report_files(void){
+    struct fs_node *sys=find_node(root,"System");
+    if(!sys || sys->type!=FS_DIRECTORY)return;
+    for(int list=0;list<2;list++){
+        struct fs_node *f=find_node(sys,list?"devices":"partitions");
+        if(!f || f->type!=FS_FILE || f->disk_backed)continue;
+        char text[1024],*end=text,num[24];
+        add_text(&end,list?"System memory: RAM\nTerminal: tty0\nInput: PS/2 keyboard and mouse\n":"Disk inventory (whole devices, not a partition table):\n");
+        add_text(&end,ata_scan_status());add_text(&end,"\n");
+        for(int i=0;i<ata_count;i++){
+            add_text(&end,ata_drives[i].ahci?"AHCI ":"ATA ");*end++='0'+i;add_text(&end,": ");add_text(&end,ata_drives[i].model);add_text(&end,"  ");
+            ata_number(ata_drives[i].bytes,num);add_text(&end,num);add_text(&end," bytes\n");
+        }
+        uint32_t len=end-text;
+        if(!fs_node_write(f,0,text,len))fs_node_truncate(f,len);
     }
 }
 
@@ -143,11 +178,13 @@ const ata_drive_t* ata_drive_get(int idx) {
     return &ata_drives[idx];
 }
 
-static bool ata_transfer(int drive, uint32_t lba, uint8_t count,
+static bool ata_transfer(int drive, uint64_t lba, uint8_t count,
                          uint8_t* buf, bool write) {
     const ata_drive_t* d = ata_drive_get(drive);
-    if (!d || count == 0) return false;
-    if (lba + count > d->sectors) return false;
+    if (!d || !d->install_supported || count == 0) return false;
+    if(d->ahci)return ahci_io(d,lba,count,buf,write);
+    if (lba >= (1u << 28) || count > (1u << 28) - lba || lba >= d->sectors || count > d->sectors - lba)
+        return false;
 
     if (!ata_wait_ready(d)) return false;
 
@@ -166,31 +203,40 @@ static bool ata_transfer(int drive, uint32_t lba, uint8_t count,
     for (int s = 0; s < count; s++) {
         if (!ata_wait_drq(d)) return false;
         if (write) {
-            for (int i = 0; i < 256; i++) outw(d->io_base + ATA_REG_DATA, w[i]);
+            const uint16_t *src = w;
+            size_t words = 256;
+            asm volatile("rep outsw" : "+S"(src), "+c"(words) : "d"(d->io_base) : "memory");
         } else {
-            for (int i = 0; i < 256; i++) w[i] = inw(d->io_base + ATA_REG_DATA);
+            uint16_t *dst = w;
+            size_t words = 256;
+            asm volatile("rep insw" : "+D"(dst), "+c"(words) : "d"(d->io_base) : "memory");
         }
         w += 256;
+        ata_io_delay(&ata_chans[d->io_base == ata_chans[0].io ? 0 : 1]);
     }
 
 
     {
+        if (!ata_wait_ready(d))
+            return false;
         uint8_t st = ata_status(d);
         if (st & (ATA_SR_ERR | ATA_SR_DF)) return false;
     }
 
     if (write) {
         outb(d->io_base + ATA_REG_STAT, ATA_CMD_FLUSH);
-        ata_wait_ready(d);
+        ata_io_delay(&ata_chans[d->io_base == ata_chans[0].io ? 0 : 1]);
+        if (!ata_wait_ready(d) || (ata_status(d) & (ATA_SR_ERR | ATA_SR_DF)))
+            return false;
     }
     return true;
 }
 
-bool ata_read_sectors(int drive, uint32_t lba, uint8_t count, uint8_t* dst) {
+bool ata_read_sectors(int drive, uint64_t lba, uint8_t count, uint8_t* dst) {
     return ata_transfer(drive, lba, count, dst, false);
 }
 
-bool ata_write_sectors(int drive, uint32_t lba, uint8_t count,
+bool ata_write_sectors(int drive, uint64_t lba, uint8_t count,
                        const uint8_t* src) {
     return ata_transfer(drive, lba, count, (uint8_t*)src, true);
 }
