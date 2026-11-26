@@ -55,6 +55,15 @@ void draw_char(char c, int x, int y, uint32_t fg, uint32_t bg) {
 
     const unsigned char* glyph = term_font8x16[font_idx];
 
+    if (scale == 1 && x >= 0 && y >= 0 && x <= sw - 8 && y <= sh - 16) {
+        uint32_t *dst = lfbptr + (size_t)y * stride + x;
+        for (int row = 0; row < 16; row++) {
+            unsigned bits = glyph[row];
+            for (int k = 0; k < 8; k++)
+                dst[row * stride + k] = (bits & (128u >> k)) ? fg : bg;
+        }
+        return;
+    }
     for (int row = 0; row < 16; row++) {
         uint8_t font_byte = glyph[row];
         int py0 = y + row * scale;
@@ -127,6 +136,10 @@ void draw_rect(int x, int y, int w, int h, uint32_t color) {
 
     uint32_t stride = screen_pitch / 4;
     int run = x1 - x0;
+    if ((unsigned)run == stride && !x0) {
+        fill32(lfbptr + (size_t)y0 * stride, color, (size_t)run * (y1 - y0));
+        return;
+    }
     for (int py = y0; py < y1; py++) {
         fill32(&lfbptr[(uint32_t)py * stride + (uint32_t)x0], color, (size_t)run);
     }
