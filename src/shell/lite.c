@@ -1,4 +1,6 @@
 #include "kernel.h"
+#include "store.h"
+#include "ata.h"
 #include "plugin_manager.h"
 #include "net.h"
 #include "firewall.h"
@@ -22,7 +24,14 @@ void lite_kmain(void) {
     outb(0x40, divisor & 0xFF);
     outb(0x40, (divisor >> 8) & 0xFF);
     asm volatile("sti");
-    fs_initialize();
+    ata_init();
+    if (!store_restore()) {
+        fs_initialize();
+        if (store_installed() && current_dir)
+            strcpy(current_dir->name, "sharkuser");
+    }
+    ata_report_files();
+    tiling_enabled = false;
     terminal_initialize();
     terminal_clear();
 
@@ -93,6 +102,7 @@ void lite_kmain(void) {
             net_poll();
             (void)net_link_recovered();
         }
+        store_tick();
         char c = keyboard_getchar();
         if (c == 0) { yield(); continue; }
 
