@@ -1,4 +1,7 @@
 #include "kernel.h"
+#include "ata.h"
+#include "install.h"
+#include "store.h"
 #include "server_console.h"
 #include "server_cli.h"
 #include "containers.h"
@@ -8,6 +11,7 @@
 #include "firewall.h"
 #include "router.h"
 
+extern void early_panic(int code, const char *msg);
 #define SERVER_MULTIBOOT_MAGIC 0x2BADB002u
 #define SERVER_MMAP_SNAPSHOT_SIZE 4096
 #define SERVER_PMM_REGION_LIMIT 128
@@ -611,6 +615,37 @@ static void server_nano(char* path) {
     server_editor_file = NULL;
 }
 
+/* Only the local serial/keyboard loop consumes the confirmation line. */
+static int pending_install = -1;
+static void install_progress(const char *stage, unsigned percent) {
+    if (percent % 10) return;
+    terminal_writestring(stage); terminal_putchar(' '); server_putdec(percent); terminal_writestring("%\r\n");
+}
+static void install_cli(const char *args) {
+    if (server_active_container >= 0 || server_output_capture_active()) {
+        terminal_writestring("Install is available only on the local host console.\r\n"); return;
+    }
+    if (!install_image_ready() || store_installed()) {
+        terminal_writestring("Boot the server ISO's Live + CLI installer entry.\r\n"); return;
+    }
+    if (!*args) {
+        ata_show_disks();
+        terminal_writestring("Use a spare blank disk. Select with: install <disk number>\r\n"); return;
+    }
+    if (args[0] < '0' || args[0] > '9' || args[1]) {
+        terminal_writestring("Usage: install [disk number]\r\n"); return;
+    }
+    int idx = args[0] - '0';
+    const ata_drive_t *d = ata_drive_get(idx);
+    if (!d || !d->install_supported || d->bytes < install_size()) {
+        terminal_writestring("Target missing, unsupported, or too small. No data written.\r\n"); return;
+    }
+    char bytes[24]; ata_number(d->bytes, bytes);
+    terminal_writestring(d->ahci ? "Target AHCI " : "Target ATA "); server_putdec(idx); terminal_writestring(": "); terminal_writestring(d->model);
+    terminal_writestring(" (bytes: "); terminal_writestring(bytes); terminal_writestring("). This writes a bootable server image.\r\n");
+    terminal_writestring("Type INSTALL "); server_putdec(idx); terminal_writestring(" to confirm; anything else cancels.\r\n");
+    pending_install = idx;
+}
 static void server_execute_core(char* line) {
     while (*line == ' ' || *line == '\t') line++;
     if (!*line) return;
@@ -620,6 +655,13 @@ static void server_execute_core(char* line) {
     while (*args && *args != ' ' && *args != '\t') args++;
     if (*args) *args++ = 0;
     while (*args == ' ' || *args == '\t') args++;
+    if (!strcmp(line, "install")) { install_cli(args); return; }
+    if (!strcmp(line, "disks")) { ata_show_disks(); return; }
+    if (!strcmp(line, "sync")) {
+        if (server_active_container >= 0 || server_output_capture_active()) terminal_writestring("Use sync on the local host console.\r\n");
+        else { store_sync(); terminal_writestring(store_status()); terminal_writestring("\r\n"); }
+        return;
+    }
     if (strcmp(line, "container") == 0) { server_container_command(args); return; }
     if (strcmp(line, "fw") == 0 || strcmp(line, "firewall") == 0) { fw_command(args); return; }
     if (strcmp(line, "httpd") == 0) {
@@ -655,6 +697,7 @@ static void server_execute_core(char* line) {
         for (;;) asm volatile("cli; hlt");
     }
     if (strcmp(line, "help") == 0) {
+        terminal_writestring("Storage: disks, install [disk number] (local live installer), sync (save host files)\r\n");
         terminal_writestring("Server: container, fw docs/status/rate/allow/deny/policy/delete/clear, httpd, sshd\r\n");
         terminal_writestring("Router: rtr start [port], rtr status, rtr help, rtr stop, rtr wan, rtr dhcp, rtr dns\r\n");
         terminal_writestring("Files: ls [-la] [dir], cd <dir>, pwd, cat <file>, nano <file>, tree, find, grep, stat\r\n");
@@ -694,7 +737,14 @@ static void server_main_loop(void) {
         if (c == '\r' || c == '\n') {
             terminal_writestring("\r\n");
             server_line[server_line_len] = 0;
-            server_execute_core(server_line);
+            if (pending_install >= 0) {
+                int idx = pending_install; pending_install = -1;
+                char confirm[] = "INSTALL 0"; confirm[8] += idx;
+                if (!strcmp(server_line, confirm) && server_active_container < 0)
+                    terminal_writestring(install_disk(idx, install_progress));
+                else terminal_writestring("Cancelled. No data written.");
+                terminal_writestring("\r\n");
+            } else server_execute_core(server_line);
             server_line_len = 0;
             if (!server_htop_is_active()) server_prompt();
             continue;
@@ -721,6 +771,19 @@ static uint64_t server_read64(const volatile uint8_t* data) {
     return (uint64_t)server_read32(data) | ((uint64_t)server_read32(data + 4) << 32);
 }
 
+static uint64_t mod_lo = UINT64_MAX, mod_hi;
+static void add_ram(uint64_t start, uint64_t end) {
+    extern char _kernel_end[];
+    uint64_t floor = (uintptr_t)_kernel_end + 8192;
+    if (start < floor) start = floor;
+    if (end > UINTPTR_MAX - 15) end = UINTPTR_MAX - 15;
+    if (end > start && server_pmm_region_count < SERVER_PMM_REGION_LIMIT)
+        server_pmm_regions[server_pmm_region_count++] = (pmm_memory_region_t){start, end};
+}
+static void add_server_region(uint64_t start, uint64_t end) {
+    add_ram(start, end < mod_lo ? end : mod_lo);
+    if (mod_hi) add_ram(start > mod_hi ? start : mod_hi, end);
+}
 static void server_init_memory(struct server_multiboot_info* info) {
     server_pmm_region_count = 0;
     total_system_memory = 0;
@@ -740,21 +803,18 @@ static void server_init_memory(struct server_multiboot_info* info) {
             uint64_t length = server_read64(map + offset + 12);
             uint32_t type = server_read32(map + offset + 20);
             if (type == server_boot_usable_type && length && base <= 0x1FFFFFFFFFULL && length <= 0x2000000000ULL - base) {
-                server_pmm_regions[server_pmm_region_count].start = base;
-                server_pmm_regions[server_pmm_region_count].end = base + length;
-                server_pmm_region_count++;
+                add_server_region(base, base + length);
                 total_system_memory += length;
             }
             offset += size + 4;
         }
     }
-    if (server_pmm_region_count) pmm_init_regions(server_pmm_regions, server_pmm_region_count);
-    else {
-        uint64_t memory = ((uint64_t)server_boot_mem_upper + 1024ULL) * 1024ULL;
-        if (memory < 64ULL * 1024 * 1024) memory = 128ULL * 1024 * 1024;
-        total_system_memory = memory;
-        pmm_init(memory);
+    if (!server_pmm_region_count && !(info->flags & (1u << 6))) {
+        total_system_memory = ((uint64_t)server_boot_mem_upper + 1024) * 1024;
+        add_server_region(0, total_system_memory);
     }
+    if (!server_pmm_region_count) early_panic(0, "No usable server heap. Try the lower RAM entry.");
+    pmm_init_regions(server_pmm_regions, server_pmm_region_count);
 }
 
 uint32_t server_execute_remote(const char* command, char* output, uint32_t output_capacity, struct fs_node** working_directory) {
@@ -801,8 +861,20 @@ void kmain(uint32_t magic, struct server_multiboot_info* info) {
     outb(0x40, (uint8_t)(pit_divisor & 0xFF));
     outb(0x40, (uint8_t)(pit_divisor >> 8));
     asm volatile("sti");
+    if (info->flags & 4) store_boot_option((void *)(uintptr_t)info->cmdline);
+    if ((info->flags & 8) && info->mods_addr) {
+        const uint32_t *m = (void *)(uintptr_t)info->mods_addr;
+        for (unsigned i = 0; i < info->mods_count; i++, m += 4) {
+            if (m[1] <= m[0]) continue;
+            if (m[0] < mod_lo) mod_lo = m[0];
+            if (m[1] > mod_hi) mod_hi = m[1];
+            if (!install_image_ready()) install_image_set((void *)(uintptr_t)m[0], m[1] - m[0]);
+        }
+    }
     server_init_memory(info);
-    fs_initialize();
+    ata_init();
+    if (!store_restore()) fs_initialize();
+    ata_report_files();
     server_host_root = root;
     server_host_cwd = current_dir;
     strcpy(current_user, "root");
@@ -832,6 +904,9 @@ void kmain(uint32_t magic, struct server_multiboot_info* info) {
     terminal_writestring("  SSH default login: root / root123\r\n");
     terminal_writestring("  Warning: the default SSH password is weak; change it before exposing this host.\r\n");
     if (!ssh_server_has_host_key()) terminal_writestring("  SSH is not active; check adapter and CPU RDRAND support.\r\n");
+    terminal_writestring(store_status()); terminal_writestring("\r\n");
+    if (install_image_ready()) terminal_writestring("  Type install to list targets for a CLI server installation.\r\n");
+    if (store_installed()) terminal_writestring("  Run sync from the host console to save files before reboot.\r\n");
     server_prompt();
     asm volatile("sti");
     server_main_loop();
