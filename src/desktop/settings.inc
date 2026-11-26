@@ -7,11 +7,13 @@ static const char *const jcolors[]={"Slate violet","Deep harbor","Pine","Graphit
 static const char *const fitnames[]={"Fill the desktop","Fit to desktop","Stretch to desktop"};
 static const char *const mode_names[]={"Dithered background","Solid colour","Wallpaper image"};
 void settings_page_set(int i){prefpage=i>=0 && i<5?i:0;firstrow=0;desktop.dirty=true;}
-static int row_count(void){switch(prefpage){case 0:return 2;case 1:return wm_jaws()?1:THEME_COUNT;case 2:return wm_jaws()?4:3+WP_COUNT+8+3;case 3:return 7;default:return 2;}}
+static int row_count(void){switch(prefpage){case 0:return 2;case 1:return wm_jaws()?1:THEME_COUNT;case 2:return wm_jaws()?4+WP_COUNT+3:3+WP_COUNT+8+3;case 3:return 7;default:return 2;}}
 static const char *pref_row(int i,bool *active,bool *enabled){switch(prefpage){
  case 0:*active=(i==!!wm_jaws());return i?"JawsWM  -  UNIX clip and dock":"NemoWM  -  icons and taskbar";
  case 1:*active=wm_jaws()||i==theme_get_id();return wm_jaws()?"Jaws classic  -  graphite and silver":theme_get_name(i);
- case 2:if(wm_jaws()){*active=i==wm_backdrop();return jcolors[i];}
+ case 2:if(wm_jaws()){int choice=wm_backdrop();if(i<4){*active=i==choice;return jcolors[i];}
+   i-=4;if(i<WP_COUNT){*active=choice>=4 && (choice-4)%WP_COUNT==i;return desktop_wallpaper_name(i);}
+   i-=WP_COUNT;*enabled=choice>=4;*active=*enabled && (choice-4)/WP_COUNT==i;return fitnames[i];}
    if(i<3){*active=i==desktop.wallpaper_mode;return mode_names[i];}i-=3;
    if(i<WP_COUNT){*active=desktop.wallpaper_mode==2 && i==desktop.wallpaper_id;return desktop_wallpaper_name(i);}i-=WP_COUNT;
    if(i<8){*active=desktop.wallpaper_mode==1 && settings_colors[i].color==wallpaper_top;return settings_colors[i].label;}i-=8;*active=i==desktop.wallpaper_fit;return fitnames[i];
@@ -19,7 +21,9 @@ static const char *pref_row(int i,bool *active,bool *enabled){switch(prefpage){
  default:if(i==0){*active=tiling_enabled;return "Tile open windows";}return "Shut down SharkOS";
 }}
 static void pref_act(int i){switch(prefpage){case 0:wm_set(i);break;case 1:if(!wm_jaws())theme_set(i);break;
-case 2:if(wm_jaws())wm_set_backdrop(i);else if(i<3)desktop_set_wallpaper_mode(i);else if((i-=3)<WP_COUNT)desktop_set_wallpaper(i);else if((i-=WP_COUNT)<8){uint32_t c=settings_colors[i].color;desktop_set_wallpaper_color(c,0xff000000|((c&0xfefefe)>>1));desktop_set_wallpaper_mode(W98_WALL_SOLID);}else desktop_set_wallpaper_fit(i-8);break;
+case 2:if(wm_jaws()){int old=wm_backdrop();if(i<4)wm_set_backdrop(i);
+   else if(i<4+WP_COUNT)wm_set_backdrop(i+(old<4?0:(old-4)/WP_COUNT*WP_COUNT));
+   else if(old>=4)wm_set_backdrop(4+(old-4)%WP_COUNT+(i-4-WP_COUNT)*WP_COUNT);}else if(i<3)desktop_set_wallpaper_mode(i);else if((i-=3)<WP_COUNT)desktop_set_wallpaper(i);else if((i-=WP_COUNT)<8){uint32_t c=settings_colors[i].color;desktop_set_wallpaper_color(c,0xff000000|((c&0xfefefe)>>1));desktop_set_wallpaper_mode(W98_WALL_SOLID);}else desktop_set_wallpaper_fit(i-8);break;
 case 3:video_choose(i<5?reslabels[i]:i==5?"keep":"revert");break;case 4:if(i==0)tiling_set(!tiling_enabled);else shutdown();break;}desktop.dirty=true;}
 static void pref_layout(window_t *w,bool click,int mx,int my){
  int x=w->rect.client_x,y=w->rect.client_y,cw=w->rect.client_w,ch=w->rect.client_h;
