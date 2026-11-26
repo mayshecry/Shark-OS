@@ -2,6 +2,7 @@
 
 #include "kernel.h"
 #include "net.h"
+#include "drivers/r8169.h"
 #include "tls.h"
 #include "firewall.h"
 #include <stdint.h>
@@ -67,7 +68,7 @@ uint8_t net_gw[4] = {0,0,0,0};
 uint8_t net_dns[4] = {0,0,0,0};
 int net_configured = 0;
 
-/* PCI address of the adapter that net_init() actually brought up. */
+
 static uint8_t net_active_bus = 0, net_active_slot = 0, net_active_func = 0;
 static int net_active_known = 0;
 static void net_mark_active(uint8_t bus, uint8_t slot, uint8_t func) {
@@ -839,138 +840,28 @@ static int e1000_is_supported(uint16_t did) {
 
 void net_set_rx_callback(net_rx_cb_t cb) { net_rx_cb = cb; }
 
+static const net_dev_t *gigabit;
 
-#define R8169_NRX 64
-#define R8169_NTX 32
-#define R8169_BUF 2048
-#define R8169_DESC_OWN 0x80000000u
-#define R8169_DESC_EOR 0x40000000u
-#define R8169_DESC_FS 0x20000000u
-#define R8169_DESC_LS 0x10000000u
-#define R8169_CMD 0x37
-#define R8169_TCR 0x40
-#define R8169_RCR 0x44
-#define R8169_TPPOLL 0x38
-#define R8169_RDSAR 0xE4
-#define R8169_TNPDS 0x20
-#define R8169_IMR 0x3C
-#define R8169_ISR 0x3E
-#define R8169_CMD_RST 0x10
-#define R8169_CMD_RE 0x08
-#define R8169_CMD_TE 0x04
-
-typedef struct { uint32_t status; uint32_t vlan; uint32_t addr_lo; uint32_t addr_hi; } __attribute__((packed)) r8169_desc_t;
-
-static uintptr_t r8169_mmio;
-static uint32_t r8169_io;
-static r8169_desc_t* r8169_rx;
-static r8169_desc_t* r8169_tx;
-static uint8_t* r8169_rxb[R8169_NRX];
-static uint8_t* r8169_txb[R8169_NTX];
-static uint32_t r8169_rx_head;
-static uint32_t r8169_tx_head;
-static bool r8169_present;
-
-static void r8169_w8(uint32_t off, uint8_t value) { if (r8169_mmio) *(volatile uint8_t*)(r8169_mmio + off) = value; else outb((uint16_t)(r8169_io + off), value); }
-static uint8_t r8169_r8(uint32_t off) { return r8169_mmio ? *(volatile uint8_t*)(r8169_mmio + off) : inb((uint16_t)(r8169_io + off)); }
-static void r8169_w16(uint32_t off, uint16_t value) { if (r8169_mmio) *(volatile uint16_t*)(r8169_mmio + off) = value; else outw((uint16_t)(r8169_io + off), value); }
-static void r8169_w32(uint32_t off, uint32_t value) { if (r8169_mmio) *(volatile uint32_t*)(r8169_mmio + off) = value; else outl((uint16_t)(r8169_io + off), value); }
-
-static void r8169_send(const uint8_t* data, uint32_t len) {
-    if (!r8169_present || !data || !len) return;
-    uint32_t idx = r8169_tx_head;
-    volatile r8169_desc_t* d = &r8169_tx[idx];
-    for (int i = 0; i < 20 && (d->status & R8169_DESC_OWN); i++) delay_ms(1);
-    if (d->status & R8169_DESC_OWN) return;
-    if (len > R8169_BUF) len = R8169_BUF;
-    memcpy(r8169_txb[idx], data, len);
-    if (len < 60) { memset(r8169_txb[idx] + len, 0, 60 - len); len = 60; }
-    d->addr_lo = (uint32_t)virt_to_phys(r8169_txb[idx]);
-    d->addr_hi = 0;
-    d->vlan = 0;
-    d->status = R8169_DESC_OWN | R8169_DESC_FS | R8169_DESC_LS | len | (idx == R8169_NTX - 1 ? R8169_DESC_EOR : 0);
-    r8169_tx_head = (idx + 1) & (R8169_NTX - 1);
-    asm volatile("" ::: "memory");
-    r8169_w8(R8169_TPPOLL, 0x40);
+void netdev_set_mac(const uint8_t mac[6]) { memcpy(net_mac, mac, 6); }
+void netdev_report_link(int up) { net_link_set_raw(up); }
+void netdev_set_name(const char *name) {
+    unsigned i = 0;
+    while (name[i] && i + 1 < sizeof net_driver_name) {
+        net_driver_name[i] = name[i];
+        i++;
+    }
+    net_driver_name[i] = 0;
 }
-
-static void r8169_poll(void) {
-    if (!r8169_present) return;
-    for (int n = 0; n < R8169_NRX; n++) {
-        uint32_t idx = r8169_rx_head;
-        volatile r8169_desc_t* d = &r8169_rx[idx];
-        if (d->status & R8169_DESC_OWN) break;
-        uint32_t status = d->status;
-        uint32_t len = status & 0x3FFF;
-        if ((status & (R8169_DESC_FS | R8169_DESC_LS)) == (R8169_DESC_FS | R8169_DESC_LS) && len >= 18 && len <= R8169_BUF) if (net_rx_cb) net_rx_cb(r8169_rxb[idx], len - 4);
-        d->status = R8169_DESC_OWN | R8169_BUF | (idx == R8169_NRX - 1 ? R8169_DESC_EOR : 0);
-        r8169_rx_head = (idx + 1) & (R8169_NRX - 1);
-    }
-}
-
-static int r8169_init(uint8_t bus, uint8_t slot, uint8_t func, uint16_t did) {
-    uint32_t bar0 = pci_config_read(bus, slot, func, 0x10);
-    uint32_t bar1 = pci_config_read(bus, slot, func, 0x14);
-    uint32_t command = pci_config_read(bus, slot, func, 0x04);
-    command |= 0x7;
-    pci_config_write(bus, slot, func, 0x04, command);
-    r8169_mmio = 0;
-    r8169_io = 0;
-    if (bar0 & 1) r8169_io = bar0 & 0xFFFFFFFC;
-    else {
-        uint64_t address = bar0 & 0xFFFFFFF0;
-        if ((bar0 & 6) == 4) address |= (uint64_t)bar1 << 32;
-        if (!address || address >= 137438953472ULL) return 0;
-#ifdef SHARKOS_32BIT
-        if (address > 0xFFFFFFFFULL) return 0;
-#endif
-        r8169_mmio = (uintptr_t)address;
-    }
-    r8169_w8(R8169_CMD, R8169_CMD_RST);
-    for (int i = 0; i < 100 && (r8169_r8(R8169_CMD) & R8169_CMD_RST); i++) delay_ms(1);
-    if (r8169_r8(R8169_CMD) & R8169_CMD_RST) return 0;
-    for (int i = 0; i < 6; i++) net_mac[i] = r8169_r8((uint32_t)i);
-    r8169_rx = (r8169_desc_t*)kmalloc(sizeof(r8169_desc_t) * R8169_NRX + 256);
-    r8169_tx = (r8169_desc_t*)kmalloc(sizeof(r8169_desc_t) * R8169_NTX + 256);
-    if (!r8169_rx || !r8169_tx) return 0;
-    r8169_rx = (r8169_desc_t*)(((uintptr_t)r8169_rx + 255) & ~(uintptr_t)255);
-    r8169_tx = (r8169_desc_t*)(((uintptr_t)r8169_tx + 255) & ~(uintptr_t)255);
-    memset(r8169_rx, 0, sizeof(r8169_desc_t) * R8169_NRX);
-    memset(r8169_tx, 0, sizeof(r8169_desc_t) * R8169_NTX);
-    if (virt_to_phys(r8169_rx) > 0xFFFFFFFFu || virt_to_phys(r8169_tx) > 0xFFFFFFFFu) return 0;
-    for (int i = 0; i < R8169_NRX; i++) {
-        r8169_rxb[i] = (uint8_t*)kmalloc(R8169_BUF);
-        if (!r8169_rxb[i] || virt_to_phys(r8169_rxb[i]) > 0xFFFFFFFFu) return 0;
-        r8169_rx[i].addr_lo = (uint32_t)virt_to_phys(r8169_rxb[i]);
-        r8169_rx[i].status = R8169_DESC_OWN | R8169_BUF | (i == R8169_NRX - 1 ? R8169_DESC_EOR : 0);
-    }
-    for (int i = 0; i < R8169_NTX; i++) {
-        r8169_txb[i] = (uint8_t*)kmalloc(R8169_BUF);
-        if (!r8169_txb[i] || virt_to_phys(r8169_txb[i]) > 0xFFFFFFFFu) return 0;
-        r8169_tx[i].addr_lo = (uint32_t)virt_to_phys(r8169_txb[i]);
-    }
-    r8169_rx_head = r8169_tx_head = 0;
-    uint32_t rx_phys = (uint32_t)virt_to_phys(r8169_rx);
-    uint32_t tx_phys = (uint32_t)virt_to_phys(r8169_tx);
-    r8169_w32(R8169_RDSAR, rx_phys);
-    r8169_w32(R8169_RDSAR + 4, 0);
-    r8169_w32(R8169_TNPDS, tx_phys);
-    r8169_w32(R8169_TNPDS + 4, 0);
-    r8169_w16(R8169_IMR, 0);
-    r8169_w16(R8169_ISR, 0xFFFF);
-    r8169_w32(R8169_RCR, 0x0000E70F);
-    r8169_w32(R8169_TCR, 0x03000700);
-    r8169_w8(R8169_CMD, R8169_CMD_RE | R8169_CMD_TE);
-    r8169_present = true;
-    net_link_set_raw(1);
-    strcpy(net_driver_name, did == 0x8169 ? "Realtek RTL8169" : "Realtek RTL8111/8168/8211/8411");
-    return 1;
+void netdev_rx_submit(const uint8_t *frame, uint32_t len) {
+    if (net_rx_cb)
+        net_rx_cb(frame, len);
 }
 
 void net_send_raw(const uint8_t* data, uint32_t len) {
     if (!firewall_output_allowed(data, len)) return;
     firewall_track_outbound(data, len);
-    if (r8169_present) r8169_send(data, len);
+    if (gigabit)
+        gigabit->send(data, len);
     else if (rtl_present) rtl_send(data, len);
     else if (pcnet_present) pn_send(data, len);
     else if (e1000_present) e1000_send(data, len);
@@ -980,7 +871,8 @@ static void dhcp_tick(void);
 
 void net_poll(void) {
     if (net_poll_cb_hook) net_poll_cb_hook();
-    if (r8169_present) r8169_poll();
+    if (gigabit)
+        gigabit->poll();
     else if (rtl_present) rtl_poll();
     else if (pcnet_present) pn_poll();
     else if (e1000_present) e1000_poll();
@@ -989,7 +881,7 @@ void net_poll(void) {
     dhcp_tick();
 }
 
-int net_has_nic(void) { return r8169_present || rtl_present || pcnet_present || e1000_present; }
+int net_has_nic(void) { return gigabit || rtl_present || pcnet_present || e1000_present; }
 
 void net_init(void) {
     for (uint32_t bus = 0; bus < 256; bus++) {
@@ -1001,7 +893,9 @@ void net_init(void) {
                 uint32_t hdr = pci_config_read(bus, slot, func, 0x0C);
 
                 if (vid == 0x10EC && (did == 0x8168 || did == 0x8169)) {
-                    if (r8169_init((uint8_t)bus, (uint8_t)slot, (uint8_t)func, did)) {
+                    const net_dev_t *driver = r8169_driver_get();
+                    if (driver->probe(bus, slot, func, vid, did)) {
+                        gigabit = driver;
                         net_mark_active((uint8_t)bus, (uint8_t)slot, (uint8_t)func);
                         return;
                     }
@@ -1063,9 +957,9 @@ void net_init(void) {
     strcpy(net_driver_name, "none");
 }
 
-/* ------------------------------------------------------------------ */
-/* physical adapter inventory                                         */
-/* ------------------------------------------------------------------ */
+
+
+
 
 static net_port_t net_ports[NET_PORT_LIMIT];
 static uint32_t net_port_num = 0;
@@ -1190,7 +1084,7 @@ static uint32_t build_eth(uint8_t* pkt, const uint8_t* dstmac, uint16_t ethertyp
     return 14;
 }
 
-/* Full UDP checksum (IPv4 pseudo header + UDP header + payload). */
+
 static uint16_t net_udp_checksum(const uint8_t* src, const uint8_t* dst,
                                  const uint8_t* udp, uint32_t udp_len) {
     uint32_t sum = 0;
@@ -1431,8 +1325,8 @@ static void net_on_frame(const uint8_t* frame, uint32_t len) {
     net_vnic_rx_frame(frame, len);
     uint16_t et = (uint16_t)((frame[12] << 8) | frame[13]);
 
-    /* Frames not addressed to this host are handed to the router's
-     * forwarding hook (if any) instead of the INPUT firewall. */
+
+
     if (et == ETH_IP && len >= 14 + 20 && (frame[14] >> 4) == 4) {
         uint32_t early_ihl = (uint32_t)((frame[14] & 0x0F) * 4);
         if (early_ihl >= 20 && len >= 14 + early_ihl && !ip_is_for_us(&frame[14 + 16])) {
@@ -2254,17 +2148,7 @@ int net_tcp_connect(const uint8_t* ip, uint16_t port,
     return total > 0 ? (int)total : -1;
 }
 
-                                                                      
-                                                                       
-                                                                       
-                                                                       
-                                                                       
-                                                                       
-                                                                       
-                                                                       
-                                                                       
-                                                                      
-
+int net_http_last_complete;
 int  net_http_last_status = 0;
 char net_http_last_location[1024];
 char net_http_last_content_type[128];
@@ -2401,6 +2285,7 @@ typedef struct {
     int state;                                                                
     int skipping;                                   
     uint32_t remain;
+    int overflow;
     int line_empty;
     int done;
     uint8_t* out; uint32_t out_max, out_len;
@@ -2425,6 +2310,8 @@ static void chunk_feed(chunk_dec_t* d, const uint8_t* buf, uint32_t n) {
             uint32_t take = n - i;
             if (take > d->remain) take = d->remain;
             uint32_t room = d->out_len < d->out_max ? d->out_max - d->out_len : 0;
+            if (take > room)
+                d->overflow = 1;
             uint32_t cp = take < room ? take : room;
             for (uint32_t k = 0; k < cp; k++) d->out[d->out_len + k] = buf[i + k];
             d->out_len += cp;
@@ -2445,6 +2332,7 @@ static void chunk_feed(chunk_dec_t* d, const uint8_t* buf, uint32_t n) {
 }
 
 int net_http_request(const char* method, const char* url, const char* extra_headers, const uint8_t* request_body, uint32_t request_body_len, uint8_t* out_buf, uint32_t out_max) {
+    net_http_last_complete = 0;
     net_http_last_status = 0;
     net_http_last_location[0] = 0;
     net_http_last_content_type[0] = 0;
@@ -2603,6 +2491,7 @@ int net_http_request(const char* method, const char* url, const char* extra_head
                 if (n <= 0) { close_after = 1; break; }
                 chunk_feed(&d, rbuf, (uint32_t)n);
             }
+            net_http_last_complete = d.done && !d.overflow;
             body_len = d.out_len;
         } else if (have_clen) {
             uint32_t got = 0;
@@ -2625,12 +2514,16 @@ int net_http_request(const char* method, const char* url, const char* extra_head
                 if (n <= 0) { close_after = 1; break; }
                 body_len += (uint32_t)n; got += (uint32_t)n;
             }
+            net_http_last_complete = (got == clen && clen <= dst_max);
         } else {
             for (uint32_t i = 0; i < pre && i < dst_max; i++) dst[i] = pre_p[i];
             body_len = pre < dst_max ? pre : dst_max;
             while (body_len < dst_max) {
                 int n = conn_recv(dst + body_len, (int)(dst_max - body_len), 10000);
-                if (n <= 0) break;
+                if (n <= 0) {
+                    net_http_last_complete = (n == 0);
+                    break;
+                }
                 body_len += (uint32_t)n;
             }
         }
@@ -2924,6 +2817,21 @@ void net_cmd_ifconfig(void) {
     net_format_mac(b);
     terminal_writestring("MAC: "); terminal_writestring(b); terminal_writestring("\n");
     terminal_writestring("Link: "); terminal_writestring(net_has_link ? "up\n" : "down\n");
+    if (gigabit) {
+        unsigned speed = r8169_speed(), xid = r8169_xid();
+        static const char hex[] = "0123456789abcdef";
+        char id[4] = {hex[(xid >> 8) & 15], hex[(xid >> 4) & 15], hex[xid & 15], 0};
+        terminal_writestring("Realtek MAC XID: ");
+        terminal_writestring(id);
+        terminal_writestring("\n");
+        terminal_writestring("Negotiated speed: ");
+        if (speed) {
+            int_to_string(speed, b);
+            terminal_writestring(b);
+            terminal_writestring(" Mb/s\n");
+        } else
+            terminal_writestring("unavailable\n");
+    }
     terminal_writestring("Link events: ");
     int_to_string(net_link_down_count(), b); terminal_writestring(b);
     terminal_writestring(" drops, ");
