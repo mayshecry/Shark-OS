@@ -29,7 +29,14 @@ void get_cpu_model(char* buffer) {
     }
 }
 
+extern int store_sync(void) __attribute__((weak));
+extern const char *store_status(void) __attribute__((weak));
 void shutdown() {
+    if (store_sync && !store_sync()) {
+        terminal_writestring(store_status());
+        terminal_writestring("\n");
+        return;
+    }
     outw(0xB004, 0x2000);
     outw(0x604, 0x2000);
     outw(0x4004, 0x3400);
