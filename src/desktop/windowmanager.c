@@ -350,6 +350,7 @@ static void window_close_now(int idx) {
     if (idx < 0 || idx >= desktop.window_count) return;
     window_t* win = &desktop.windows[idx];
 
+    if(win->type==WINDOW_TYPE_TERMINAL)terminal_release_window(win);
     if (win->close_func) {
         win->close_func();
     }
