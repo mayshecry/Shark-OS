@@ -170,7 +170,7 @@ void doom_init(void) {
     int exited = doom_setjmp(doom_exit_environment);
     if (!exited) doomgeneric_Create(5, (char**)doom_argv);
     doom_exit_armed = 0;
-    if (!doom_engine_error) doom_initialized = 1;
+    if (!doom_engine_error){ doom_initialized = 1;serial_puts("[doom] engine ready\n");}
 }
 
 void doom_cleanup(void) {
