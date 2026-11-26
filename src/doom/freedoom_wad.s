@@ -2,5 +2,5 @@
 .global sharkos_freedoom_wad_start
 .global sharkos_freedoom_wad_end
 sharkos_freedoom_wad_start:
-.incbin "assets/freedoom1.wad"
+.incbin "doom/data.wz"
 sharkos_freedoom_wad_end:
